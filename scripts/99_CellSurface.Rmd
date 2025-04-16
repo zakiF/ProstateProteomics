@@ -1,0 +1,165 @@
+---
+title: "Cell surface"
+date: "2025-03-21"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+    number_sections: true
+    theme: lumen
+---
+
+# Background
+
+We want to compile a list of cell surface makers from public database
+
+# Objectives
+
+1. Read in public database 
+2. Merge 
+
+# Conclusion
+
+
+# Pre-processing 
+
+## Loading packages
+
+```{r, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(readxl)   
+library(readr)
+library(stringr)
+```
+
+## Directories
+
+```{r}
+wd <- list()
+wd$main <- here()
+wd$data <- file.path(wd$main, "data")
+wd$output <- file.path(wd$main, "output")
+wd$script <- file.path(wd$main, "scripts")
+wd$outData <- file.path(wd$output, "data")
+wd$outCurr <- file.path(wd$output, "99_CS")
+```
+
+Create directories
+
+```{r}
+if (!file.exists(wd$outCurr)) {
+  dir.create(wd$outCurr)
+} else {
+  print("Directory already exists")
+}
+```
+
+Load functions
+
+```{r}
+source(file.path(wd$script, "functions.R"))
+```
+
+
+
+# Obj 1: Read in public database 
+
+
+## CellMarker  
+  
+Paper: https://academic.oup.com/nar/article/47/D1/D721/5115823  
+Website: http://biocc.hrbmu.edu.cn/CellMarker/download.jsp 
+
+> This website just shows the cell type, not really cell surface markers
+
+## Bernd Wollscheid lab  
+  
+The list of cell surfurce marker from http://wlab.ethz.ch/cspa/#downloads (CSPA validated surfaceome proteins).  
+https://wlab.ethz.ch/cspa/data/S2_File.xlsx  
+
+> List of 1492 human surfaceome proteins and their annotation.
+
+```{r}
+cs_dat <- read_excel(file.path(wd$data, "cs_markers/S2_File.xlsx"), sheet = 1) %>% 
+  rename(Approved.symbol = 'ENTREZ gene symbol',
+         Aliases = CD) %>% 
+  filter(`CSPA category` == "1 - high confidence") %>% 
+  select(Approved.symbol, Aliases) %>% 
+  distinct() %>% 
+  filter(Approved.symbol != "0")
+```
+
+## HCDM Official  
+  
+http://www.hcdm.org
+Download the list here: https://www.genenames.org/data/genegroup/#!/group/471  
+
+Lets get the list of cell surface markers. We use the resource [here](https://www.genenames.org/download/custom/). 
+
+Alternatively we can download the whole list and insturctions to find cell surface genes is recorded [previously](https://github.com/zakiF/PublishedPapers/blob/master/Blood_2021/E10.5_E11.5_Gfi1s_and_Runx1.Rmd).
+
+```{r}
+# Lets read the pre-defined list
+cs_dat2 <- read.csv(file.path(wd$data, "cs_markers/group-471.csv"), stringsAsFactors = FALSE) %>% 
+  dplyr::select(Approved.symbol, Aliases, Previous.symbols)
+```
+
+## Merge
+
+```{r}
+cs <- rbind(cs_dat, select(cs_dat2, Approved.symbol, Aliases))
+cs <- cs %>% distinct()
+```
+
+Minor fix. Some CS have repeated names, lets clean it
+
+```{r}
+# Process the data
+# cs <- cs %>%
+#   group_by(Approved.symbol) %>%
+#   summarise(
+#     Aliases = str_c(unique(unlist(str_split(Aliases, ","))), collapse = ",")
+#   )
+
+
+# Arrange so CD comes first
+# Process the data
+cs_processed <- cs %>%
+  group_by(Approved.symbol) %>%
+  summarise(
+    Aliases = str_c(
+      unique(unlist(str_split(Aliases, ","))),
+      collapse = ","
+    )
+  ) %>%
+  mutate(
+    Aliases = sapply(Aliases, function(x) {
+      # Split aliases and sort them such that "CD" comes first
+      ali_list <- unlist(str_split(x, ","))
+      ali_list <- ali_list[order(grepl("CD", ali_list), decreasing = TRUE)]
+      # Join them back into a single string
+      str_c(ali_list, collapse = ",")
+    })
+  )
+
+```
+
+
+### Write table
+
+```{r}
+write.table(cs_processed, file.path(wd$outData, "CS_human.txt"), sep = "\t", row.names = F)
+```
+
+
+
+
+
+
+
+
+
+

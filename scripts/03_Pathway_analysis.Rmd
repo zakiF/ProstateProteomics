@@ -1,0 +1,419 @@
+---
+title: "Pathway analysis"
+date: "2025-02-27"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+    number_sections: true
+    theme: lumen
+---
+
+# Background
+
+We cleaned the clinical files metadata. Now we analze the NPX data generated. For now focus on the discovery dataset
+
+# Objectives
+
+1. Pathway analysis
+
+
+# Conclusion
+
+Pathway analysis was performed on the prteins upregulated in mCRPC. We ran pathway analysis on proteins that showed progressive increase and non-linear increase separately.
+
+
+# Pre-processing 
+
+## Loading packages
+
+```{r, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(paletteer)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(msigdbr)
+library(enrichplot)
+
+library(stringr)
+library(gridExtra)
+```
+
+
+## Directories
+
+```{r}
+set.seed(1234)
+wd <- list()
+wd$main <- here()
+wd$data <- file.path(wd$main, "data")
+wd$manishData <- file.path(wd$data, "raw/data_fromManish")
+wd$d2024 <- file.path(wd$data, "updated_2024")
+wd$d2024_npx <- file.path(wd$d2024, "NPX_data")
+wd$output <- file.path(wd$main, "output")
+wd$script <- file.path(wd$main, "scripts")
+
+wd$outData <- file.path(wd$output, "data")
+wd$outCurr <- file.path(wd$output, "03_Pathway")
+```
+
+
+Create directories
+
+```{r}
+if (!file.exists(wd$outCurr)) {
+  dir.create(wd$outCurr)
+} else {
+  print("Directory already exists")
+}
+```
+
+## Load data
+
+Load the processed file
+
+```{r}
+load(file.path(wd$outData, "01_Metadata.Rdata"))
+load(file.path(wd$outData, "02_data.Rdata"))
+```
+
+Load functions
+
+```{r}
+source(file.path(wd$script, "functions.R"))
+```
+
+
+# Obj 1: Pathway analysis
+
+## Upregulated genes
+
+We run pathway anlaysis first on the upregulated genes in mCRPC
+
+Lets extract the upregulated genes in mCRPC specifically
+
+```{r}
+genes_of_interest <- overlap_df_limma %>% 
+  filter(OverlapDegree %in% c(
+    "Group CD")) %>% pull(Assay) %>% unique()
+
+# If we want to look at genes that are up in both B and CD compared to A
+genes_of_interest <- df_high %>% 
+  filter(category %in% c(
+    "High_B")) %>% pull(Assay) %>% unique()
+```
+
+We need a background set for pathway enrichment. So we use all the gene ids
+
+```{r}
+background_genes <- df_id_pro %>% pull(Assay) %>% unique()
+```
+
+Run the pathway analysis
+
+```{r}
+# Convert genes of interest to Entrez IDs
+foreground_entrez <- bitr(genes_of_interest, 
+                          fromType = "SYMBOL", 
+                          toType = "ENTREZID", 
+                          OrgDb = org.Hs.eg.db)
+
+# Convert background genes to Entrez IDs
+background_entrez <- bitr(background_genes, 
+                          fromType = "SYMBOL", 
+                          toType = "ENTREZID", 
+                          OrgDb = org.Hs.eg.db)
+
+# Remove any duplicates or NA values
+foreground_entrez <- unique(na.omit(foreground_entrez))
+background_entrez <- unique(na.omit(background_entrez))
+
+# Retrieve Hallmark gene sets for Homo sapiens
+msig_hallmark <- msigdbr(species = "Homo sapiens", category = "H")
+
+# Prepare TERM2GENE as a data frame
+msig_term2gene <- msig_hallmark[, c("gs_name", "entrez_gene")]
+
+
+# Perform over-representation analysis with the correct TERM2GENE
+enrich_results <- enricher(gene = foreground_entrez$ENTREZID,
+                           TERM2GENE = msig_term2gene,
+                           #universe = background_entrez$ENTREZID,
+                           pAdjustMethod = "BH",
+                           pvalueCutoff = 0.05,
+                           qvalueCutoff = 0.2)
+
+#barplot(enrich_results, showCategory = 10, title = "Top Enriched Hallmark Pathways")
+
+enrich_up <- enrich_results
+```
+
+Lets generate a custom plot
+
+```{r}
+# Custom plot
+top_x <- enrich_up@result %>% 
+  #filter(p.adjust <0.2) %>% 
+  mutate(logP = -log10(p.adjust)) %>% 
+  arrange(desc(logP)) %>% 
+  mutate(ID = factor(ID, levels=rev(ID))) %>% 
+  slice_max(logP, n=10) 
+
+ggplot(top_x,
+       aes(x = logP, y=ID)) +
+  geom_bar(stat = "identity", fill = "#2CA02C") +  # Bars with color
+  geom_vline(xintercept = -log10(0.2), linetype="dashed") +
+  theme_custom +
+  NULL
+
+#ggsave(file=file.path(wd$outCurr, "enrichedPathway.pdf"), height = 3, width = 5)
+```
+
+Repeat for the other group of genes (high in A not in B)
+
+```{r}
+genes_of_interest <- df_high %>% 
+  filter(category %in% c(
+    "High_A")) %>% pull(Assay) %>% unique()
+
+# Convert genes of interest to Entrez IDs
+foreground_entrez <- bitr(genes_of_interest, 
+                          fromType = "SYMBOL", 
+                          toType = "ENTREZID", 
+                          OrgDb = org.Hs.eg.db)
+
+# Remove any duplicates or NA values
+foreground_entrez <- unique(na.omit(foreground_entrez))
+background_entrez <- unique(na.omit(background_entrez))
+
+# Retrieve Hallmark gene sets for Homo sapiens
+msig_hallmark <- msigdbr(species = "Homo sapiens", category = "H")
+
+# Prepare TERM2GENE as a data frame
+msig_term2gene <- msig_hallmark[, c("gs_name", "entrez_gene")]
+
+
+# Perform over-representation analysis with the correct TERM2GENE
+enrich_results <- enricher(gene = foreground_entrez$ENTREZID,
+                           TERM2GENE = msig_term2gene,
+                           #universe = background_entrez$ENTREZID,
+                           pAdjustMethod = "BH",
+                           pvalueCutoff = 0.05,
+                           qvalueCutoff = 0.2)
+
+enrich_up_a <- enrich_results
+
+# Custom plot
+top_x_a <- enrich_up_a@result %>% 
+  #filter(p.adjust <0.2) %>% 
+  mutate(logP = -log10(p.adjust)) %>% 
+  arrange(desc(logP)) %>% 
+  mutate(ID = factor(ID, levels=rev(ID))) %>% 
+  slice_max(logP, n=10) 
+```
+
+
+Plot the two in one plot
+
+```{r}
+t1 <- top_x_a %>% filter(p.adjust <= 0.2) %>% mutate(class = "high_a") %>% dplyr::select(logP, ID, class) %>% 
+  mutate(
+ID = gsub("_", " ", ID),
+ID = gsub("HALLMARK", "", ID),
+ID = str_to_lower(ID),
+ID = str_to_title(ID))
+t2 <- top_x %>% filter(p.adjust <= 0.2) %>% mutate(class = "high_b") %>% dplyr::select(logP, ID, class) %>% 
+    mutate(
+ID = gsub("_", " ", ID),
+ID = gsub("HALLMARK", "", ID),
+ID = str_to_lower(ID),
+ID = str_to_title(ID))
+
+# Get the full set of IDs to ensure spacing consistency
+combined_IDs <- unique(c(t1$ID, t2$ID))
+
+# Convert `ID` to a factor with all possible levels
+t1$ID <- factor(t1$ID, levels = rev(combined_IDs))
+t2$ID <- factor(t2$ID, levels = rev(combined_IDs))
+
+# Get the maximum logP value across both datasets
+max_logP <- max(c(t1$logP, t2$logP))
+
+# Ensure both plots have the same x-axis scale
+p1 <- ggplot(t1, aes(x = logP, y = ID)) +
+  geom_bar(stat = "identity", fill = "#2CA02C") +
+  geom_vline(xintercept = -log10(0.2), linetype = "dashed") +
+  facet_wrap(~class) +
+  xlim(0, max_logP) +  # Force both plots to have the same x-axis range
+  theme_custom +
+  NULL
+
+p2 <- ggplot(t2, aes(x = logP, y = ID)) +
+  geom_bar(stat = "identity", fill = "#2CA02C") +
+  geom_vline(xintercept = -log10(0.2), linetype = "dashed") +
+  facet_wrap(~class) +
+  xlim(0, max_logP) +  # Same x-axis limit
+  theme_custom +
+  NULL
+
+p1 <- p1 + coord_fixed(ratio = 0.2)  # Adjust ratio as needed
+p2 <- p2 + coord_fixed(ratio = 0.2)
+
+p_all <- grid.arrange(p1, p2, ncol = 1)
+
+
+ggsave(p_all, file=file.path(wd$outCurr, "enrichedPathway_highA_highB.pdf"), height = 6, width = 7)
+```
+## Downregulated genes
+
+Lets also try to run pathway enrichment on the downregulated genes
+
+```{r}
+cut_logFC_dwn <- 0.3
+df_cat_cd_dwn <- limma_df %>%
+  filter(Contrast %in% c("A_vs_CD", "B_vs_CD") & Adjusted_pval <= cut_fdr & log2FC <= -cut_logFC_dwn)
+write.csv(df_cat_cd_dwn, "~/Desktop/tmp.csv")
+```
+
+Run pathway enrichment
+
+```{r}
+# Convert genes of interest to Entrez IDs
+foreground_entrez <- bitr(unique(df_cat_cd_dwn$Assay), 
+                          fromType = "SYMBOL", 
+                          toType = "ENTREZID", 
+                          OrgDb = org.Hs.eg.db)
+
+# Perform over-representation analysis with the correct TERM2GENE
+enrich_results <- enricher(gene = foreground_entrez$ENTREZID,
+                           TERM2GENE = msig_term2gene,
+                           #universe = background_entrez$ENTREZID,
+                           pAdjustMethod = "BH",
+                           pvalueCutoff = 0.05,
+                           qvalueCutoff = 0.2)
+
+#barplot(enrich_results, showCategory = 10, title = "Top Enriched Hallmark Pathways")
+
+enrich_dwn <- enrich_results
+```
+
+
+> We do not get any valid results from the downregulation. Ignore this for now
+
+Lets try the specific estrogen pathway
+
+```{r}
+estrogen_pathway <- msigdbr(species = "Homo sapiens", category = "C5", subcategory = "GO:BP") %>%
+  dplyr::filter(gs_name == "GOBP_INTRACELLULAR_ESTROGEN_RECEPTOR_SIGNALING_PATHWAY")
+```
+
+Run only on this pathway
+
+```{r}
+all_pathways <- msigdbr(species = "Homo sapiens", category = "C5", subcategory = "BP") 
+
+# Convert to TERM2GENE format (TERM column and GENE column)
+msig_term2gene <- all_pathways[, c("gs_name", "entrez_gene")]
+
+enrich_results <- enricher(
+  gene = foreground_entrez$ENTREZID,
+  TERM2GENE = msig_term2gene,
+  pAdjustMethod = "BH",
+  pvalueCutoff = 1,
+  qvalueCutoff = 1
+)
+```
+
+
+Run GSEA
+
+```{r}
+# Get gene set for "GOBP_RESPONSE_TO_TESTOSTERONE"
+gene_set <- msigdbr(species = "Homo sapiens", category = "C5", subcategory = "BP") %>%
+  dplyr::filter(gs_name == "GOBP_RESPONSE_TO_TESTOSTERONE") %>%
+  dplyr::pull(gene_symbol)
+```
+
+Get the ranked genes
+
+```{r}
+tmp_df <- limma_df %>%
+  filter(Contrast %in% c("A_vs_CD"))
+ranked_genes <- tmp_df$t
+names(ranked_genes) <- tmp_df$Assay
+ranked_genes <- sort(ranked_genes, decreasing = TRUE)
+
+
+# We need 1 gene only not duplicated
+# Convert named numeric vector to data frame for processing
+ranked_df <- data.frame(
+  gene = names(ranked_genes),
+  score = ranked_genes,
+  row.names = NULL
+)
+
+# Remove duplicate gene names, keeping the highest absolute value
+ranked_unique <- ranked_df %>%
+  group_by(gene) %>%
+  slice_max(order_by = abs(score), n = 1) %>%
+  ungroup()
+
+# Convert back to named numeric vector
+geneList <- setNames(ranked_unique$score, ranked_unique$gene)
+
+# Ensure it's sorted in decreasing order
+geneList <- sort(geneList, decreasing = TRUE)
+```
+
+
+```{r}
+# Create a custom gene set in a data frame
+custom_gene_set <- data.frame(
+  term = "GOBP_RESPONSE_TO_TESTOSTERONE",
+  gene = gene_set
+)
+
+# Run GSEA with a custom gene set
+gsea_custom <- GSEA(
+  geneList = geneList,
+  TERM2GENE = custom_gene_set,
+  pvalueCutoff = 0.05,
+  minGSSize = 10,
+  maxGSSize = 500
+)
+
+# Plot the GSEA results for the specific gene set
+gseaplot(gsea_custom, geneSetID = "GOBP_RESPONSE_TO_TESTOSTERONE")
+```
+
+> We could not get the GSEA or enricher to show pathways in the downregulated genes
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

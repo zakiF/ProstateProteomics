@@ -1,0 +1,885 @@
+---
+title: "Pronosis"
+date: "2025-04-09"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+    number_sections: true
+    theme: lumen
+---
+
+# Background
+
+We bridged the different batches using limma. Now we want to run prognosis analysis on this. 
+
+# Objectives
+
+1. Perform cox regression
+2. Obtain risk score
+3. Compare risk score
+
+# Conclusion
+
+
+# Pre-processing 
+
+## Loading packages
+
+```{r, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(readxl)   
+library(readr)
+library(stringr)
+library(ggplot2)
+library(paletteer)
+library(VennDiagram)
+library(ggvenn)
+# Survival
+library(survival)
+library(ggsurvfit)
+library(survminer)
+```
+
+## Directories
+
+```{r}
+wd <- list()
+wd$main <- here()
+wd$data <- file.path(wd$main, "data")
+wd$manishData <- file.path(wd$data, "raw/data_fromManish")
+wd$d2024 <- file.path(wd$data, "updated_2024")
+wd$d2024_npx <- file.path(wd$d2024, "NPX_data")
+wd$output <- file.path(wd$main, "output")
+wd$script <- file.path(wd$main, "scripts")
+
+wd$outData <- file.path(wd$output, "data")
+wd$outCurr <- file.path(wd$output, "07_Bridge_prognosis")
+```
+
+
+Create directories
+
+```{r}
+if (!file.exists(wd$outCurr)) {
+  dir.create(wd$outCurr)
+} else {
+  print("Directory already exists")
+}
+```
+
+Load functions
+
+```{r}
+source(file.path(wd$script, "functions.R"))
+```
+
+## Load data
+
+Load the processed metadata file
+
+```{r}
+# TO DO - load the saved R object
+load(file.path(wd$outData, "01_Metadata.Rdata"))
+load(file.path(wd$outData, "02_data.Rdata"))
+load(file.path(wd$outData, "04_data.Rdata"))
+load(file.path(wd$outData, "06_data.Rdata"))
+```
+
+### Load other files
+
+List of cell surface markers, Olink flex panel...etc
+
+```{r}
+# List of cell surface markers
+cs <- read.delim(file.path(wd$outData, "CS_human.txt"))
+
+# Olink FLEX proteins
+df_flex <- read.csv(file.path(wd$data, "Olink Flex - 2025-04-08.csv"), sep = ";")
+```
+
+We also have genes that are druggable from DrugBank https://go.drugbank.com/releases/latest#protein-identifiers
+
+```{r}
+# Downloaded the file from DrugBank
+df_target <- read.csv(file.path(wd$data, "DrugBank/drugbank_all_target_polypeptide_ids.csv/all.csv"))
+df_vocab <- read.csv(file.path(wd$data, "DrugBank/drugbank vocabulary.csv"))
+```
+
+# Obj 1: Prognostic
+
+We perform multivariate analysis on the patients. We want to see if the proteins that are over-expressed in the discovery cohort are associated with prognosis. 
+
+Its best if we limit our analysis to the proteins over-expressed in the discovery cohort. We previously identified 456 proteins
+
+```{r}
+length(cd_prot)
+```
+
+We need to trim down the protein to those that were detected
+
+```{r}
+cd_prot_sub <- cd_prot[cd_prot %in% rownames(exprMatrix_corrected_sub)]
+# # Manish mentioned CD34, it is currently tested in clicnial trials
+# id1 <- df_id_pro %>% filter(Assay == "CD34") %>% pull(OlinkID)
+# cd_prot_sub <- c(cd_prot_sub, id1)
+# CD34 gave HR to 0.8 - non significant
+```
+
+For these proteins run a cox proportional analysis. For completness, we will do this analysis in the Olink batch corrected NPX value and the Limma batch corrected NPX values
+
+## Limma 
+
+For the bridge sample, we need to combine the OS from Psomagen & Q-1335
+
+```{r}
+# df_pca
+# exprMatrix_corrected_sub
+# df_unq
+m1 <- meta_psom %>% mutate(sample_id = paste0("Disc_", sample_id))
+m2 <- meta_q1335 %>% mutate(sample_id = paste0("Proj2_", sample_id))
+m3 <- meta_q1580 %>% mutate(sample_id = paste0("Proj4_", sample_id))
+
+meta_bridge <- rbind(m1, m2, m3)
+
+# Fix the PSA to numeric
+meta_bridge <- meta_bridge %>% 
+  mutate(psa = gsub("<", "", psa),
+         psa = as.numeric(psa),
+         ldh = as.numeric(ldh),
+         alk_ph = as.numeric(alk_ph)) 
+
+df_tmp <- df_pca %>% select(SampleID, cohort, HCI_cID) %>% distinct() %>% 
+  rename(sample_id = SampleID)
+
+meta_bridge2 <- meta_bridge %>% left_join(df_tmp) %>% 
+  filter(cohort == "C_D") %>% 
+  left_join(select(df_meta_f, HCI_cID, txt_stat)) 
+
+# If we want just pre
+meta_bridge_pre <- meta_bridge2 %>% 
+  filter(txt_stat == "Pre")
+
+# Convert the gene x sample to the long NPX format
+# Convert to long format
+exprMatrix_long <- exprMatrix_corrected_sub %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "OlinkID") %>%  # Preserve row names as a column
+  pivot_longer(cols = -OlinkID, names_to = "SampleID", values_to = "Value") %>% 
+  left_join(df_pca) %>% 
+  rename(NPX = Value)
+```
+
+Since we have serial patients, these patients have the same OS. So it would be incorrect to use repeated OS measurement for prognosis. An idea that for each protein, take the patient that has the highest expression of that protein (then discard the remaining serial samples). Next we can run the cox regression. This will means that duplicated proteins are not included. 
+
+> Afeter talking to Manish and AC, a more logical approach is to use the baseline (pre-treatment) sample, if there are multiple pre-treatment, use the higest expressing one. 
+
+We run two version of the prognositc model
+
+The first with just the pre-txt mCRPC samples
+
+```{r}
+# Select the highest expressing protein per- patient
+tmp_npx <- exprMatrix_long 
+results <- analyze_proteins_highest(cd_prot_sub, npx_in=tmp_npx, meta_in=meta_bridge_pre)
+results <- left_join(results, df_id_pro)
+res_bridge_limma_pre <- results
+```
+
+The second controlling for treatment status
+
+```{r}
+# This will NOT be version we are using - running just for info
+results <- analyze_proteins_highest_txt(cd_prot_sub, npx_in=tmp_npx, meta_in=meta_bridge2)
+results <- left_join(results, df_id_pro)
+res_bridge_limma <- results
+```
+
+### Clean up
+
+Format and save the results. 
+
+```{r}
+cox_p_val <- 0.05
+res_bridge_limma_pre <- res_bridge_limma_pre %>% 
+  mutate(Group = "Bridge_limma") %>% 
+  mutate(
+    Lower_Bound = round(Lower_Bound, 2),
+    Upper_Bound = round(Upper_Bound, 2),
+    bin_Lower_Bound = round(bin_Lower_Bound, 2),
+    bin_Upper_Bound = round(bin_Upper_Bound, 2),
+    
+    HR = round(HR, 2),
+    bin_HR = round(HR, 2),
+    
+    Sig_bin = case_when(
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound >=1 ~ "Sig",
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound <=1 & bin_Upper_Bound <=1 ~ "Sig",
+      bin_P_Value <= cox_p_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"),
+    
+    fdr_cont = p.adjust(P_Value, method = "fdr"),
+    
+    Sig_fdr_cont = case_when(
+      P_Value <= cox_p_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"))
+
+write.csv(res_bridge_limma_pre, file.path(wd$outCurr, "HR_values_mCRPC_specific_multivariate_limma_pre.csv"))
+
+
+res_bridge_limma <- res_bridge_limma %>%
+  mutate(Group = "Bridge_limma") %>%
+  mutate(
+    Lower_Bound = round(Lower_Bound, 2),
+    Upper_Bound = round(Upper_Bound, 2),
+    bin_Lower_Bound = round(bin_Lower_Bound, 2),
+    bin_Upper_Bound = round(bin_Upper_Bound, 2),
+
+    HR = round(HR, 2),
+    bin_HR = round(HR, 2),
+
+    Sig_bin = case_when(
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound >=1 ~ "Sig",
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound <=1 & bin_Upper_Bound <=1 ~ "Sig",
+      bin_P_Value <= cox_p_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"),
+
+    fdr_cont = p.adjust(P_Value, method = "fdr"),
+
+    Sig_fdr_cont = case_when(
+      P_Value <= cox_p_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"))
+
+write.csv(res_bridge_limma, file.path(wd$outCurr, "HR_values_mCRPC_specific_multivariate_limma_all.csv"))
+```
+
+Compare the two
+
+```{r}
+d1 <- res_bridge_limma %>% mutate(Group = "all")
+d2 <- res_bridge_limma_pre %>% mutate(Group = "pre")
+
+
+# Rename HR columns to distinguish them
+df1 <- d1 %>% rename(HR_1 = HR)
+df2 <- d2 %>% rename(HR_2 = HR)
+
+# Merge data frames by OlinkID
+merged_df <- inner_join(df1, df2, by = "OlinkID") %>% 
+  mutate(Diff = HR_1 - HR_2)
+
+# Scatter plot comparing HR from both datasets
+ggplot(merged_df, aes(x = HR_1, y = HR_2)) +
+  geom_point(size = 2 , alpha = 0.6) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +  # Reference line
+  labs(title = "Comparison of Hazard Ratios",
+       x = "HR from Dataset 1",
+       y = "HR from Dataset 2") +
+  theme_minimal()
+```
+
+> They correlate quite well, lets use the one that controlled for treatment status.
+
+Number of signficant
+
+```{r}
+table(res_bridge_limma$Sig_fdr_cont)
+```
+
+## Discovery cohort
+
+Note that some proteins that were detected in the discovery cohort was not detected in the integrated data. So we will run the prognostic anlalysis for these proteins just using the data from the discovery cohort.
+
+```{r}
+# Identifying the proteins
+cd_prot_sub <- cd_prot[!cd_prot %in% rownames(exprMatrix_corrected_sub)]
+length(cd_prot_sub)
+```
+
+8 proteins were in discovery and not in the integrated data. Lets analyse the data. 
+
+```{r}
+tmp_npx <- dat1_final 
+
+# Get metadata of the psomagen cohort
+df_meta_f_psom <- df_meta_f %>% 
+  filter(Psomagen == "Y") %>% 
+  filter(cohort == "C_D")
+
+meta_psom_f <- df_meta_f_psom %>% 
+  left_join(meta_psom)
+
+# Fix metadata
+# Fix the PSA to numeric
+meta_psom_f <- meta_psom_f %>% 
+  mutate(psa = gsub("<", "", psa),
+         psa = as.numeric(psa),
+         ldh = as.numeric(ldh),
+         alk_ph = as.numeric(alk_ph))
+
+results <- analyze_proteins_highest_txt(cd_prot_sub, npx_in=tmp_npx, meta_in=meta_psom_f)
+results <- left_join(results, df_id_pro)
+res_dis_only <- results
+
+
+```
+
+
+Lets make a final list combining with the integrated data
+
+```{r}
+cut_fdr < 0.05
+
+# Save the full list
+d1 <- res_bridge_limma %>% 
+  select(OlinkID, Assay, HR, Lower_Bound, Upper_Bound, Coefficient, P_Value) %>% mutate(Group = "Bridge")
+d2 <- res_dis_only %>%
+  select(OlinkID, Assay, HR, Lower_Bound, Upper_Bound, Coefficient, P_Value) %>% mutate(Group = "Psomagen_only")
+
+res_all <- rbind(d1, d2)
+
+res_all <- res_all %>% 
+  mutate(
+    Lower_Bound = round(Lower_Bound, 2),
+    Upper_Bound = round(Upper_Bound, 2),
+    
+    HR = round(HR, 2),
+    fdr = p.adjust(P_Value, method = "fdr"),
+    
+    Sig_fdr = case_when(
+      fdr <= cox_p_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"),
+    
+    is_CS = case_when(Assay %in% cs$Approved.symbol ~ "Yes", TRUE ~ "No"))
+```
+
+Overlap with CS data
+
+```{r}
+res_all <- left_join(res_all, cs, by = c("Assay" = "Approved.symbol"))
+```
+
+Add if the proteins are available on the Olink FLEX platform
+
+```{r}
+res_all <- res_all %>% 
+  mutate(
+    is_flex = case_when(Assay %in% df_flex$Gene ~ "Yes", TRUE ~ "No")) 
+```
+
+Also indicate if the protein is targetable
+
+```{r}
+df_target_sub <- df_target %>% select(Gene.Name, Drug.IDs) %>% 
+  # Ensure one gene row for each drug
+  group_by(Gene.Name) %>%
+  summarise(
+    DrugBank.ID = str_c(unique(unlist(str_split(Drug.IDs, ","))), collapse = ",")
+  )
+res_all2 <- res_all %>% left_join(df_target_sub, by = c("Assay" = "Gene.Name"))
+```
+
+Replace DrugID with common name
+
+```{r}
+df_vocab_sub <- df_vocab %>% select(DrugBank.ID, Common.name)
+# Replace each DrugBank ID with the corresponding Common name
+res_all2 <- res_all2 %>%
+  # Split the Drug.IDs by semicolon
+  mutate(DrugBank.ID = str_split(DrugBank.ID, "; ")) %>%
+  # Use a custom function to replace IDs with common names
+  mutate(drugname = sapply(DrugBank.ID, function(ids) {
+    # Join the common names of the IDs in the list
+    names <- df_vocab_sub %>% 
+      filter(DrugBank.ID %in% ids) %>%
+      pull(`Common.name`)
+    # Combine the common names into a single string
+    str_c(names, collapse = "; ")
+  })) %>%
+  mutate(DrugBank.ID = as.character(DrugBank.ID))  # Clean up the original Drug.IDs column if desired
+
+write.csv(res_all2, file.path(wd$outCurr, "HR_values_mCRPC_specific_multivariate_limma_all_cell_surface.csv"))
+```
+
+## Olink
+
+> Since we decdied to use the limma corrected batch effect, we will not do this analysis. Kept here for records
+
+For the bridge sample, we need to combine the OS from Psomagen & Q-1335
+
+```{r, eval=FALSE}
+m1 <- meta_psom %>% mutate(sample_id = paste0("Ps_", sample_id))
+m2 <- meta_q1335 %>% mutate(sample_id = paste0("Q_13356_", sample_id))
+m3 <- meta_q1580 %>% mutate(sample_id = paste0("Q_15806_", sample_id))
+
+meta_bridge <- rbind(m1,  m2, m3)
+
+# Fix the PSA to numeric
+meta_bridge <- meta_bridge %>% 
+  mutate(psa = gsub("<", "", psa),
+         psa = as.numeric(psa),
+         ldh = as.numeric(ldh),
+         alk_ph = as.numeric(alk_ph))
+
+# Add cohort info 
+tmp_npx <- npx_all_sub %>% 
+  mutate(#SampleID = gsub("data1", "", SampleID),
+         SampleID = gsub("data1", "", SampleID),
+         SampleID = gsub("data2", "", SampleID)) %>% 
+  rename(sample_id = SampleID) %>% 
+  select(sample_id, cohort) %>% distinct()
+
+meta_bridge2 <- meta_bridge %>% left_join(tmp_npx) %>% 
+  filter(cohort == "C_D")
+
+# Select samples that passed the QC
+meta_bridge2 <- meta_bridge2 %>% 
+  filter(sample_id %in% unique(tmp_npx$sample_id))
+```
+
+Since we have serial patients, these patients have the same OS. So it would be incorrect to use repeated OS measurement for prognosis. An idea that for each protein, take the patient that has the highest expression of that protein (then discard the remaining serial samples). Next we can run the cox regression. This will means that duplicated proteins are not included. 
+
+```{r, eval=FALSE}
+# Select the highest expressing protein per- patient
+tmp_npx <- npx_all_sub %>% 
+  # Rename the samples
+  mutate(SampleID = gsub("data1", "", SampleID,
+                         "data2", "", SampleID))
+results <- analyze_proteins_highest(cd_prot_sub, npx_in=tmp_npx, meta_in=meta_bridge2)
+results <- left_join(results, df_id_pro)
+res_bridge_olink <- results
+```
+
+### Clean up
+
+Format and save the results. We use a less stringent cut-off
+
+```{r, eval=FALSE}
+res_bridge_olink <- res_bridge_olink %>% 
+  mutate(Group = "Bridge_Olink") %>% 
+  mutate(
+    Lower_Bound = round(Lower_Bound, 2),
+    Upper_Bound = round(Upper_Bound, 2),
+    bin_Lower_Bound = round(bin_Lower_Bound, 2),
+    bin_Upper_Bound = round(bin_Upper_Bound, 2),
+    
+    HR = round(HR, 2),
+    bin_HR = round(HR, 2),
+    
+    Sig_bin = case_when(
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound >=1 ~ "Sig",
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound <=1 & bin_Upper_Bound <=1 ~ "Sig",
+      bin_P_Value <= cox_p_val & HR >= 1 ~ "Sig"),
+      
+    Sig = case_when(
+      P_Value <= cox_p_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non") )
+
+write.csv(res_bridge_olink, file.path(wd$outCurr, "HR_values_mCRPC_specific_multivariate_olink.csv"))
+```
+
+
+
+
+
+## Top HR
+
+Lets make a plot of the proteins for the paper.
+
+Lets select the top 20 HRs.
+
+```{r}
+top_x <- 20
+df <- res_all2 %>%
+  arrange(desc(HR)) %>% 
+  # Select top x
+  slice_max(order_by = HR, n=20) %>% 
+  mutate(
+    row_id = as.numeric(Assay),
+    Assay = factor(Assay, levels=rev(Assay)),
+    HR_CI = sprintf("%.2f [%.2f, %.2f]", HR, Lower_Bound, Upper_Bound),
+    P_Text = ifelse(P_Value < 0.001, formatC(P_Value, format = "e", digits = 2), sprintf("%.3f", P_Value)),
+    P_Color = ifelse(P_Value < 0.05, "red", "black")
+  )
+
+# === Forest Plot ===
+p1 <- ggplot(df, aes(x = HR, y = Assay)) +
+  geom_errorbarh(aes(xmin = Lower_Bound, xmax = Upper_Bound), height = 0.3, color = "grey50") +
+  geom_point(color = "black", size = 3, alpha=1) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  #scale_x_log10(breaks = c(1, 2, 3, 5), limits = c(1, 6)) +
+  theme_minimal(base_size = 14) +
+  scale_x_continuous(limits=c(0,max(df$Upper_Bound))) +
+  labs(x = "Hazard Ratio", y = NULL) +
+  theme(
+    axis.text.y = element_text(face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+
+# === Table with HR_CI and P-value ===
+p2 <- ggplot(df, aes(y = Assay)) +
+  geom_text(aes(x = 1, label = HR_CI), hjust = 0, size = 4) +
+  #geom_text(aes(x = 2, label = P_Text, color = P_Color), hjust = 0, size = 4, show.legend = FALSE) +
+  geom_text(aes(x = 2, label = P_Text), hjust = 0, size = 4, show.legend = FALSE) +
+  scale_color_identity() +
+  scale_x_continuous(limits = c(0.95, 2.9), breaks = NULL) +
+  theme_void(base_size = 14) +
+  theme(
+    axis.text.y = element_blank(),
+    plot.margin = margin(5.5, 20, 5.5, 5.5)
+  )
+
+# === Combine ===
+final_plot <- p1 + p2 + plot_layout(widths = c(2, 1))
+final_plot
+ggsave(filename=file.path(wd$outCurr, "Top_x_HRs.pdf"), device="pdf", width=11, height=8)
+
+df_topx <- df
+```
+Try to add alternating grey rows
+
+> TO DO
+
+```{r}
+p1 + annotate("rect", fill = "grey50", alpha = 0.5, 
+                  xmin = 0, xmax = max(df$Upper_Bound),
+                  ymin =1, ymax = 2) 
+```
+
+## KM for individual plots
+
+```{r}
+meta_in <- meta_bridge_pre # Ensure this is only C_D and pre-treatment
+exp_in <- exprMatrix_corrected_sub # Batch corrected NPX data
+top_in <- df_topx %>% select(OlinkID, Coefficient)
+
+# Reshape the exp matrix to long format, then retain only C_D samples
+exp_long <- exp_in %>% as.data.frame() %>% 
+  rownames_to_column("OlinkID") %>%
+  pivot_longer(cols = -OlinkID, names_to = "SampleID", values_to = "NPX") %>% 
+  filter(SampleID %in% meta_in$sample_id) # Filter to C_D samples
+
+# Get 1 protein
+dat1_tmp <- exp_long %>%  
+  # Filter to genes of interest
+  filter(OlinkID %in% top_in$OlinkID[1]) %>% 
+  # Add coefficient 
+  left_join(top_in) %>% 
+  # Bin score to high and low
+  mutate(NPX_bin = case_when(NPX > median(NPX) ~ "high",
+                             NPX <= median(NPX) ~ "low"),
+         NPX_bin = factor(NPX_bin, levels=c("low", "high"))) %>% 
+    # Add outcomes
+  left_join(meta_in, by = c("SampleID" = "sample_id")) 
+
+
+# Fit survival data using the Kaplan-Meier method
+surv_object <- Surv(time = dat1_tmp$OS, event = dat1_tmp$death) 
+# Fit Kaplan-Meier curve
+fit1 <- survfit(surv_object ~ NPX_bin, data = dat1_tmp)
+p_OS <- ggsurvplot(fit1, data = dat1_tmp, pval = TRUE, risk.table=TRUE,
+                    conf.int = TRUE,
+                    palette = c("#7F7F7F", "#e41a1c"))
+p_OS
+```
+
+
+
+# Obj 2: Risk score
+
+We identified the top proteins with high HR. Lets take the top x and generate a composite risk score
+
+Generate a risk score and run a Kaplan-Meier on high and low.
+
+Lets calculate the risk score. We need the following info ;
+
+- Coeeficient
+- OS outcome
+- Protein expression value
+
+Run risk score calculation for one patient
+
+```{r}
+# We have the OS outomce here (of only the pre treated patients) - meta_bridge_pre
+# The top proteins are from here - df_topx (based on Olink ID)
+# Expression matrix -  exprMatrix_corrected_sub (rows x proteins) - All samples not just C_D
+
+meta_in <- meta_bridge_pre # Ensure this is only C_D and pre-treatment
+exp_in <- exprMatrix_corrected_sub # Batch corrected NPX data
+top_in <- df_topx %>% select(OlinkID, Coefficient)
+
+# Reshape the exp matrix to long format, then retain only C_D samples
+exp_long <- exp_in %>% as.data.frame() %>% 
+  rownames_to_column("OlinkID") %>%
+  pivot_longer(cols = -OlinkID, names_to = "SampleID", values_to = "NPX") %>% 
+  filter(SampleID %in% meta_in$sample_id)
+
+# Cohort C_D patients
+pat_cd <- meta_in %>% filter(cohort == "C_D") %>% 
+  select(sample_id, death, OS) %>% 
+  rename(SampleID = sample_id) %>% 
+  mutate(SampleID = as.character(SampleID)) 
+uniq_pat <- unique(pat_cd$SampleID)
+# Select one paitent
+dat1_tmp <- exp_long %>% filter(SampleID %in% uniq_pat[2]) %>% 
+  # Filter to genes of interest
+  filter(OlinkID %in% top_in$OlinkID) %>% 
+  # Add coefficient 
+  left_join(top_in) %>% 
+  # Calculate risk score
+  mutate(RS = Coefficient * NPX,
+         Sum_rs = sum(RS)) %>% 
+  # Sum the risk score
+  select(SampleID, Sum_rs) %>% 
+  distinct() %>% 
+  # Add outcomes
+  left_join(pat_cd) %>% 
+  # Just to get a clean view
+  select(SampleID, Sum_rs, death, OS)  
+```
+
+Repeat for all patient
+
+```{r}
+df_pat_sum <- exp_long %>% 
+  # Filter to genes of interest
+  filter(OlinkID %in% top_in$OlinkID) %>% 
+  # Add coefficient 
+  left_join(top_in) %>% 
+  # Calculate risk score by each SampleID
+  group_by(SampleID) %>% 
+  mutate(RS = Coefficient * NPX,
+         Sum_rs = sum(RS)) %>% 
+  # Sum the risk score
+  select(SampleID, Sum_rs) %>% 
+  distinct() %>% 
+  # Add outcomes
+  left_join(pat_cd) %>% 
+  # Just to get a clean view
+  select(SampleID, Sum_rs, death, OS) %>% 
+  ungroup()
+```
+
+Now lets dichotomize the risk score
+
+```{r}
+df_pat_sum <- df_pat_sum %>% 
+  mutate(RS_binr = case_when(Sum_rs > median(Sum_rs) ~ "high",
+                             Sum_rs <= median(Sum_rs) ~ "low"),
+         RS_binr = factor(RS_binr, levels=c("low", "high")))
+
+# Fit survival data using the Kaplan-Meier method
+surv_object <- Surv(time = df_pat_sum$OS, event = df_pat_sum$death) 
+# Fit Kaplan-Meier curve
+fit1 <- survfit(surv_object ~ RS_binr, data = df_pat_sum)
+p_OS <- ggsurvplot(fit1, data = df_pat_sum, pval = TRUE, risk.table=TRUE)
+p_OS <- ggsurvplot(fit1, data = df_pat_sum, pval = TRUE, risk.table=TRUE,
+                    conf.int = TRUE,
+                    palette = c("#7F7F7F", "#e41a1c"))
+p_OS
+pdf(file.path(wd$outCurr, "RS_OS.pdf"), width = 12, height = 8)
+p_OS
+dev.off()
+```
+
+This is a side thing, where we change the number of top proteins and also change if we want to use pre- and post- C_D cohort, or we want to use the discovery or bridged dataset. 
+
+```{r,eval=FALSE}
+top_x <- 20
+df_topx <- res_all2 %>%
+  filter(Group == "Bridge") %>% 
+  arrange(desc(HR)) %>% 
+  # Select top x
+  slice_max(order_by = HR, n=top_x) %>% 
+  mutate(
+    row_id = as.numeric(Assay),
+    Assay = factor(Assay, levels=rev(Assay)),
+    HR_CI = sprintf("%.2f [%.2f, %.2f]", HR, Lower_Bound, Upper_Bound),
+    P_Text = ifelse(P_Value < 0.001, formatC(P_Value, format = "e", digits = 2), sprintf("%.3f", P_Value)),
+    P_Color = ifelse(P_Value < 0.05, "red", "black")
+  )
+
+# ---  Using bridged data ---- #
+meta_in <- meta_bridge2 # C_D with pre- and post
+#meta_in <- meta_bridge_pre # Ensure this is only C_D and pre-treatment
+exp_in <- exprMatrix_corrected_sub # Batch corrected NPX data
+top_in <- df_topx %>% select(OlinkID, Coefficient)
+
+# Getting the patient otucome
+pat_cd <- meta_in %>% filter(cohort == "C_D") %>% 
+  select(sample_id, death, OS) %>% 
+  rename(SampleID = sample_id) %>% 
+  mutate(SampleID = as.character(SampleID)) 
+
+# Reshape the exp matrix to long format, then retain only C_D samples
+exp_long <- exp_in %>% as.data.frame() %>% 
+  rownames_to_column("OlinkID") %>%
+  pivot_longer(cols = -OlinkID, names_to = "SampleID", values_to = "NPX") %>% 
+  filter(SampleID %in% meta_in$sample_id)
+
+
+# ---  Using discovery data alone ---- #
+# Gene expression data (X)
+mat_all <- dat1_final %>%
+  dplyr::select(SampleID, OlinkID, NPX) %>%
+  # Remove contraol samples
+  dplyr::filter(!str_detect(SampleID, 'CONTROL_SAMPLE')) %>% 
+  # Convert to wide
+  tidyr::pivot_wider(names_from = SampleID, values_from = NPX) %>% 
+  as.data.frame() 
+rownames(mat_all) <- mat_all$OlinkID
+mat_all <- mat_all[,-1]
+
+meta_in <- meta_psom_f %>% 
+  #filter(cohort == "C_D" & txt_stat == "Pre") %>% 
+  filter(cohort == "C_D") %>% 
+  select(-sample_id) %>% 
+  dplyr::rename(sample_id = sample_id_psom) # Ensure this is only C_D and pre-treatment in the discovery cohort
+exp_in <- mat_all # Discovery NPX data
+
+# Reshape the exp matrix to long format, then retain only C_D samples
+exp_long <- exp_in %>% as.data.frame() %>% 
+  rownames_to_column("OlinkID") %>%
+  pivot_longer(cols = -OlinkID, names_to = "SampleID", values_to = "NPX") %>% 
+  filter(SampleID %in% meta_in$sample_id)
+
+# Getting the patient otucome
+pat_cd <- meta_in %>% filter(cohort == "C_D") %>% 
+  select(sample_id, death, OS) %>% 
+  rename(SampleID = sample_id) %>% 
+  mutate(SampleID = as.character(SampleID)) 
+
+
+# --------------- #Run analysis --------------- #
+
+df_pat_sum <- exp_long %>% 
+  # Filter to genes of interest
+  filter(OlinkID %in% top_in$OlinkID) %>% 
+  # Add coefficient 
+  left_join(top_in) %>% 
+  # Calculate risk score by each SampleID
+  group_by(SampleID) %>% 
+  mutate(RS = Coefficient * NPX,
+         Sum_rs = sum(RS)) %>% 
+  # Sum the risk score
+  select(SampleID, Sum_rs) %>% 
+  distinct() %>% 
+  # Add outcomes
+  left_join(pat_cd) %>% 
+  # Just to get a clean view
+  select(SampleID, Sum_rs, death, OS) %>% 
+  ungroup()
+
+
+df_pat_sum <- df_pat_sum %>% 
+  mutate(RS_binr = case_when(Sum_rs > median(Sum_rs) ~ "high",
+                             Sum_rs <= median(Sum_rs) ~ "low"),
+         RS_binr = factor(RS_binr, levels=c("low", "high"))) 
+
+meta_in_tmp <- meta_in %>% select(sample_id, txt_stat) %>% dplyr::rename(SampleID = sample_id)
+df_pat_sum2 <- df_pat_sum %>% left_join(meta_in_tmp)
+
+# Fit survival data using the Kaplan-Meier method
+surv_object <- Surv(time = df_pat_sum$OS, event = df_pat_sum$death) 
+# Fit Kaplan-Meier curve
+fit1 <- survfit(surv_object ~ RS_binr, data = df_pat_sum)
+p_OS <- ggsurvplot(fit1, data = df_pat_sum, pval = TRUE, risk.table=TRUE,
+                   conf.int = TRUE,
+                   palette = c("#7F7F7F", "#e41a1c"))
+p_OS
+```
+
+# Obj 3: Compare risk score
+
+## Univariate
+
+We want to compare the risk score with known clinical factors
+
+```{r}
+# Add the risk score info
+tmp_df <- df_pat_sum %>% select(SampleID, Sum_rs, RS_binr)
+meta_in2 <- meta_in %>% left_join(tmp_df, by=c("sample_id" = "SampleID"))
+model_psa <- coxph(Surv(OS, death) ~ psa , data = meta_in2)
+model_ldh <- coxph(Surv(OS, death) ~ ldh, data = meta_in2)
+model_alk <- coxph(Surv(OS, death) ~ alk_ph, data = meta_in2)
+```
+
+Extract results of all
+
+```{r}
+clin_var <- c("psa", "ldh", "alk_ph", "Sum_rs", "RS_binr")
+results <- cox_extract(clin_var, meta_in2)
+
+final_results <- do.call(rbind, results) %>% 
+  mutate(Group = "Bridge")
+
+final_uni <- final_results
+```
+
+## Multi-variate
+
+Now perform multivariate 
+
+```{r}
+surv_object <- Surv(time = meta_in2$OS, event = meta_in2$death) 
+fit.coxph3 <- coxph(surv_object ~ psa + ldh + alk_ph + RS_binr,
+                   data = meta_in2)
+
+
+# Extract results for multi-variate Cox model
+coef_summary <- summary(fit.coxph3)$coefficients
+results_multi <- data.frame(
+  Coefficient = coef_summary[, 1],
+  Lower_Bound = summary(fit.coxph3)$conf.int[, 3],
+  Upper_Bound =summary(fit.coxph3)$conf.int[, 4],
+  P_Value = coef_summary[, 5],
+  HR =coef_summary[, 2]
+) %>% 
+  tibble::rownames_to_column(var = "Features")
+```
+
+
+Plot this
+
+```{r}
+# === Forest Plot ===
+p1 <- ggplot(results_multi, aes(x = HR, y = Features)) +
+  geom_errorbarh(aes(xmin = Lower_Bound, xmax = Upper_Bound), height = 0.3, color = "grey50") +
+  geom_point(color = "black", size = 3, alpha=1) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  #scale_x_log10(breaks = c(1, 2, 3, 5), limits = c(1, 6)) +
+  theme_minimal(base_size = 14) +
+  scale_x_continuous(limits=c(0,max(df$Upper_Bound))) +
+  labs(x = "Hazard Ratio", y = NULL) +
+  theme(
+    axis.text.y = element_text(face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+# === Table with HR_CI and P-value ===
+p2 <- ggplot(df, aes(y = Features)) +
+  geom_text(aes(x = 1, label = HR_CI), hjust = 0, size = 4) +
+  #geom_text(aes(x = 2, label = P_Text, color = P_Color), hjust = 0, size = 4, show.legend = FALSE) +
+  geom_text(aes(x = 2, label = P_Text), hjust = 0, size = 4, show.legend = FALSE) +
+  scale_color_identity() +
+  scale_x_continuous(limits = c(0.95, 2.9), breaks = NULL) +
+  theme_void(base_size = 14) +
+  theme(
+    axis.text.y = element_blank(),
+    plot.margin = margin(5.5, 20, 5.5, 5.5)
+  )
+
+# === Combine ===
+final_plot <- p1 + p2 + plot_layout(widths = c(2, 1))
+final_plot
+ggsave(filename=file.path(wd$outCurr, "RS_HRs.pdf"), device="pdf", width=11, height=8)
+
+
+```
+

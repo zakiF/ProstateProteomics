@@ -1,0 +1,1078 @@
+---
+title: "DE analysis"
+date: "2025-02-28"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+    number_sections: true
+    theme: lumen
+---
+
+# Background
+
+We analyzed the discovery dataset and identified proteins overexpressed in mCRPC. We also ran the prognostic analysis on the discovery dataset. Here we will repeat the DE analysis and prognostic analysis on the validation set. 
+
+As the validation set consists of two batch of proteomics experiment, we will need to merge this 2 dataset. So the initial step before doing DE analysis is to generate a batch-corrected dataset.
+
+# Objectives
+
+1. Load metadata
+2. Bridging analysis
+3. Perform DE with limma
+4. Perform AUC
+5. Perform mutli variate analysis
+
+# Conclusion
+
+We bridged the two olink data using the default olink bridging analysis. Then we removed certain samples based on QC metrics. 
+
+Identified DE proteins are different between discovery and validation dataset.
+
+We overlapped the DE from the discovery cohort with the validation cohort. It did not overlap. We used the AUC approach to validate the DE identified, it also did not show predictive power. We will not independently analyze the validation data, rather we will perfom bridging and 
+
+> We will not be performing this analysis
+
+# Pre-processing 
+
+## Loading packages
+
+```{r, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(readxl)   
+library(readr)
+library(stringr)
+library(limma)
+
+library(tidyverse)
+library(ggplot2)
+library(ggrepel)
+library(gghighlight)
+library(ggbeeswarm)
+
+library(OlinkAnalyze) 
+library(paletteer)
+```
+
+
+## Directories
+
+```{r}
+wd <- list()
+wd$main <- here()
+wd$data <- file.path(wd$main, "data")
+wd$manishData <- file.path(wd$data, "raw/data_fromManish")
+wd$d2024 <- file.path(wd$data, "updated_2024")
+wd$d2024_npx <- file.path(wd$d2024, "NPX_data")
+wd$output <- file.path(wd$main, "output")
+wd$script <- file.path(wd$main, "scripts")
+
+wd$outData <- file.path(wd$output, "data")
+wd$outCurr <- file.path(wd$output, "05_Validation")
+```
+
+
+Create directories
+
+```{r}
+if (!file.exists(wd$outCurr)) {
+  dir.create(wd$outCurr)
+} else {
+  print("Directory already exists")
+}
+```
+
+Load functions
+
+```{r}
+source(file.path(wd$script, "functions.R"))
+```
+
+## Load data
+
+Load the processed file
+
+```{r}
+load(file.path(wd$outData, "01_Metadata.Rdata"))
+load(file.path(wd$outData, "02_data.Rdata"))
+```
+
+# Obj 1: Load metadata
+
+Lets load the clinical data for all projects. Of note, we need to load the Psomagen data, this is because we want to identify Psomagen samples that needs to be discarded. 
+
+### Psomagen
+
+```{r}
+# Read in the Psomagen metadata
+meta_psom <- read_excel(meta_file, sheet = 2) %>% 
+  select(sample_id, 'MRN (UUHSC)', 'Death date', 'Deceased?', 'Sample1_date', 
+         'sample1_psa','sample1_ldh', 'sample1_alk_phos') %>% 
+  rename(mrn = 'MRN (UUHSC)',
+         death_date = 'Death date',
+         death = 'Deceased?',
+         collection_date = 'Sample1_date',
+         psa = 'sample1_psa',
+         ldh = 'sample1_ldh',
+         alk_ph = 'sample1_alk_phos')
+
+# Censor the date
+meta_psom$death_date[is.na(meta_psom$death_date)] <- censor_date
+
+# Calulate OS in months
+meta_psom <- meta_psom %>% 
+  mutate(OS = as.numeric(difftime(death_date, collection_date, units = "days")),
+         OS = round(OS/30.417, digit=2),
+         death = case_when(death == "No" ~ 0,
+                           death == "Yes" ~ 1),
+         sample_id = as.character(sample_id))
+```
+
+
+### Q-1335
+
+We just read the mCRPC project for now (Tab 4 of the excel file)
+
+```{r}
+# Read in the Q-1335 metadata
+meta_q1335 <- read_excel(meta_file, sheet = 4) %>% 
+  select('Sample ID (validation)', 'MRN (UUHSC)', 'Death date', 'Deceased?', 'Sample 1 Date',
+         'sample1_psa', 'sample1_ldh', 'sample1_alk_phos') %>% 
+  rename(mrn = 'MRN (UUHSC)',
+         sample_id = 'Sample ID (validation)',
+         death_date = 'Death date',
+         death = 'Deceased?',
+         collection_date = 'Sample 1 Date',
+         psa = 'sample1_psa',
+         ldh = 'sample1_ldh',
+         alk_ph = 'sample1_alk_phos') %>% 
+  mutate(death = gsub("Yes", "Y", death))
+
+# Censor the date
+meta_q1335$death_date[is.na(meta_q1335$death_date)] <- censor_date
+
+# Calulate OS in months
+meta_q1335 <- meta_q1335 %>% 
+  mutate(OS = as.numeric(difftime(death_date, collection_date, units = "days")),
+         OS = round(OS/30.417, digit=2),
+         death = case_when(death == "N" ~ 0,
+                           death == "Y" ~ 1),
+         sample_id = as.character(sample_id))
+```
+
+### Q-15806
+
+```{r}
+meta_q1580 <- read_excel(meta_file, sheet = 7) %>% 
+  select('Plate_4_pt_ID', 'MRN (UUHSC)', 'Death date', 'Deceased?', 'Sample1_date',
+         'sample1_psa', 'sample1_ldh', 'sample1_alk_phos') %>% 
+  rename(mrn = 'MRN (UUHSC)',
+         sample_id = 'Plate_4_pt_ID',
+         death_date = 'Death date',
+         death = 'Deceased?',
+         collection_date = 'Sample1_date',
+         psa = 'sample1_psa',
+         ldh = 'sample1_ldh',
+         alk_ph = 'sample1_alk_phos') 
+
+# Censor the date
+meta_q1580$death_date[is.na(meta_q1580$death_date)] <- censor_date
+
+# Calulate OS in months
+meta_q1580 <- meta_q1580 %>% 
+  mutate(OS = as.numeric(difftime(death_date, collection_date, units = "days")),
+         OS = round(OS/30.417, digit=2),
+         death = case_when(death == "No" ~ 0,
+                           death == "Yes" ~ 1),
+         sample_id = as.character(sample_id))
+```
+
+## Combined metadata
+
+```{r}
+m1 <- meta_psom %>% 
+  mutate(Platform = "Psomagen") 
+  #mutate(sample_id = paste0("Ps_", sample_id))
+m2 <- meta_q1335 %>% 
+  mutate(Platform = "Q_13356") 
+  #mutate(sample_id = paste0("Q_13356_", sample_id))
+m3 <- meta_q1580 %>% 
+  mutate(Platform = "Q_15806")
+  #mutate(sample_id = paste0("Q_15806_", sample_id))
+
+meta_bridge <- rbind(m1, m2, m3)
+
+# Fix the PSA to numeric
+meta_bridge <- meta_bridge %>% 
+  mutate(psa = gsub("<", "", psa),
+         psa = as.numeric(psa),
+         ldh = as.numeric(ldh),
+         alk_ph = as.numeric(alk_ph))
+```
+# Obj 2: Perform bridging 
+
+We perform bridging analysis based on the workflow on Olink website - https://cran.r-project.org/web//packages/OlinkAnalyze/vignettes/bridging_introduction.html
+
+The bridging analysis only works with 2 dataset. 
+
+Lets do the bridging between Q-13356 + Q-15806
+
+## Q-13356
+
+Select samples where we have clinical data.
+
+```{r}
+df_meta2 <- df_meta_f %>% 
+  filter(!is.na(sample_id_Q13356)) %>% 
+  # remove serial samples
+  #filter(!HCI_cID %in% serial_sam) %>% 
+  dplyr::rename(SampleID = sample_id_Q13356) %>% 
+  select(cohort, SampleID) %>% 
+  distinct() %>% 
+  mutate(SampleID = as.character(SampleID))
+
+# This removes conttol samples as well
+dat2_NPX_anno <- dat_NPX2 %>%
+  mutate(SampleID = as.character(SampleID)) %>% 
+  dplyr::left_join(df_meta2) %>%
+  filter(!is.na(cohort))
+```
+
+## Q-15806
+
+Select samples where we have clinical data.
+
+```{r}
+df_meta3 <- df_meta_f %>% 
+  filter(!is.na(sample_id_Q15806)) %>% 
+  # remove serial samples
+  #filter(!HCI_cID %in% serial_sam) %>% 
+  dplyr::rename(SampleID = sample_id_Q15806) %>% 
+  select(cohort, SampleID) %>% 
+  distinct() %>% 
+  mutate(SampleID = as.character(SampleID))
+
+# This removes conttol samples as well
+dat3_NPX_anno <- dat_NPX3 %>%
+  mutate(SampleID = as.character(SampleID)) %>% 
+  dplyr::left_join(df_meta3) %>%
+  filter(!is.na(cohort))
+```
+
+## Bridge
+
+```{r}
+xx1 <- dat2_NPX_anno
+xx2 <- dat3_NPX_anno
+
+xx1 <- xx1 %>% 
+  mutate(SampleID = paste0("Q_13356_", SampleID))
+
+xx2 <- xx2 %>% 
+  mutate(SampleID = paste0("Q_15806_", SampleID))
+
+# Identify bridging samples
+hci_ids_br1 <- df_meta_f %>% filter(Q_13356 == "Y") %>% pull(HCI_cID)
+hci_ids_br2 <- df_meta_f %>% filter(Q_15806 == "Y") %>% pull(HCI_cID)
+int_ids <- intersect(hci_ids_br1, hci_ids_br2)
+
+
+df_ints <- df_meta_f %>% filter(HCI_cID %in% int_ids)
+
+br_1 <- df_ints %>% pull(sample_id_Q13356) %>% paste0("Q_13356_", .)
+br_2 <- df_ints %>% pull(sample_id_Q15806) %>% paste0("Q_15806_", .)
+
+
+overlap_sample_list <-list("DF1" = br_1,
+                           "DF2" = br_2)
+
+xx1.1 <- xx1 #%>% select(SampleID, OlinkID, UniProt, NPX, Panel, cohort)
+xx2.1 <- xx2 #%>% select(SampleID, OlinkID, UniProt, NPX, Panel, cohort)
+
+
+# Perform Bridging normalization
+npx_br_data <- olink_normalization(
+  df1 = xx1.1,
+  df2 = xx2.1,
+  overlapping_samples_df1 = br_1,
+  overlapping_samples_df2 = br_2,
+  df1_project_nr = "data1",
+  df2_project_nr = "data2",
+  reference_project = "data1")
+```
+
+> Bridging will remove proteins that were not of suffient quality. So total proteins is not the full 3000+ proteins
+
+## PCA
+
+Quick PCA analysis
+
+```{r}
+# After bridging analysis  
+npx_after_br <- npx_br_data %>%
+  dplyr::mutate(Type = ifelse(SampleID %in% as.character(unlist(overlap_sample_list)), 
+                              paste0(Project, "_Bridge"),
+                              paste0(Project, "_Sample"))) %>%
+  dplyr:::mutate(SampleID = paste0(Project, SampleID))
+
+### PCA plot seperated by cohort
+p_pca_bridge1 <-
+  npx_after_br %>% 
+  filter(!str_detect(SampleID, 'CS')) %>% 
+  olink_pca_plot(df = .,
+                 color_g = "cohort", byPanel = FALSE, quiet = FALSE) 
+```
+## Remove repeated samples
+
+As bridging might contain the same sample in the discovery cohort, we exclude any discovery samples. 
+
+```{r}
+# Identify samples that was profiled by Psomagen and exclude them
+# Technically this removes the 16 bridging samples as well
+df_meta_f_brdige <- df_meta_f %>% 
+  mutate(sample_id_Q13356 = paste0("data1", "Q_13356_", sample_id_Q13356),
+         sample_id_Q15806 = paste0("data2", "Q_15806_", sample_id_Q15806))
+psom_sample <- df_meta_f_brdige %>% filter(Psomagen == "Y") 
+s1 <- psom_sample %>% pull(sample_id_Q13356) %>% unique()
+s2 <- psom_sample %>% pull(sample_id_Q15806) %>% unique()
+s_all <- c(s1, s2)
+s_all <- s_all[!grepl("_NA", s_all)]
+npx_after_br_nodupe <- npx_after_br %>% 
+  filter(!SampleID %in% s_all)
+#npx_tmp <- npx_after_br_nodupe
+```
+
+## Sample outlier
+
+We check if any samples were considered outlier in all of the 8 panels
+
+```{r}
+outliers_qc_labeled <- npx_after_br_nodupe |> 
+  olink_qc_plot(outlierLines = TRUE, label_outliers = TRUE) 
+
+dat_outlier <- outliers_qc_labeled$data
+
+sam_outlier <- dat_outlier %>% group_by(SampleID, Outlier) %>% 
+  count() %>% 
+  filter(Outlier == 1) %>% 
+  arrange(desc(n))
+head(sam_outlier)
+```
+
+We exclude two sampels that were deemed outlier in all 8 panel
+
+```{r}
+all_fail <- sam_outlier %>% filter(n==8)
+npx_after_br_nodupe <- npx_after_br_nodupe %>% 
+  filter(!SampleID %in% all_fail$SampleID)
+```
+
+Re-plot PCA
+
+```{r}
+p_pca_bridge2 <-
+  npx_after_br_nodupe %>% 
+  filter(!str_detect(SampleID, 'CS')) %>% 
+  olink_pca_plot(df = .,
+                 color_g = "cohort", byPanel = FALSE, quiet = FALSE) 
+```
+We see 4 local samples clustered differently. Lets explore further.
+
+Lets gather all cohort A samples, then check the NPX distribution
+
+```{r}
+npx_after_br_A <- npx_after_br_nodupe %>% filter(cohort == "A")
+
+# Get the PCA coordinate to identify these sanmples
+pca_cor_bridge <- p_pca_bridge2[[1]]$data %>%
+  rename(PC1 = PCX,
+         PC2 = PCY) %>% 
+  mutate(outlier = case_when(
+    colors == "A" & PC1 <= 0 ~ "Remove",
+    TRUE ~ "Keep"
+  ))
+rmv_sam <- pca_cor_bridge %>% filter(outlier == "Remove") %>% pull(SampleID)
+rmv_sam
+
+# Label 
+npx_after_br_A <- npx_after_br_A %>% mutate(outlier = case_when(SampleID %in% rmv_sam ~ "Remove",
+                                                                TRUE ~ "Keep"))
+
+# Check NPX distibution
+npx_after_br_A |> 
+  olink_dist_plot(color_g = "outlier")
+```
+
+These 4 samples have consistently higher NPX compared to other samples. So we remove them. 
+
+```{r}
+npx_after_br_nodupe <- npx_after_br_nodupe %>% 
+  filter(!SampleID %in% rmv_sam)
+```
+
+Re-plot the PCA
+
+```{r}
+p_pca_bridge3 <-
+  npx_after_br_nodupe %>% 
+  filter(!str_detect(SampleID, 'CS')) %>% 
+  olink_pca_plot(df = .,
+                 color_g = "cohort", byPanel = FALSE, quiet = FALSE) 
+```
+Lets print out the number of samples / patients
+
+```{r}
+print(c(
+  "Number of samples is ", 
+  length(unique(npx_after_br_nodupe$SampleID)) ))
+
+# Get number of patients
+df_pat <- npx_after_br_nodupe %>% select(Project, SampleID) %>% distinct() %>% 
+  mutate(SampleID = gsub("data1", "", SampleID),
+         SampleID = gsub("Q_15806_", "", SampleID),
+         SampleID = gsub("data2", "", SampleID),
+         SampleID = gsub("Q_13356_", "", SampleID))
+in_q1335 <- df_pat %>% filter(Project == "data1")
+in_q15806 <- df_pat %>% filter(Project == "data2")
+
+pat_1335 <- df_meta_f %>% filter(sample_id_Q13356 %in% in_q1335$SampleID)
+pat_1580 <- df_meta_f %>% filter(sample_id_Q15806 %in% in_q15806$SampleID)
+
+# Get the unique patients by thier mrn
+uniq_pat <- unique(c(pat_1335$mrn, pat_1580$mrn))
+
+print(c(
+  "Number of unique patient is ", 
+  length(uniq_pat)))
+```
+
+Get the cohort break down
+
+```{r}
+df_meta_val <- rbind(pat_1335, pat_1580)
+```
+
+## Assay outlier
+
+We want to check if any proteins needs to be excluded. Olink provides a collumn called "QC_Warning" that we can use to determine. 
+
+```{r}
+warn_assay <- npx_after_br_nodupe %>% filter(Assay_Warning == "WARN") %>% select(Assay, OlinkID) %>% distinct()
+```
+
+Or we can determine what number of samples are expressing the protein above the limit of detection
+
+```{r}
+numSample1 <- length(unique(npx_after_br_nodupe$SampleID))
+  
+dat2_missing <- npx_after_br_nodupe %>% 
+  group_by(OlinkID) %>% 
+  summarise(PercMissing = (sum(NPX < LOD) / numSample1) * 100) %>% 
+  mutate(Group = "Validation")
+```
+
+Lets retain all the proteins with less than 80% missing-ness
+
+```{r}
+assay_keep_2 <- dat2_missing %>% 
+  filter(PercMissing <= 80)  %>% 
+  filter(!OlinkID %in% warn_assay$OlinkID)
+length(unique(assay_keep_2$OlinkID))
+```
+
+Lets subset the NPX data frame to these proteins
+
+```{r}
+dat2_final <- npx_after_br_nodupe %>% 
+  filter(OlinkID %in% assay_keep_2$OlinkID)
+```
+
+## Overlap
+
+Check overlapping proteins
+
+```{r}
+un_a <- assay_keep$OlinkID
+un_b <- assay_keep_2$OlinkID
+
+overlap <- calculate.overlap(
+x <- list("Discovery"=un_a, 
+          "Validation"=un_b))
+
+pdf(file=file.path(wd$outCurr, "Protein_overlap.pdf"), width = 5, height = 5)
+ggvenn(
+  x, 
+  fill_color = pal.cohort.n2,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+dev.off()
+
+ggvenn(
+  x, 
+  fill_color = pal.cohort.n2,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+```
+
+Save this list of proteins
+
+```{r}
+df_pro_ov <- df_id_pro %>% 
+  left_join(dat1_missing) %>% 
+  select(-Group) %>% 
+  rename(PercMissing_Discovery = PercMissing) %>% 
+  left_join(dat2_missing) %>% 
+  select(-Group) %>% 
+  rename(PercMissing_Validation = PercMissing) %>% 
+  mutate(
+    Retained_Discovery =
+      case_when(OlinkID %in% assay_keep$OlinkID ~ "Y", TRUE ~ "N"),
+    Retained_Validation = 
+      case_when(OlinkID %in% assay_keep_2$OlinkID ~ "Y", TRUE ~ "N"),
+    Overlap = case_when(Retained_Discovery == "Y" & Retained_Validation == "Y" ~ "Y", TRUE ~ "N"))
+
+write.csv(df_pro_ov, file.path(wd$outCurr, "Protein_overlap.csv"))
+```
+
+> We filtered the samples and proteins. Used bridged analysis workflow to cobine the two batch
+
+# Obj 3: DE with limma
+
+We repeat the DE analysis we did previously. This time with limma
+
+If we want to limit to baseline sample do this
+
+```{r}
+# df_meta3_t1 <- df_meta_f %>% 
+#   filter(!is.na(sample_id_Q15806)) %>% 
+#   # remove serial samples
+#   #filter(!HCI_cID %in% serial_sam) %>% 
+#   dplyr::rename(SampleID = sample_id_Q15806) %>% 
+#   select(cohort, SampleID, txt_stat) %>% 
+#   distinct() %>% 
+#   mutate(SampleID = as.character(SampleID))
+# 
+# tmp1 <- df_meta3_t1 %>% filter(cohort == "A")
+# tmp2 <- df_meta3_t1 %>% filter(cohort %in% c("B", "C_D") & txt_stat == "Pre")
+# 
+# df_meta3_tmp <- rbind(tmp1, tmp2) %>% 
+#   mutate(SampleID = paste0("data2Q_15806_", SampleID))
+# 
+# 
+# df_meta2_t1 <- df_meta_f %>% 
+#   filter(!is.na(sample_id_Q13356)) %>% 
+#   # remove serial samples
+#   #filter(!HCI_cID %in% serial_sam) %>% 
+#   dplyr::rename(SampleID = sample_id_Q13356) %>% 
+#   select(cohort, SampleID, txt_stat) %>% 
+#   distinct() %>% 
+#   mutate(SampleID = as.character(SampleID))
+# 
+# tmp1 <- df_meta2_t1 %>% filter(cohort == "A")
+# tmp2 <- df_meta2_t1 %>% filter(cohort %in% c("B", "C_D") & txt_stat == "Pre")
+# 
+# df_meta2_tmp <- rbind(tmp1, tmp2) %>% 
+#   mutate(SampleID = paste0("data1Q_13356_", SampleID))
+
+# # Limit to baseline (pre-treatment)
+# #full_dat2 <- dat2_final
+# 
+# dat2_final <- full_dat2 %>% filter(SampleID %in% c(df_meta2_tmp$SampleID, df_meta3_tmp$SampleID))
+```
+
+Using pre- and post- treatment
+
+```{r}
+# -----------------------
+# 1) Generate to gene x sample matrix
+# -----------------------
+mat_all <- dat2_final %>%
+  dplyr::select(SampleID, OlinkID, NPX) %>%
+  # Remove contraol samples
+  dplyr::filter(!str_detect(SampleID, 'CONTROL_SAMPLE')) %>% 
+  # Convert to wide
+  tidyr::pivot_wider(names_from = SampleID, values_from = NPX) %>% 
+  as.data.frame() 
+rownames(mat_all) <- mat_all$OlinkID
+mat_all <- mat_all[,-1]
+
+# --------------------------------
+# 2) Create design and contrasts
+# --------------------------------
+# Groups for each of the columns
+df_group <- dat2_final %>% select(SampleID, cohort) %>% distinct()
+identical(colnames(mat_all), df_group$SampleID)
+
+group <- df_group$cohort
+
+# Model matrix with no intercept (i.e., "0 + group" form)
+design <- model.matrix(~ 0 + group)
+colnames(design) <- c("A", "B", "C_D")
+
+# Create two contrasts: A_vs_CD and B_vs_CD
+# +ve fold change will be the one on the left
+contrast.matrix <- makeContrasts(
+  A_vs_CD = C_D - A,
+  B_vs_CD = C_D - B,
+  A_vs_B = B - A,
+  levels   = design
+)
+
+# ------------------------------------------------------------
+# 3) Fit linear model, apply contrasts, and get unfiltered topTable
+# ------------------------------------------------------------
+fit  <- lmFit(mat_all, design)
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+
+# Collect all results (no filtering) in a single data frame:
+results_df <- data.frame()
+
+for(i in seq_len(ncol(contrast.matrix))) {
+  # Extract all genes (number=Inf), no sorting by p-value
+  tt <- topTable(fit2, coef = i, number = Inf, sort.by = "none")
+  
+  # Add columns for clarity
+  tt$Gene     <- rownames(tt)
+  tt$Contrast <- colnames(contrast.matrix)[i]
+  
+  # Combine
+  results_df <- rbind(results_df, tt)
+}
+
+# Print the final results data frame (unfiltered)
+limma_df_val <- results_df %>% 
+  rename(OlinkID = Gene) %>% 
+  left_join(df_id_pro) %>% 
+  rename(Adjusted_pval = adj.P.Val,
+         log2FC = logFC)
+
+```
+
+Check overlap between cohorts
+
+```{r}
+# Protein specific to A
+df_cat_a <- limma_df_val %>%
+  #filter(Cat %in% c("c_b_vs_a", "c_cd_vs_a") & Adjusted_pval <= cut_fdr)
+  filter(Contrast %in% c("A_vs_B", "A_vs_CD") & Adjusted_pval <= cut_fdr & log2FC <= -cut_logFC)
+
+df_cat_b_1 <- limma_df_val %>%
+  filter(Contrast %in% c("B_vs_CD") & Adjusted_pval <= cut_fdr & log2FC <= -cut_logFC)
+df_cat_b_2 <- limma_df_val %>%
+  filter(Contrast %in% c("A_vs_B") & Adjusted_pval <= cut_fdr & log2FC >= cut_logFC)
+
+df_cat_b <- rbind(df_cat_b_1, df_cat_b_2)
+
+df_cat_cd <- limma_df_val %>%
+  #filter(Cat %in% c("c_a_vs_cd", "c_b_vs_cd") & Adjusted_pval <= cut_fdr)
+  filter(Contrast %in% c("A_vs_CD", "B_vs_CD") & Adjusted_pval <= cut_fdr & log2FC >= cut_logFC)
+
+
+un_a <- unique(df_cat_a$OlinkID)
+un_b <- unique(df_cat_b$OlinkID)
+un_cd <- unique(df_cat_cd$OlinkID)
+
+
+overlap <- calculate.overlap(
+x <- list("Group A"=un_a, 
+          "Group B"=un_b,
+          "Group CD"=un_cd))
+
+ggvenn(
+  x, 
+  fill_color = pal.cohort.n2,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+```
+
+
+
+
+Get the overlap with the DE in the discovery cohort, specifically the ones considered significant in the multi-variate cox regression.
+
+```{r}
+res_dis_mult_sub <- res_dis_mult %>% filter(Sig_bin == "Sig")
+
+df_cat_cd <- limma_df_val %>%
+  filter(Contrast %in% c("A_vs_CD", "B_vs_CD"))
+
+limma_df_val_sub <- df_cat_cd %>% 
+  filter(OlinkID %in% res_dis_mult_sub$OlinkID)
+
+write.csv(limma_df_val, file.path(wd$outCurr, "DE_genes_limma_val.csv"))
+write.csv(limma_df_val_sub, file.path(wd$outCurr, "DE_genes_limma_val_sub.csv"))
+```
+
+> TO DO: Use the same cut-off to see how many are significant
+> We saw only 1 overlap based on the same cut-off
+> Or just see which are in the same direction (ie - high in mCRPC)
+
+Lets overlap the DE using same cut-off between discovery and validation dataset
+
+```{r}
+# Genes in the discovery cohort
+dis_df <- limma_df %>% 
+  filter(Contrast %in% c("A_vs_CD", "B_vs_CD")) %>% 
+  filter (Adjusted_pval  <= cut_fdr & log2FC >= cut_logFC) 
+
+val_df <- limma_df_val %>% 
+  filter(Contrast %in% c("A_vs_CD", "B_vs_CD")) %>% 
+  filter (Adjusted_pval  <= cut_fdr & log2FC >= cut_logFC) 
+
+un_a <- unique(dis_df$OlinkID)
+un_b <- unique(val_df$OlinkID)
+
+
+overlap <- calculate.overlap(
+x <- list("Discovery"=un_a, 
+          "Validation"=un_b))
+
+ggvenn(
+  x, 
+  fill_color = pal.cond3,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+
+pdf(file=file.path(wd$outCurr, "Limma_AllSig_protein_overlap.pdf"), width = 5, height = 5)
+ggvenn(
+  x, 
+  fill_color = pal.cond3,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+dev.off()
+
+
+```
+
+# Obj 4: Perform AUC
+
+We can simply use the genes identified as DE in our previous analysis and see if it predictive in this new batch. 
+
+First we compare if all the 115 were detected in the validation cohort as well.
+
+```{r}
+un_a <- unique(res_dis_mult_sub$OlinkID)
+un_b <- unique(limma_df_val_sub$OlinkID)
+
+
+overlap <- calculate.overlap(
+x <- list("Discovery"=un_a, 
+          "Validation"=un_b))
+
+pdf(file=file.path(wd$outCurr, "Limma_Sig_protein_overlap.pdf"), width = 5, height = 5)
+ggvenn(
+  x, 
+  fill_color = pal.cond3,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+dev.off()
+
+ggvenn(
+  x, 
+  fill_color = pal.cond3,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+```
+These are proteins that were not detected
+
+```{r}
+# Combine all lists into a single data frame
+all_elements <- unique(c(un_a, un_b)) # All unique elements
+
+# Apply the function across all elements
+overlap_degree <- sapply(all_elements, function(x) get_overlap_degree(x, list("Dis" = un_a, "Val" = un_b)))
+
+# Create final data frame
+overlap_sig <- data.frame(
+  OlinkID = all_elements,
+  OverlapDegree = overlap_degree
+) %>% left_join(df_id_pro)
+
+overlap_sig %>% filter(OverlapDegree == "Dis")
+```
+
+For now we run the AUC on all proteins, we can subset the detected proteins later
+
+```{r}
+# Run prediction on all proteins, we can subset later
+data <- mat_all %>%  
+  tibble::rownames_to_column(var = "OlinkID") %>% 
+  filter(OlinkID %in% res_dis_mult_sub$OlinkID) %>% 
+  tibble::column_to_rownames(var = "OlinkID") %>% 
+  t() %>% as.data.frame()
+# Add cohort information
+data$Group <- group
+
+
+# Convert Group to binary (1 = C, 0 = A_B)
+data$Group <- ifelse(data$Group == "C_D", 1, 0)
+
+# Run logistic regression
+
+# Initialize results storage
+results <- data.frame(Protein = character(), P_Value = numeric(), AUC = numeric(), stringsAsFactors = FALSE)
+
+# Loop over each protein
+protein_cols <- grep("OID", colnames(data), value = TRUE)
+
+for (protein in protein_cols) {
+  # Fit logistic regression
+  model <- glm(as.formula(paste("Group ~", protein)), data = data, family = binomial)
+  
+  # Extract p-value
+  p_val <- summary(model)$coefficients[2, 4]
+  
+  # Compute AUC
+  pred_probs <- predict(model, type = "response")
+  roc_obj <- roc(data$Group, pred_probs)
+  auc_value <- auc(roc_obj)
+  
+  # Store results
+  results <- rbind(results, data.frame(Protein = protein, P_Value = p_val, AUC = auc_value))
+}
+
+# View top proteins sorted by significance
+results <- results %>% arrange(P_Value)
+df_auc_full <- results
+```
+
+Lets subset the proteins. 
+
+```{r}
+df_auc_sub <- df_auc_full %>% filter(Protein %in% res_dis_mult_sub$OlinkID) %>% 
+  rename(OlinkID = Protein,
+         AUC_PVal = P_Value) #%>% 
+  #left_join(df_id_pro)
+hist(df_auc_full$AUC, breaks = 100)
+#hist(df_auc_sub$AUC, breaks = 100)
+```
+
+## Significant AUC
+
+Lets plot those that we think are significant. We set a cut-off of **0.65** AUC to determine significant proteins
+
+```{r}
+res_dis_mult_sub2 <- res_dis_mult_sub %>% left_join(df_auc_sub)
+summary(res_dis_mult_sub2 %>% filter(AUC_PVal <0.05) %>% pull(AUC))
+write.csv(res_dis_mult_sub2, file.path(wd$outCurr, "Proteins_AUC.csv"))
+```
+
+Number of signigifant AUC
+
+```{r}
+sig_auc <- res_dis_mult_sub %>% 
+  filter(AUC_PVal <= 0.05 & AUC >= 0.65)
+dim(sig_auc)
+```
+
+Lets plot the AUCs
+
+> The AUC approach is quite good. Only that the max AUC is 0.76. So not that great
+
+# Obj 5: Multi-variate
+
+Like the discovery cohort, we perform multivariate analysis on the patients We want to see if the proteins that are significant in the discovery cohort are also significant in the validation cohort. 
+
+Its best if we limit our analysis to the 115 proteins. 
+
+```{r}
+cd_prot <- res_dis_mult_sub %>% filter(!is.na(AUC)) %>% pull(OlinkID)
+length(cd_prot)
+```
+
+For these proteins run a cox proportional analysis. 
+
+For the bridge sample, we need to combine the OS from Psomagen & Q-1335
+
+```{r}
+m2 <- meta_q1335 %>% mutate(sample_id = paste0("Q_13356_", sample_id))
+m3 <- meta_q1580 %>% mutate(sample_id = paste0("Q_15806_", sample_id))
+
+meta_bridge <- rbind(m2, m3)
+
+# Fix the PSA to numeric
+meta_bridge <- meta_bridge %>% 
+  mutate(psa = gsub("<", "", psa),
+         psa = as.numeric(psa),
+         ldh = as.numeric(ldh),
+         alk_ph = as.numeric(alk_ph))
+
+# Add cohort info 
+tmp_npx <- dat2_final %>% 
+  mutate(#SampleID = gsub("data1", "", SampleID),
+         SampleID = gsub("data1", "", SampleID),
+         SampleID = gsub("data2", "", SampleID)) %>% 
+  rename(sample_id = SampleID) %>% 
+  select(sample_id, cohort) %>% distinct()
+
+meta_bridge2 <- meta_bridge %>% left_join(tmp_npx) %>% 
+  filter(cohort == "C_D")
+
+# Select samples that passed the QC
+meta_bridge2 <- meta_bridge2 %>% 
+  filter(sample_id %in% unique(tmp_npx$SampleID))
+```
+
+Since we have serial patients, these patients have the same OS. So it would be incorrect to use repeated OS measurement for prognosis. An idea that for each protein, take the patient that has the highest expression of that protein (then discard the remaining serial samples). Next we can run the cox regression. This will means that duplicated proteins are not included. 
+
+```{r}
+# Select the highest expressing protein per- patient
+tmp_npx <- dat2_final %>% 
+  # Rename the samples
+  mutate(SampleID = gsub("data1", "", SampleID,
+                         "data2", "", SampleID))
+results <- analyze_proteins_highest(cd_prot, npx_in=tmp_npx, meta_in=meta_bridge2)
+results <- left_join(results, df_id_pro)
+res_dis_val <- results
+```
+
+## Clean up
+
+Format and save the results. We use a less stringent cut-off
+
+```{r}
+cox_p_val <- 0.1
+res_dis_val <- res_dis_val %>% 
+  mutate(Group = "Dis_multi") %>% 
+  mutate(
+    Lower_Bound = round(Lower_Bound, 2),
+    Upper_Bound = round(Upper_Bound, 2),
+    bin_Lower_Bound = round(bin_Lower_Bound, 2),
+    bin_Upper_Bound = round(bin_Upper_Bound, 2),
+    
+    HR = round(HR, 2),
+    bin_HR = round(HR, 2),
+    
+    Sig_bin = case_when(
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound >=1 ~ "Sig",
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound <=1 & bin_Upper_Bound <=1 ~ "Sig",
+      bin_P_Value <= cox_p_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non") )
+
+write.csv(res_dis_val, file.path(wd$outCurr, "HR_values_mCRPC_specific_multivariate_validation.csv"))
+```
+
+> We see the prognostic proteins are different between discovery and validation
+
+## Plot
+
+Lets generate a plot of 112 proteins showing the HR values
+
+```{r}
+# Extract relevant columns and rename
+# Discovery
+df1 <- res_dis_mult %>%
+  select(OlinkID, Assay, bin_HR, bin_P_Value, Sig_bin) %>%
+  rename(bin_HR_df1 = bin_HR, bin_P_Value_df1 = bin_P_Value, Sig_bin_df1 = Sig_bin)
+
+df2 <- res_dis_val %>%
+  select(OlinkID, Assay, bin_HR, bin_P_Value, Sig_bin) %>%
+  rename(bin_HR_df2 = bin_HR, bin_P_Value_df2 = bin_P_Value, Sig_bin_df2 = Sig_bin)
+
+# Merge data frames on OlinkID and Assay (ensuring same number of rows)
+final_df <- df1 %>%
+  inner_join(df2, by = c("OlinkID", "Assay"))
+
+# Add column to indicate "Sig_both" if Sig_bin is "Sig" in both data frames
+final_df <- final_df %>%
+  mutate(Sig_both = ifelse(Sig_bin_df1 == "Sig" & Sig_bin_df2 == "Sig", "Sig", "Non"))
+
+```
+
+
+Draw a heatmap
+
+```{r}
+# Define color palette
+paletteLength <- 100  # Ensure it matches the number of breakpoints
+mypalette1 <- rev(paletteer::paletteer_c('ggthemes::Red-Blue Diverging', paletteLength))
+
+# Define color palette (red intensity)
+paletteLength <- 100  # Ensure enough shades
+mypalette1 <- paletteer::paletteer_c("ggthemes::Red", paletteLength)
+
+# Prepare data: Extract relevant columns, order by significance
+heatmap_data <- final_df %>%
+  rowwise() %>%  # Ensures median is calculated per row
+  mutate(median_HR = median(c(bin_HR_df1, bin_HR_df2), na.rm = TRUE)) %>%  # Compute median HR
+  ungroup() %>%  # Remove rowwise grouping
+  arrange(desc(Sig_both == "Sig"), desc(median_HR)) %>%  # Order by significance first, then median HR
+  select(Assay, bin_HR_df1, bin_HR_df2, Sig_both)  # Keep relevant columns
+
+# Convert to matrix for heatmap plotting
+heatmap_matrix <- as.matrix(heatmap_data[, c("bin_HR_df1", "bin_HR_df2")])
+rownames(heatmap_matrix) <- heatmap_data$Assay
+
+# Generate breaks matching the color scale
+breaks <- seq(min(heatmap_matrix, na.rm = TRUE), 
+              max(heatmap_matrix, na.rm = TRUE), 
+              length.out = paletteLength)
+
+# Define annotation column (Sig_both)
+row_anno <- rowAnnotation(
+  Sig_both = factor(heatmap_data$Sig_both, levels = c("Sig", "Non")),
+  col = list(Sig_both = c("Sig" = "red", "Non" = "gray"))
+)
+
+# Create heatmap
+Heatmap(
+  heatmap_matrix,
+  name = "HR",
+  col = colorRamp2(breaks, mypalette1),
+  cluster_rows = FALSE,  # Keep order
+  cluster_columns = FALSE,  # No clustering
+  row_names_side = "left",
+  column_names_gp = gpar(fontsize = 10),
+  row_names_gp = gpar(fontsize = 8),
+  right_annotation = row_anno
+)
+
+```
+Make the colour binned
+
+```{r}
+# Define binned color function
+col_fun <- colorRamp2(
+  c(0.99, 2, 3, max(heatmap_matrix, na.rm = TRUE)), 
+  c("gray", "#FFB3B3", "#FF6666", "#B30000")  # Light red → Medium red → Dark red
+)
+
+# Define annotation column (Sig_both)
+row_anno <- rowAnnotation(
+  Sig_both = factor(heatmap_data$Sig_both, levels = c("Sig", "Non")),
+  col = list(Sig_both = c("Sig" = "black", "Non" = "gray90"))
+)
+
+Heatmap(
+  heatmap_matrix,
+  name = "HR",
+  col = col_fun,  # Discrete color mapping
+  cluster_rows = FALSE,  # Keep order
+  cluster_columns = FALSE,  # No clustering
+  row_names_side = "left",
+  column_names_gp = gpar(fontsize = 10),
+  row_names_gp = gpar(fontsize = 8),
+  right_annotation = row_anno,
+  
+  # Corrected legend parameter
+  heatmap_legend_param = list(
+    at = c(0.5, 1.5, 2.5, 3.5),  # Adjust positions
+    labels = c("<1", "1-2", "2-3", "≥3"),  # Discrete legend labels
+    title = "HR",
+    legend_gp = gpar(fill = colors),
+    grid_width = unit(5, "mm")  # Adjust legend box size
+  )
+)
+```
+

@@ -1,0 +1,1215 @@
+---
+title: "Bridging"
+date: "2025-03-13"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+    number_sections: true
+    theme: lumen
+---
+
+# Background
+
+Our previous results of analyzing the discovery and validation dataset seperately were inconsistent The DE genes were completely different. Here we want to join / bridge the data from different batches.
+
+# Objectives
+
+1. Bridge data
+
+# Conclusion
+
+
+
+# Pre-processing 
+
+## Loading packages
+
+```{r, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(readxl)   
+library(readr)
+library(stringr)
+library(limma)
+library(variancePartition)
+
+library(tidyverse)
+library(ggplot2)
+library(patchwork)
+library(ggrepel)
+library(gghighlight)
+library(ggbeeswarm)
+library(VennDiagram)
+library(ggvenn)
+
+
+library(OlinkAnalyze) 
+library(paletteer)
+
+# Survival
+library(survival)
+library(ggsurvfit)
+library(survminer)
+```
+
+## Directories
+
+```{r}
+wd <- list()
+wd$main <- here()
+wd$data <- file.path(wd$main, "data")
+wd$manishData <- file.path(wd$data, "raw/data_fromManish")
+wd$d2024 <- file.path(wd$data, "updated_2024")
+wd$d2024_npx <- file.path(wd$d2024, "NPX_data")
+wd$output <- file.path(wd$main, "output")
+wd$script <- file.path(wd$main, "scripts")
+
+wd$outData <- file.path(wd$output, "data")
+wd$outCurr <- file.path(wd$output, "06_Bridging")
+```
+
+
+Create directories
+
+```{r}
+if (!file.exists(wd$outCurr)) {
+  dir.create(wd$outCurr)
+} else {
+  print("Directory already exists")
+}
+```
+
+Load functions
+
+```{r}
+source(file.path(wd$script, "functions.R"))
+```
+
+## Load data
+
+Load the processed metadata file
+
+```{r}
+# TO DO - load the saved R object
+load(file.path(wd$outData, "01_Metadata.Rdata"))
+load(file.path(wd$outData, "02_data.Rdata"))
+load(file.path(wd$outData, "04_data.Rdata"))
+```
+
+
+# Obj 1: Clean up 
+
+We cleaned up the Psomagen dataset. Now lets clean up the other two datasets
+
+### Q-1335
+
+We just read the mCRPC project for now (Tab 4 of the excel file)
+
+```{r}
+# Read in the Q-1335 metadata
+meta_q1335 <- read_excel(meta_file, sheet = 4) %>% 
+  select('Sample ID (validation)', 'MRN (UUHSC)', 'Death date', 'Deceased?', 'Sample 1 Date',
+         'sample1_psa', 'sample1_ldh', 'sample1_alk_phos') %>% 
+  rename(mrn = 'MRN (UUHSC)',
+         sample_id = 'Sample ID (validation)',
+         death_date = 'Death date',
+         death = 'Deceased?',
+         collection_date = 'Sample 1 Date',
+         psa = 'sample1_psa',
+         ldh = 'sample1_ldh',
+         alk_ph = 'sample1_alk_phos') %>% 
+  mutate(death = gsub("Yes", "Y", death))
+
+# Censor the date
+meta_q1335$death_date[is.na(meta_q1335$death_date)] <- censor_date
+
+# Calulate OS in months
+meta_q1335 <- meta_q1335 %>% 
+  mutate(OS = as.numeric(difftime(death_date, collection_date, units = "days")),
+         OS = round(OS/30.417, digit=2),
+         death = case_when(death == "N" ~ 0,
+                           death == "Y" ~ 1),
+         sample_id = as.character(sample_id))
+```
+
+Read in the NPX data
+
+```{r}
+df_meta2 <- df_meta_f %>% 
+  filter(!is.na(sample_id_Q13356)) %>% 
+  # remove serial samples
+  #filter(!HCI_cID %in% serial_sam) %>% 
+  dplyr::rename(SampleID = sample_id_Q13356) %>% 
+  select(cohort, SampleID) %>% 
+  distinct() %>% 
+  mutate(SampleID = as.character(SampleID))
+
+# This removes conttol samples as well
+dat2_NPX_anno <- dat_NPX2 %>%
+  mutate(SampleID = as.character(SampleID)) %>% 
+  dplyr::left_join(df_meta2) %>%
+  filter(!is.na(cohort))
+```
+
+#### Assay outlier
+
+We check if any samples were considered outlier in all of the 8 panels
+
+```{r}
+outliers_qc_labeled <- dat2_NPX_anno |> 
+  olink_qc_plot(outlierLines = FALSE, label_outliers = TRUE) 
+
+dat_outlier <- outliers_qc_labeled$data
+
+sam_outlier <- dat_outlier %>% group_by(SampleID, Outlier) %>% 
+  count() %>% 
+  filter(Outlier == 1) %>% 
+  arrange(desc(n))
+head(sam_outlier)
+```
+
+We exclude two sampels that were deemed outlier in all 8 panel
+
+```{r}
+all_fail <- sam_outlier %>% filter(n==8)
+dat2_final <- dat2_NPX_anno %>% 
+  filter(!SampleID %in% all_fail$SampleID)
+```
+
+#### Protein outlier
+
+We want to check if any proteins needs to be excluded. Olink provides a collumn called "QC_Warning" that we can use to determine. 
+
+```{r}
+warn_assay <- dat2_final %>% filter(Assay_Warning == "WARN") %>% select(Assay, OlinkID) %>% distinct()
+```
+
+Or we can determine what number of samples are expressing the protein above the limit of detection
+
+```{r}
+numSample1 <- length(unique(dat2_final$SampleID))
+  
+dat2_missing <- dat2_final %>% 
+  group_by(OlinkID) %>% 
+  summarise(PercMissing = (sum(NPX < LOD) / numSample1) * 100) %>% 
+  mutate(Group = "Q_1335")
+```
+
+Lets retain all the proteins with less than 80% missing-ness
+
+```{r}
+assay_keep_2 <- dat2_missing %>% 
+  filter(PercMissing <= 80)  %>% 
+  filter(!OlinkID %in% warn_assay$OlinkID)
+length(unique(assay_keep_2$OlinkID))
+```
+
+Lets subset the NPX data frame to these proteins
+
+```{r}
+dat2_final <- dat2_final %>% 
+  filter(OlinkID %in% assay_keep_2$OlinkID)
+```
+
+### PCA
+
+Lets look at the data PCA plot
+
+```{r}
+dat2_pca <-
+  dat2_final %>% 
+  filter(!str_detect(SampleID, 'CS')) %>% 
+  olink_pca_plot(df = .,
+                 color_g = "cohort", byPanel = FALSE, quiet = FALSE) 
+```
+### Q-15806
+
+```{r}
+meta_q1580 <- read_excel(meta_file, sheet = 7) %>% 
+  select('Plate_4_pt_ID', 'MRN (UUHSC)', 'Death date', 'Deceased?', 'Sample1_date',
+         'sample1_psa', 'sample1_ldh', 'sample1_alk_phos') %>% 
+  rename(mrn = 'MRN (UUHSC)',
+         sample_id = 'Plate_4_pt_ID',
+         death_date = 'Death date',
+         death = 'Deceased?',
+         collection_date = 'Sample1_date',
+         psa = 'sample1_psa',
+         ldh = 'sample1_ldh',
+         alk_ph = 'sample1_alk_phos') 
+
+# Censor the date
+meta_q1580$death_date[is.na(meta_q1580$death_date)] <- censor_date
+
+# Calulate OS in months
+meta_q1580 <- meta_q1580 %>% 
+  mutate(OS = as.numeric(difftime(death_date, collection_date, units = "days")),
+         OS = round(OS/30.417, digit=2),
+         death = case_when(death == "No" ~ 0,
+                           death == "Yes" ~ 1),
+         sample_id = as.character(sample_id))
+```
+
+Read in the NPX data
+
+```{r}
+df_meta3 <- df_meta_f %>% 
+  filter(!is.na(sample_id_Q15806)) %>% 
+  # remove serial samples
+  #filter(!HCI_cID %in% serial_sam) %>% 
+  dplyr::rename(SampleID = sample_id_Q15806) %>% 
+  select(cohort, SampleID) %>% 
+  distinct() %>% 
+  mutate(SampleID = as.character(SampleID))
+
+# This removes conttol samples as well
+dat3_NPX_anno <- dat_NPX3 %>%
+  mutate(SampleID = as.character(SampleID)) %>% 
+  dplyr::left_join(df_meta3) %>%
+  filter(!is.na(cohort))
+```
+
+#### Assay outlier
+
+We check if any samples were considered outlier in all of the 8 panels
+
+```{r}
+outliers_qc_labeled <- dat3_NPX_anno |> 
+  olink_qc_plot(outlierLines = FALSE, label_outliers = TRUE) 
+
+dat_outlier <- outliers_qc_labeled$data
+
+sam_outlier <- dat_outlier %>% group_by(SampleID, Outlier) %>% 
+  count() %>% 
+  filter(Outlier == 1) %>% 
+  arrange(desc(n))
+head(sam_outlier)
+```
+
+We exclude two samples that were deemed outlier in all 8 panel
+
+```{r}
+all_fail <- sam_outlier %>% filter(n==8)
+dat3_final <- dat3_NPX_anno %>% 
+  filter(!SampleID %in% all_fail$SampleID)
+```
+
+#### Protein outlier
+
+We want to check if any proteins needs to be excluded. Olink provides a collumn called "QC_Warning" that we can use to determine. 
+
+```{r}
+warn_assay <- dat3_final %>% filter(Assay_Warning == "WARN") %>% select(Assay, OlinkID) %>% distinct()
+```
+
+Or we can determine what number of samples are expressing the protein above the limit of detection
+
+```{r}
+numSample1 <- length(unique(dat3_final$SampleID))
+  
+dat3_missing <- dat3_final %>% 
+  group_by(OlinkID) %>% 
+  summarise(PercMissing = (sum(NPX < LOD) / numSample1) * 100) %>% 
+  mutate(Group = "Q_1580")
+```
+
+Lets retain all the proteins with less than 80% missing-ness
+
+```{r}
+assay_keep_3 <- dat3_missing %>% 
+  filter(PercMissing <= 80)  %>% 
+  filter(!OlinkID %in% warn_assay$OlinkID)
+length(unique(assay_keep_3$OlinkID))
+```
+
+Lets subset the NPX data frame to these proteins
+
+```{r}
+dat3_final <- dat3_final %>% 
+  filter(OlinkID %in% assay_keep_3$OlinkID)
+```
+
+## PCA
+
+```{r}
+dat3_pca <-
+  dat3_final %>% 
+  filter(!str_detect(SampleID, 'CS')) %>% 
+  olink_pca_plot(df = .,
+                 color_g = "cohort", byPanel = FALSE, quiet = FALSE) 
+```
+We see an extreme plot of 3 samples from cohort A. Lets explore further.
+
+Lets gather all cohort A samples, then check the NPX distribution
+
+```{r}
+dat3_final_A <- dat3_final %>% filter(cohort == "A")
+
+# Get the PCA coordinate to identify these sanmples
+pca_cor_bridge <- dat3_pca[[1]]$data %>%
+  rename(PC1 = PCX,
+         PC2 = PCY) %>% 
+  mutate(outlier = case_when(
+    colors == "A" & PC1 >= 0.1 ~ "Outlier",
+    TRUE ~ "Keep"
+  ))
+rmv_sam <- pca_cor_bridge %>% filter(outlier == "Outlier") %>% pull(SampleID)
+rmv_sam
+
+# Label 
+dat3_final_A <- dat3_final_A %>% mutate(outlier = case_when(SampleID %in% rmv_sam ~ "Outlier",
+                                                                TRUE ~ "Not"))
+
+# Check NPX distibution
+dat3_final_A |> 
+  olink_dist_plot(color_g = "outlier")
+```
+These 3 samples have consistently higher NPX compared to other samples. So we remove them. 
+
+```{r}
+dat3_final <- dat3_final %>% 
+  filter(!SampleID %in% rmv_sam)
+```
+
+Re-plot the PCA
+
+```{r}
+dat3_pca_v2 <-
+  dat3_final %>% 
+  filter(!str_detect(SampleID, 'CS')) %>% 
+  olink_pca_plot(df = .,
+                 color_g = "cohort", byPanel = FALSE, quiet = FALSE) 
+```
+
+## Protein overlap
+
+Lets get the overlap of proteins across 3 platforms
+
+```{r}
+un_a <- unique(dat1_final$OlinkID)
+un_b <- unique(dat2_final$OlinkID)
+un_c <- unique(dat3_final$OlinkID)
+
+overlap <- calculate.overlap(
+x <- list("Psomagen"=un_a, 
+          "Q-1335"=un_b,
+          "Q-1580"=un_c))
+
+pdf(file=file.path(wd$outCurr, "Protein_overlap.pdf"), width = 5, height = 5)
+ggvenn(
+  x, 
+  fill_color = df.pal.study$pal,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+dev.off()
+
+ggvenn(
+  x, 
+  fill_color = pal.study,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+```
+
+Save this list of proteins
+
+> TO DO
+
+> We filtered the samples and proteins. We will bridge the data using these proteins
+
+# Obj 2: Limma correction
+
+We explore another methods to correct for the batch using limma 
+
+### Data prep
+
+```{r}
+xx1 <- dat1_final
+xx2 <- dat2_final
+xx3 <- dat3_final
+```
+
+Convert to gene x matrix
+
+```{r}
+mat_olink1 <- xx1 %>%
+  dplyr::select(SampleID, OlinkID, NPX) %>%
+  # Remove contraol samples
+  dplyr::filter(!str_detect(SampleID, 'CONTROL_SAMPLE')) %>% 
+  # Convert to wide
+  tidyr::pivot_wider(names_from = SampleID, values_from = NPX)
+colnames(mat_olink1)[2:ncol(mat_olink1)] <- paste0("Disc_", colnames(mat_olink1)[2:ncol(mat_olink1)] )
+
+mat_olink2 <- xx2 %>%
+  dplyr::select(SampleID, OlinkID, NPX) %>%
+  # Remove contraol samples
+  dplyr::filter(!str_detect(SampleID, 'CONTROL_SAMPLE')) %>% 
+  # Convert to wide
+  tidyr::pivot_wider(names_from = SampleID, values_from = NPX)
+colnames(mat_olink2)[2:ncol(mat_olink2)] <- paste0("Proj2_", colnames(mat_olink2)[2:ncol(mat_olink2)] )
+
+mat_olink3 <- xx3 %>%
+  dplyr::select(SampleID, OlinkID, NPX) %>%
+  # Remove contraol samples
+  dplyr::filter(!str_detect(SampleID, 'CONTROL_SAMPLE')) %>% 
+  # Convert to wide
+  tidyr::pivot_wider(names_from = SampleID, values_from = NPX)
+colnames(mat_olink3)[2:ncol(mat_olink3)] <- paste0("Proj4_", colnames(mat_olink3)[2:ncol(mat_olink3)] )
+```
+
+Selecting the genes
+
+```{r}
+# Create a matrix of just overlapping genes
+int_ol <-
+  Reduce(intersect, list(
+  mat_olink1$OlinkID,
+  mat_olink2$OlinkID,
+  mat_olink3$OlinkID))
+
+m1 <- mat_olink1 %>% as.data.frame()
+rownames(m1) <- m1$OlinkID
+m1 <- m1[int_ol,-1]
+
+m2 <- mat_olink2 %>% as.data.frame()
+rownames(m2) <- m2$OlinkID
+m2 <- m2[int_ol,-1]
+
+m3 <- mat_olink3 %>% as.data.frame()
+rownames(m3) <- m3$OlinkID
+m3 <- m3[int_ol,-1]
+
+
+m_all <- cbind(m1, m2, m3)
+```
+
+### Running limma
+
+Here we use limma to correct the batch effects. First we create a data frame to indicate the replicates across experiments
+
+```{r, eval=TRUE}
+# Define the model formula
+# Generate master replicate sheets
+vector1 <- df_meta_f %>% filter(Psomagen == "Y") %>% pull(HCI_cID)
+vector2 <- df_meta_f %>% filter(Q_13356 == "Y") %>% pull(HCI_cID)
+vector3 <- df_meta_f %>% filter(Q_15806 == "Y") %>% pull(HCI_cID)
+
+# Intersection of any two vectors
+intersection_any <- union(intersect(vector1, vector2), union(intersect(vector1, vector3), intersect(vector2, vector3)))
+
+# Bridge data
+df_bridge <- df_meta_f %>% 
+  filter(HCI_cID %in% intersection_any) %>% 
+  select(HCI_cID, cohort, sample_id_psom, sample_id_Q13356, sample_id_Q15806) %>% 
+  mutate(Rep = as.character( sprintf("%02d" ,1:length(intersection_any))))
+
+df_bridge2 <- data.frame(
+  SampleID = 
+    c(paste(paste0("Disc_", df_bridge$sample_id_psom)),
+      paste(paste0("Proj2_", df_bridge$sample_id_Q13356)),
+      paste(paste0("Proj4_", df_bridge$sample_id_Q15806))),
+  Rep = paste0("Rep_", df_bridge$Rep)) %>% 
+  filter(!str_detect(SampleID, "_NA"))
+
+meta_data <- data.frame(
+  SampleID = colnames(m_all),
+  Batch = c(
+    rep("Dis", each=ncol(m1)),
+    rep("Proj_2", each=ncol(m2)),
+    rep("Proj_4", each=ncol(m3))
+)) %>% left_join(df_bridge2) %>% 
+  # Create replicate IDs
+  # For technical replicates, use the same ID across runs
+  mutate(ReplicateID = case_when(!is.na(Rep) ~ Rep,
+                                 TRUE ~ SampleID))
+head(meta_data)
+meta_data %>% filter(Rep == "Rep_15")
+
+# Add cohort info
+df_bridge <- df_meta_f %>% 
+  select(HCI_cID, cohort, sample_id_psom, sample_id_Q13356, sample_id_Q15806)
+
+df_bridge2 <- data.frame(
+  SampleID = 
+    c(paste(paste0("Disc_", df_bridge$sample_id_psom)),
+      paste(paste0("Proj2_", df_bridge$sample_id_Q13356)),
+      paste(paste0("Proj4_", df_bridge$sample_id_Q15806))),
+  cohort = df_bridge$cohort,
+  HCI_cID = df_bridge$HCI_cID) %>% 
+  filter(!str_detect(SampleID, "_NA"))
+
+meta_data <- meta_data %>% left_join(df_bridge2)
+#colnames(m_all) <- meta_data$ReplicateID
+# Ensure that SampleID matches the columns in counts
+stopifnot(all(meta_data$SampleID == colnames(m_all)))
+
+# Ensure the samples are in the same order
+meta_data <- meta_data[match(colnames(m_all), meta_data$SampleID), ]
+# Verify the order matches
+all(colnames(m_all) == meta_data$SampleID)  # Should return TRUE
+rownames(meta_data) <- meta_data$SampleID
+
+meta_data <- meta_data %>% 
+  mutate(cohort = factor(cohort),
+         Batch = factor(Batch),
+         ReplicateID = factor(ReplicateID))
+```
+
+Now lets perform the batch correction
+
+```{r}
+# Set up parallel processing (optional)
+param <- SnowParam(4, "SOCK")  # Adjust the number of cores based on your system
+
+design <- model.matrix(~ cohort, data = meta_data)
+
+# Estimate within-replicate correlation
+corfit <- duplicateCorrelation(m_all, design, block = meta_data$ReplicateID)
+
+# Remove batch effects
+exprMatrix_corrected <- removeBatchEffect(
+  m_all,
+  batch = meta_data$Batch,
+  block = meta_data$ReplicateID,
+  correlation = corfit$consensus
+)
+```
+
+Vizualise the result before and after correlation
+
+```{r}
+pt_sz <- 2
+# PCA before
+# PCA before batch correction
+pca_before <- prcomp(t(m_all), scale. = TRUE)
+meta_data$PC1_before <- pca_before$x[,1]
+meta_data$PC2_before <- pca_before$x[,2]
+
+# Calculate variance explained
+pc_variances <- pca_before$sdev^2
+variance_explained <- pc_variances / sum(pc_variances)
+percent_variance_explained <- variance_explained * 100
+
+# Extract variance for PC1 and PC2
+pc1_variance <- percent_variance_explained[1]
+pc2_variance <- percent_variance_explained[2]
+
+# Create labels for plotting
+pc1_label <- paste0("PC1 (", round(pc1_variance, 2), "%)")
+pc2_label <- paste0("PC2 (", round(pc2_variance, 2), "%)")
+
+
+p1.1 <- 
+ggplot(meta_data, aes(x = PC1_before, y = PC2_before, color = Batch)) +
+  geom_point(size = pt_sz) +
+  labs(
+    title = "PCA Before Batch Correction",
+    x = pc1_label,
+    y = pc2_label) +
+  theme_bw() +
+  theme_custom +
+  theme(legend.position = "none") +
+  scale_colour_manual(values = pal.study) +
+  NULL
+
+
+p1.2 <- 
+ggplot(meta_data, aes(x = PC1_before, y = PC2_before, color = cohort)) +
+  geom_point(size = pt_sz) +
+  labs(
+    title = "PCA Before Batch Correction",
+    x = pc1_label,
+    y = pc2_label) +
+  theme_bw() +
+  theme_custom +
+  theme(legend.position = "none") +
+  scale_colour_manual(values = pal.cohort.n2) +
+  NULL
+```
+
+## Correlation plot
+
+Get the correlation of all the samples. 
+
+```{r}
+# Reshape the gene expression data for plotting
+long_expr <- exprMatrix_corrected %>% as.data.frame() %>% 
+  rownames_to_column("Gene") %>%
+  pivot_longer(cols = -Gene, names_to = "SampleID", values_to = "Expression")
+```
+
+Match replicates based on the replicate mapping
+
+```{r}
+replicate_pairs <- meta_data %>%
+  filter(!is.na(Rep)) %>%
+  inner_join(meta_data, by = "Rep") %>%
+  filter(SampleID.x != SampleID.y) %>%
+  select(Rep, SampleID.x, SampleID.y) %>%
+  distinct()
+
+dplyr::filter(replicate_pairs, SampleID.y == "Proj2_4")
+```
+
+Loop to get the correlation values
+
+> Run this just once
+
+```{r,eval=FALSE}
+# Cor-pair for each replicate
+# Create an empty data frame to store correlation results
+# Create an empty data frame to store correlation results
+cor_results <- data.frame(
+  Sample1 = character(),
+  Sample2 = character(),
+  Cohort1 = character(),
+  Cohort2 = character(),
+  Correlation = numeric(),
+  Rep = character(),
+  stringsAsFactors = FALSE
+)
+
+# Get all unique pairs of samples
+sample_pairs <- expand.grid(SampleID_x = unique(long_expr$SampleID),
+                            SampleID_y = unique(long_expr$SampleID),
+                            stringsAsFactors = FALSE) %>%
+  filter(SampleID_x < SampleID_y)  # Avoid duplicate pairs and self-comparisons
+
+# Compute correlation for each pair
+cor_results <- sample_pairs %>%
+  rowwise() %>%
+  mutate(
+    cor_value = {
+      df <- inner_join(
+        long_expr %>% filter(SampleID == SampleID_x) %>% rename(Expression_x = Expression),
+        long_expr %>% filter(SampleID == SampleID_y) %>% rename(Expression_y = Expression),
+        by = "Gene"
+      )
+      
+      cor(df$Expression_x, df$Expression_y, use = "pairwise.complete.obs")
+    },
+    Cohort1 = meta_data$cohort[meta_data$SampleID == SampleID_x],
+    Cohort2 = meta_data$cohort[meta_data$SampleID == SampleID_y],
+    Rep = ifelse(
+      meta_data$Rep[meta_data$SampleID == SampleID_x] == meta_data$Rep[meta_data$SampleID == SampleID_y] & 
+        !is.na(meta_data$Rep[meta_data$SampleID == SampleID_x]), 
+      meta_data$Rep[meta_data$SampleID == SampleID_x], 
+      NA
+    )
+  ) %>%
+  select(Sample1 = SampleID_x, Sample2 = SampleID_y, Cohort1, Cohort2, Correlation = cor_value, Rep)
+
+```
+
+We examine the correlation results. 
+
+```{r}
+#cor_results_ori <- cor_results
+cor_results <- read.csv(file.path(wd$outCurr, "Filtered_genes_LimmaCorrected_cor.csv"))
+#write.csv(cor_results, file.path(wd$outCurr, "Filtered_genes_LimmaCorrected_cor.csv"))
+```
+
+We saw some correlations are below 0.6, we remove these replicates as the correlation is rather low. 
+
+```{r}
+df_low <- cor_results_ori %>% filter(!is.na(Rep)) %>% filter(Correlation <= 0.5)
+tail(df_low)
+```
+
+Identify the samples to be removed after correlation analysis
+
+```{r}
+df_low_sample <- unique(df_low$Sample2)
+```
+
+Re-run the entire workflow
+
+```{r}
+# Filter the meta data to remove the poor correlated samples
+meta_data2 <- meta_data %>% filter(!SampleID %in% df_low_sample) 
+
+# Get the number of overlapping samples
+rep_1 <- filter(meta_data2, Batch=="Dis") %>% pull(ReplicateID)
+rep_2 <- filter(meta_data2, Batch=="Proj_2") %>% pull(ReplicateID)
+rep_3 <- filter(meta_data2, Batch=="Proj_4") %>% pull(ReplicateID)
+
+
+overlap <- calculate.overlap(
+  x <- list(
+    "Dis"=rep_1,
+    "Q_13356"=rep_2, 
+    "Q_15806"=rep_3))
+
+ggvenn(
+  x, 
+  fill_color = pal.study,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+```
+
+Run the correlation analysis
+
+```{r}
+# Remove the samples from the matrix
+m_all2 <- m_all[,meta_data2$SampleID]
+
+# Set up parallel processing (optional)
+param <- SnowParam(4, "SOCK")  # Adjust the number of cores based on your system
+
+design <- model.matrix(~ cohort, data = meta_data2)
+
+# Estimate within-replicate correlation
+corfit <- duplicateCorrelation(m_all2, design, block = meta_data2$ReplicateID)
+
+# Remove batch effects
+exprMatrix_corrected2 <- removeBatchEffect(
+  m_all2,
+  batch = meta_data2$Batch,
+  block = meta_data2$ReplicateID,
+  correlation = corfit$consensus
+)
+```
+
+Lets re-do the correlation again, limited to those with Rep
+
+```{r}
+# Reshape the gene expression data for plotting
+long_expr <- exprMatrix_corrected2 %>% as.data.frame() %>% 
+  rownames_to_column("Gene") %>%
+  pivot_longer(cols = -Gene, names_to = "SampleID", values_to = "Expression")
+```
+
+Match replicates based on the replicate mapping
+
+```{r}
+replicate_pairs <- meta_data2 %>%
+  filter(!is.na(Rep)) %>%
+  inner_join(meta_data, by = "Rep") %>%
+  filter(SampleID.x != SampleID.y) %>%
+  select(Rep, SampleID.x, SampleID.y) %>%
+  distinct()
+```
+
+```{r}
+long_expr <- long_expr %>% filter(SampleID %in% 
+                                    unique(c(replicate_pairs$SampleID.x, replicate_pairs$SampleID.y)))
+
+# Cor-pair for each replicate
+cor_results <- data.frame(
+  Sample1 = character(),
+  Sample2 = character(),
+  Cohort1 = character(),
+  Cohort2 = character(),
+  Correlation = numeric(),
+  Rep = character(),
+  stringsAsFactors = FALSE
+)
+
+# Get all unique pairs of samples
+sample_pairs <- expand.grid(SampleID_x = unique(long_expr$SampleID),
+                            SampleID_y = unique(long_expr$SampleID),
+                            stringsAsFactors = FALSE) %>%
+  filter(SampleID_x < SampleID_y)  # Avoid duplicate pairs and self-comparisons
+
+# Compute correlation for each pair
+cor_results <- sample_pairs %>%
+  rowwise() %>%
+  mutate(
+    cor_value = {
+      df <- inner_join(
+        long_expr %>% filter(SampleID == SampleID_x) %>% rename(Expression_x = Expression),
+        long_expr %>% filter(SampleID == SampleID_y) %>% rename(Expression_y = Expression),
+        by = "Gene"
+      )
+      
+      cor(df$Expression_x, df$Expression_y, use = "pairwise.complete.obs")
+    },
+    Cohort1 = meta_data$cohort[meta_data$SampleID == SampleID_x],
+    Cohort2 = meta_data$cohort[meta_data$SampleID == SampleID_y],
+    Rep = ifelse(
+      meta_data$Rep[meta_data$SampleID == SampleID_x] == meta_data$Rep[meta_data$SampleID == SampleID_y] & 
+        !is.na(meta_data$Rep[meta_data$SampleID == SampleID_x]), 
+      meta_data$Rep[meta_data$SampleID == SampleID_x], 
+      NA
+    )
+  ) %>%
+  select(Sample1 = SampleID_x, Sample2 = SampleID_y, Cohort1, Cohort2, Correlation = cor_value, Rep)
+
+```
+
+Save the results
+
+```{r}
+write.csv(cor_results, file.path(wd$outCurr, "Filtered_genes_LimmaCorrected_removedLow_cor.csv"))
+```
+
+> Lets keep this workflow, removing the poor correlated samples (less then 0.5)
+
+## Remove dupe
+
+We can see that technical replicates are kept. 
+
+For example
+
+```{r}
+nrow(meta_data2)
+```
+
+We get 342, but we actually just have 312 samples. So we need to remove technical duplicates. 
+
+So for the samples with repeated measurement, we want to just keep 1. 
+
+For those profiled multiple times. We will keep the Psomagen data first, then the Q15806, then the Q 13356.
+
+```{r}
+df_unq <- df_meta_f %>%
+  mutate(
+    sample_id_psom = paste0("Disc_", sample_id_psom),
+    sample_id_psom = case_when(sample_id_psom == "Disc_NA" ~ NA, TRUE ~ sample_id_psom),
+    sample_id_Q13356 = paste0("Proj2_", sample_id_Q13356),
+    sample_id_Q13356 = case_when(sample_id_Q13356 == "Proj2_NA" ~ NA, TRUE ~ sample_id_Q13356),
+    sample_id_Q15806 = paste0("Proj4_", sample_id_Q15806),
+    sample_id_Q15806 = case_when(sample_id_Q15806 == "Proj4_NA" ~ NA, TRUE ~ sample_id_Q15806),
+    final_sample_id = coalesce(sample_id_psom, sample_id_Q13356, sample_id_Q15806))
+length(unique(df_unq$final_sample_id))
+```
+
+Lets subset to the samples of interest
+
+```{r}
+# Important - select the variable after removing the poor correlations
+df_tmp <- df_unq %>% filter(final_sample_id %in% colnames(exprMatrix_corrected2))
+exprMatrix_corrected_sub <- exprMatrix_corrected2[,df_tmp$final_sample_id] 
+meta_data_sub <- meta_data2 %>% filter(SampleID %in% df_tmp$final_sample_id)
+```
+
+## PCA
+
+Re-do PCA after batch correction
+
+```{r}
+# PCA after batch correction
+pca_after <- prcomp(t(exprMatrix_corrected_sub), scale. = TRUE)
+df_pca <- pca_after$x %>% as.data.frame() %>% 
+  tibble::rownames_to_column(var = "SampleID") %>% 
+  select(SampleID, PC1, PC2, PC3) %>% 
+  rename(PC1_after = PC1,
+         PC2_after = PC2,
+         PC3_after = PC3) %>% 
+  left_join(meta_data_sub)
+
+# Calculate variance explained
+pc_variances <- pca_after$sdev^2
+variance_explained <- pc_variances / sum(pc_variances)
+percent_variance_explained <- variance_explained * 100
+
+# Extract variance for PC1 and PC2
+pc1_variance <- percent_variance_explained[1]
+pc2_variance <- percent_variance_explained[2]
+
+# Create labels for plotting
+pc1_labe_a <- paste0("PC1 (", round(pc1_variance, 2), "%)")
+pc2_label_a <- paste0("PC2 (", round(pc2_variance, 2), "%)")
+
+
+p2.1 <- 
+ggplot(df_pca, aes(x = PC1_after, y = PC2_after, color = Batch)) +
+  geom_point(size = pt_sz) +
+  labs(
+    title = "PCA After Limma Batch Correction",
+    x = pc1_labe_a,
+    y = pc2_label_a) +
+  theme_bw() +
+  theme_custom +
+  theme(legend.position = "bottom") +
+  scale_colour_manual(values = pal.study) +
+  NULL
+
+p2.2 <- 
+ggplot(df_pca, aes(x = PC1_after, y = PC2_after, color = cohort)) +
+  geom_point(size = pt_sz) +
+  labs(
+    title = "PCA After Limma Batch Correction",
+    x = pc1_labe_a,
+    y = pc2_label_a) +
+  theme_bw() +
+  theme_custom +
+  theme(legend.position = "bottom") +
+  scale_colour_manual(values = pal.cohort.n2) +
+  NULL
+```
+
+Show all PCA plot
+
+```{r}
+p_all <- p1.1 + p1.2 + p2.1 + p2.2 + plot_layout(ncol=2)
+p_all
+ggsave(filename=file.path(wd$outCurr, "PCA_beforeAfter.pdf"), device="pdf", width=9, height=8)
+```
+
+# Obj 3: Perform bridging
+
+> TL/DR - This step gives sub-optimal batch correction. The PCA does NOT look like its been integrated well between batches. So, no need to do this analysis
+
+Lets do bridging analysis. We follow the workflow on Olink website - https://cran.r-project.org/web//packages/OlinkAnalyze/vignettes/bridging_introduction.html
+
+The bridging analysis only works with 2 dataset. Because we want to bridge between 3 datasets, we need to do the bridging twice.
+
+## Q-13356 + Q-15806
+
+```{r}
+xx1 <- dat2_final
+xx2 <- dat3_final
+
+xx1 <- xx1 %>% 
+  mutate(SampleID = paste0("Q_13356_", SampleID))
+
+xx2 <- xx2 %>% 
+  mutate(SampleID = paste0("Q_15806_", SampleID))
+
+# Identify bridging samples
+hci_ids_br1 <- df_meta_f %>% filter(Q_13356 == "Y") %>% pull(HCI_cID)
+hci_ids_br2 <- df_meta_f %>% filter(Q_15806 == "Y") %>% pull(HCI_cID)
+int_ids <- intersect(hci_ids_br1, hci_ids_br2)
+
+
+df_ints <- df_meta_f %>% filter(HCI_cID %in% int_ids)
+
+br_1 <- df_ints %>% pull(sample_id_Q13356) %>% paste0("Q_13356_", .)
+br_2 <- df_ints %>% pull(sample_id_Q15806) %>% paste0("Q_15806_", .)
+
+
+overlap_sample_list <-list("DF1" = br_1,
+                           "DF2" = br_2)
+
+xx1.1 <- xx1 #%>% select(SampleID, OlinkID, UniProt, NPX, Panel, cohort)
+xx2.1 <- xx2 #%>% select(SampleID, OlinkID, UniProt, NPX, Panel, cohort)
+
+
+# Perform Bridging normalization
+npx_br_data <- olink_normalization(
+  df1 = xx1.1,
+  df2 = xx2.1,
+  overlapping_samples_df1 = br_1,
+  overlapping_samples_df2 = br_2,
+  df1_project_nr = "data1",
+  df2_project_nr = "data2",
+  reference_project = "data1")
+```
+
+## Q-13356 + Psomagen
+
+```{r}
+xx1 <- dat2_final
+xx2 <- dat1_final
+
+xx1 <- xx1 %>% 
+  mutate(SampleID = paste0("Q_13356_", SampleID))
+
+xx2 <- xx2 %>% 
+  mutate(SampleID = paste0("Ps_", SampleID))
+
+# Identify bridging samples
+hci_ids_br1 <- df_meta_f %>% filter(Q_13356 == "Y") %>% pull(HCI_cID)
+hci_ids_br2 <- df_meta_f %>% filter(Psomagen == "Y") %>% pull(HCI_cID)
+int_ids <- intersect(hci_ids_br1, hci_ids_br2)
+
+
+df_ints <- df_meta_f %>% filter(HCI_cID %in% int_ids)
+
+br_1 <- df_ints %>% pull(sample_id_Q13356) %>% paste0("Q_13356_", .)
+br_2 <- df_ints %>% pull(sample_id_psom) %>% paste0("Ps_", .)
+
+
+overlap_sample_list <-list("DF1" = br_1,
+                           "DF2" = br_2)
+
+xx1.1 <- xx1 #%>% select(SampleID, OlinkID, UniProt, NPX, Panel, cohort)
+xx2.1 <- xx2 #%>% select(SampleID, OlinkID, UniProt, NPX, Panel, cohort)
+
+
+# Perform Bridging normalization
+npx_br_data2 <- olink_normalization(
+  df1 = xx1.1,
+  df2 = xx2.1,
+  overlapping_samples_df1 = br_1,
+  overlapping_samples_df2 = br_2,
+  df1_project_nr = "data1",
+  df2_project_nr = "data3",
+  reference_project = "data1")
+```
+
+## Final analysis
+
+Here we bridge across 3 cohorts, We simply combine the bridged NPX values. 
+
+```{r}
+b1 <- npx_br_data 
+b2 <- npx_br_data2 %>% filter(!Project == "data1") %>%  # Remove data from project 1
+  mutate(Project = gsub("data2", "data3", Project),
+         SampleID = gsub("data2", "data3", SampleID))
+
+b1_sub <- b1 %>% select(SampleID, OlinkID, Assay, NPX, cohort)
+b2_sub <- b2 %>% select(SampleID, OlinkID, Assay, NPX, cohort)
+
+npx_all <- rbind(b1_sub, b2_sub)
+```
+
+We can see that technical replicates are kept. 
+
+For example
+
+```{r}
+length(unique(npx_all$SampleID))
+```
+
+We get 344, but we actually just have 312 samples. So we need to remove technical duplicates. 
+
+So for the samples with repeated measurement, we want to just keep 1. We already removed project Q-13356 data from the 2nd round of bridging (Q-13356 + Psomagen). We may have Psomagen and Q-15806 duplicate values
+
+```{r}
+meta_data %>% filter(Rep == "Rep_20") %>% .[,1:5]
+
+npx_all %>% select(SampleID) %>% distinct() %>% filter(SampleID == "data1Q_13356_87") 
+npx_all %>% select(SampleID) %>% distinct() %>% filter(SampleID == "data2Q_15806_52") 
+npx_all %>% select(SampleID) %>% distinct() %>% filter(SampleID == "Ps_73") 
+```
+For those profiled multiple times. We will keep the Psomagen data first, then the Q15806, then the Q 13356.
+
+```{r}
+df <- df_meta_f %>%
+  mutate(
+    sample_id_psom = paste0("Ps_", sample_id_psom),
+    sample_id_psom = case_when(sample_id_psom == "Ps_NA" ~ NA, TRUE ~ sample_id_psom),
+    # sample_id_Q13356 = paste0("data1Q_13356_", sample_id_Q13356),
+    # sample_id_Q13356 = case_when(sample_id_Q13356 == "data1Q_13356_NA" ~ NA, TRUE ~ sample_id_Q13356),
+    # sample_id_Q15806 = paste0("data2Q_15806_", sample_id_Q15806),
+    # sample_id_Q15806 = case_when(sample_id_Q15806 == "data2Q_15806_NA" ~ NA, TRUE ~ sample_id_Q15806),
+    sample_id_Q13356 = paste0("Q_13356_", sample_id_Q13356),
+    sample_id_Q13356 = case_when(sample_id_Q13356 == "Q_13356_NA" ~ NA, TRUE ~ sample_id_Q13356),
+    sample_id_Q15806 = paste0("Q_15806_", sample_id_Q15806),
+    sample_id_Q15806 = case_when(sample_id_Q15806 == "Q_15806_NA" ~ NA, TRUE ~ sample_id_Q15806),
+    final_sample_id = coalesce(sample_id_psom, sample_id_Q13356, sample_id_Q15806))
+length(unique(df$final_sample_id))
+```
+
+The number of samples is 312, matching what we expect of the sample number. 
+
+## PCA
+
+Quick PCA analysis
+
+Lets subset to the samples of interest
+
+```{r}
+npx_all_sub <- npx_all %>% 
+  filter(SampleID %in% df$final_sample_id)
+
+length(unique(npx_all$SampleID))
+length(unique(npx_all_sub$SampleID))
+```
+
+Lets subset to overlapping proteins for PCA analysis
+
+```{r}
+ggvenn(
+  x, 
+  fill_color = pal.cohort.n2,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+
+npx_all_sub <- npx_all_sub %>% filter(OlinkID %in% overlap$a5)
+```
+
+
+Run PCA
+
+```{r}
+### PCA plot
+p_pca_bridge_all <-
+  npx_all_sub %>% 
+  filter(!str_detect(SampleID, 'CS')) %>% 
+  olink_pca_plot(df = .,
+                 color_g = "cohort", byPanel = FALSE, quiet = FALSE) 
+```
+
+Make the colour nicer
+
+```{r}
+# Extract metadata
+# Subset to columns of interest
+df_sub <- df %>% select(mrn, HCI_cID, txt_stat, final_sample_id) %>% 
+  distinct() %>% 
+  rename(SampleID = final_sample_id)
+
+# Extract PCA coordinate
+pca_cor_b_all <- p_pca_bridge_all[[1]]$data %>%
+  rename(PC1 = PCX,
+         PC2 = PCY) %>%
+  mutate(Batch = gsub("data1.*", "Q_13356", SampleID),
+         Batch = gsub("data2.*", "Q_15806", Batch),
+         Batch = gsub("Ps.*", "Psomagen", Batch)
+         # SampleID = gsub("data1", "", SampleID),
+         # SampleID = gsub("data2", "", SampleID),
+         # SampleID = gsub("data3", "", SampleID),
+         ) %>% 
+  # Combine with additional metadata
+  left_join(df_sub) %>% 
+  rename(cohort = colors)
+```
+
+Make the plot
+
+```{r}
+p3.1 <- 
+ggplot(pca_cor_b_all, aes(x = PC1, y = PC2, color = Batch)) +
+  geom_point(size = pt_sz) +
+  labs(
+    title = "PCA After Olink Batch Correction",
+    x = p_pca_bridge_all[[1]]$labels$x,
+    y = p_pca_bridge_all[[1]]$labels$y) +
+  theme_bw() +
+  theme_custom +
+  theme(legend.position = "none") +
+  scale_colour_manual(values = pal.study) +
+  NULL
+
+p3.2 <- 
+ggplot(pca_cor_b_all, aes(x = PC1, y = PC2, color = cohort)) +
+  geom_point(size = pt_sz) +
+  labs(
+    title = "PCA After Olink Batch Correction",
+    x = p_pca_bridge_all[[1]]$labels$x,
+    y = p_pca_bridge_all[[1]]$labels$y) +
+  theme_bw() +
+  theme_custom +
+  theme(legend.position = "none") +
+  scale_colour_manual(values = pal.cohort.n2) +
+  NULL
+```
+
+Show all PCA plot
+
+```{r}
+p1.1 + p1.2 + 
+p3.1 + p3.2 +  
+p2.1 + p2.2 + plot_layout(ncol=2)
+```
+
+> We tried two methods to bridge the data; 1) The Olink default method, 2) Limma batch correction. 
+It seems the Limma methods works best so we will use it
+
+
+
+# Save objects
+
+```{r}
+save(
+  exprMatrix_corrected2, exprMatrix_corrected_sub, 
+  file = file.path(wd$outData, "06_data.Rdata"))
+```

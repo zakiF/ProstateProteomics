@@ -1,0 +1,786 @@
+---
+title: "Initial analysis"
+date: "2023-04-12"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+    number_sections: true
+    theme: lumen
+---
+
+# Background
+
+We have cohort of samples profiled for proteomics, genomics and metylation. We want to create a harmonized clinical file for all these patients.
+
+In regards to proteomics. Samples were profiled ;
+
+1) Psomagen cohort
+2) Olink 2023 cohort (Q-13356)
+3) Olink 2024 cohort
+
+In addition, some patients were also profiled by genomics (KLK2 SNPs) and methylation.
+
+# Objectives
+
+1. Gather data
+2. Clean up clinical data
+3. Summary of data
+
+# Pre-processing 
+
+## Loading packages
+
+```{r, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(readxl)   
+library(readr)
+library(stringr)
+
+library(tidyverse)
+library(ggplot2)
+library(VennDiagram)
+library(ggvenn)
+```
+
+
+## Directories
+
+```{r}
+wd <- list()
+wd$main <- here()
+wd$data <- file.path(wd$main, "data")
+wd$manishData <- file.path(wd$data, "raw/data_fromManish")
+wd$d2024 <- file.path(wd$data, "updated_2024")
+wd$d2024_npx <- file.path(wd$d2024, "NPX_data")
+wd$output <- file.path(wd$main, "output")
+wd$script <- file.path(wd$main, "scripts")
+
+wd$outData <- file.path(wd$output, "data")
+wd$outCurr <- file.path(wd$output, "01_InitialAnalys")
+
+t.testDir <- file.path(wd$outCurr , "t_test")
+dir.create(t.testDir)
+```
+
+
+Create directories
+
+```{r}
+if (!file.exists(wd$outCurr)) {
+  dir.create(wd$outCurr)
+} else {
+  print("Directory already exists")
+}
+```
+
+Load functions
+
+```{r}
+source(file.path(wd$script, "functions.R"))
+```
+
+
+
+# Objective 1
+
+**Gather data**
+
+## Psomagen 
+
+There were 2 files provided by Manish, we detail them here and read into R.
+
+1. **E3072_AN00003660_AN00003661_NPX_2022-04-21-columns**
+
+This file is the NPX values from Olink. Samples are listed in the `SampleID` column
+
+```{r}
+# Read the files
+dat_NPX <- readxl::read_excel(file.path(wd$d2024_npx, "batch_01_E3072_AN00003660_AN00003661_NPX_2022-04-21-columns.xlsx"))
+```
+
+2. **Proteomic Project Clinical file 07_23_24_Combined_ID.xlsx**
+
+This contains the clinical files of all Proteomics cohort
+
+```{r}
+meta_file <- file.path(file.path(wd$d2024, "clinical_data/Proteomic Project Clinical file 09_10_24_Combined_ID_zaki_edited.xlsx"))
+```
+
+
+### NPX data
+
+Read the NPX data 
+
+**E3072_AN00003660_AN00003661_NPX_2022-04-21-columns**
+
+This file is the NPX values from Olink. 
+
+Get Sample ID (listed in the `SampleID` column)
+
+```{r}
+b1_id <- unique(dat_NPX$SampleID)
+length(b1_id)
+```
+
+There are `length(b1_id)` samples assayed by Olink. This includes "Sample Control" as well, an internal control used by Olink. 
+
+Find the number of samples not including the internal control
+
+```{r}
+b1_noCtrl <- b1_id[!grepl("SC", b1_id)]
+length(b1_noCtrl)
+```
+
+### Clinical data
+
+In the Psomagen cohort, some samples were profiled serially. The excel file contains 2 sheets related the Psomagen cohort, sheets 2 & 3.
+
+Sheet 2 contains only the unique patients IDs per row. It contains all the clinical data, eg - surgery, PSA values, tumor stage, date of death...etc. 
+
+
+While Sheet 3 have the same number of rows as the NPX data. In sheet 3, the same patient with multiple timepoints is represented in multiple rows. There is a column `sample_id` that links to the NPX `sampleID`. 
+
+
+```{r}
+ps_clin.1 <- read_xlsx(meta_file, sheet = 3)
+```
+
+## Olink Q-13356 
+
+There were 2 files provided by Manish, we detail them here and read into R.
+
+1. **Q-13356_Kohli_EXTENDED_NPX_2024-03-11**
+
+This file is the NPX values from Olink. Samples are listed in the `SampleID` column
+
+
+2. The same clinical file as above
+
+This contains the clinical files of Psomagen cohort and Olink Q-13356 cohort
+
+
+### NPX data
+
+Read the NPX data. Samples are listed in the `SampleID` column
+
+```{r}
+# Read the files
+dat_NPX2 <- readr::read_delim(file.path(wd$d2024_npx, "batch_02_Q-13356_Kohli_EXTENDED_NPX_2024-03-11.csv"), delim = ";")
+
+dat_NPX2 <- readr::read_delim(file.path(wd$d2024_npx, "Re_delivery_Intensity_based/Q-13356_Data Delivery/Q-13356_Kohli_Intensity_EXTENDED_NPX_2024-10-30.csv"), delim = ";")
+```
+
+Get Sample ID
+
+```{r}
+b2_id <- unique(dat_NPX2$SampleID)
+length(b2_id)
+```
+
+There are `r `length(b2_id)` samples assayed by Olink. This includes "Sample Control" as well, an internal control used by Olink. 
+
+Find the number of samples not including the internal control
+
+```{r}
+b2_noCtrl <- b2_id[!grepl("CONTROL_SAMPLE|NEG_CTRL|PLATE_CTRL", b2_id)]
+length(b2_noCtrl)
+```
+
+### Clinical data
+
+In the this Olink Q-13356 cohort, there are no serial samples. Clinical data is contained in sheet 4 & 5. of the excel files.
+
+Sheets 4 & 5 contains contains all the clinical data, eg - surgery, PSA values, tumor stage, date of death...etc. Sheet 4 is limited to the CRPC cohort and sheet 5 is limited to HSPC cohort. There is a column `Sample ID (validation)` that links to the NPX `sampleID`.
+
+
+```{r}
+q_133_clin.1 <- read_xlsx(meta_file, sheet = 4) %>% 
+  # Rename columns
+  dplyr::rename(sample_id = 'Sample ID (validation)')
+n1 <- length(unique(q_133_clin.1$`HCI number`)) 
+n1
+```
+
+We repeat reading the clinical data of the HSPC cohort
+
+```{r}
+q_133_clin.2 <- read_xlsx(meta_file, sheet = 5) %>% 
+  # Rename columns
+  dplyr::rename(sample_id = 'Sample ID (validation)')
+n2 <- length(unique(q_133_clin.2$`HCI Number`)) 
+n2
+```
+
+Based on the NPX, we have `r length(b2_noCtrl)` samples. Meanwhile in the clinical file, we have `r n1` in CRPC and `r n2` for HSCP. The total in clinical file is `r n1 + n2`.
+
+There is one less patient in the clinical sheet. 
+
+Clarification was given by Claire 
+
+> From: Claire Hanson <Claire.Hanson@hci.utah.edu>   
+> Sent: Thursday, June 20, 2024 9:33 AM.  
+To: Zaki Wilmot <zaki.wilmot@hci.utah.edu>; Manish Kohli <Manish.Kohli@hci.utah.edu>; Enos Ampaw <Enos.Ampaw@hci.utah.edu>   
+> Subject: Re: Overlapping files
+> 
+> Hi Zaki, 
+> 
+> The duplicate sample is 34 and 78 (2021-2165). We used sample ID 34 as one of the bridging samples as well. 
+> 
+>Thanks, 
+Claire 
+
+We will keep this in mind when we process the NPX data
+
+
+## Olink Q-15806
+
+### NPX data
+
+Read the NPX data. Samples are listed in the `SampleID` column
+
+```{r}
+# Read the files
+dat_NPX3 <- readr::read_delim(file.path(wd$d2024_npx, "Q-15806_Kohli_NPX_2024-07-29.csv"), delim = ";")
+
+dat_NPX3 <- readr::read_delim(file.path(wd$d2024_npx, "Re_delivery_Intensity_based/Q-15806_Data Delivery/Q-15806_Kohli_EXTENDED_NPX_2024-10-30.csv"), delim = ";")
+```
+
+Get Sample ID
+
+```{r}
+b3_id <- unique(dat_NPX3$SampleID)
+length(b3_id)
+```
+
+There are `r `length(b3_id)` samples assayed by Olink. This includes "Sample Control" as well, an internal control used by Olink. 
+
+Find the number of samples not including the internal control. This time internal control is given as "NA" in the SampleID.
+
+```{r}
+b3_noCtrl <- b3_id[!is.na(b3_id)]
+length(b3_noCtrl)
+```
+
+We have 88 samples. 
+
+### Clinical data
+
+Two tab of clinical were provided for Olink Q-15806.
+
+The first files details the Olink sampleID and HCI collection id. We read this first, as this is what is currently required
+
+```{r}
+q_158_d <- read_xlsx(meta_file, sheet = 8) %>% 
+  # Edit column names
+  rename(HCI_cID = 'HCI Number',
+         sample_id = 'Sample ID',
+         Tx_stage = 'Pre/Post Tx?')
+```
+
+## Match protein IDs
+
+Make a table of proteins and OlinkIDs
+
+```{r}
+d1 <- dat_NPX %>% select(OlinkID, Assay) %>% distinct() %>% 
+  mutate(ID_assay = paste(OlinkID, Assay, sep="_"))
+d2 <- dat_NPX2 %>% filter(!str_detect(Assay, "control")) %>% select(OlinkID, Assay) %>% distinct() %>% 
+  mutate(ID_assay = paste(OlinkID, Assay, sep="_"))
+
+d_all <- rbind(d1,d2) %>% distinct()
+
+
+d_all <- d_all %>% 
+  mutate(inPsom = if_else(ID_assay %in% d1$ID_assay, "Y", "N"),
+         inQ1335 = if_else(ID_assay %in% d2$ID_assay, "Y", "N"))
+
+write.csv(d_all, file.path(wd$outCurr, "Proteins_overlap.csv"))
+
+```
+
+We note there are three proteins with mis-match annotation, lets correct this
+
+```{r}
+d_all <- d_all %>% 
+  mutate(
+    Assay = case_when(
+      OlinkID == "OID20125" ~ "NT-proBNP",
+      OlinkID == "OID20857" ~ "CERT1",
+      OlinkID == "OID21084" ~ "WARS1",
+      TRUE ~ Assay))
+  
+# Create a list of Olink paired with protein ID
+df_id_pro <- d_all %>% select(OlinkID, Assay) %>% distinct()
+
+write.csv(df_id_pro, file.path(wd$outCurr, "Olink_assay_table.csv"))
+```
+
+
+# Objective 2
+
+**Clean up clinical data**
+
+We want to combine all data as one df. To make counting and overlapping easier. The unique IDs to merge across these different platforms will be the HCI ID. For the clinical data with mrn & HCI collection ID, we make them into a data frame. 
+
+
+Matt provided us with an updated cohort information. Lets read it in.
+
+```{r}
+df_cohort <- read_xlsx(file.path(wd$d2024, "clinical_data/Cohort_grouping_2024_10_21.xlsx")) %>% 
+  select(mrn:txt_stat) %>% 
+  rename(Psomagen = Discovery,
+         Q_13356 = Project_2,
+         Q_15806 = Project_4)
+```
+
+## Tally
+
+Lets get a tally of the number of sample in all projects
+
+### Sample IDs
+
+In the NPX files we are given the ID as "sample_ID". Lets link the sample ID of the NPX with the sample ID in the clinical data.
+
+
+```{r}
+# --- Psomagen cohort ---- #
+# As all sample ID are numbers. We convert it to numeric. Non-number will give NA
+# We stored the Psomagen NPX IDs - b1_noCtrl
+d1.1 <- data.frame(
+  sample_id_psom = as.numeric(b1_noCtrl)
+)
+# Extract the HCI collection ID from clinical files
+d1.2 <- data.frame(
+  HCI_cID = ps_clin.1$`collection_id-hci_id`,
+  sample_id_psom = as.numeric(ps_clin.1$sample_id)
+)
+# Merge the two
+d1 <- left_join(d1.1, d1.2)
+# Santiy check to ensure all NPX data have clinical data, value needs to be 0
+sum(is.na(d1$HCI_cID))
+
+
+# --- Olink Q-13356 cohort ---- #
+# We stored the Q-13356 NPX IDs - b2_noCtrl
+d2.1 <- data.frame(
+  sample_id_Q13356 = as.numeric(b2_noCtrl)
+)
+# Extract the HCI collection ID from clinical files
+# The clinical file also contained a record of a supposed psomagen ID
+d2.2 <- data.frame(
+  HCI_cID = c(q_133_clin.1$`HCI number`, q_133_clin.2$`HCI Number`),
+  sample_id_Q13356 = as.numeric(c(q_133_clin.1$sample_id, q_133_clin.2$sample_id)),
+  sample_id_psom_2 = as.numeric(c(q_133_clin.1$`Sample Id (previous analysis)`, q_133_clin.2$`Sample ID (previous analysis)`))
+)
+# Merge the two
+d2 <- left_join(d2.1, d2.2)
+# Santiy check to ensure all NPX data have clinical data, value needs to be 0
+sum(is.na(d2$HCI_cID))
+```
+
+We noted here that there is one sample missing a clinical ID. We go back to the email from Claire that mentioned the sample "2021-2165" was profiled twice and should have the assigned sample_id : 34 and 78 
+
+```{r}
+filter(d2, is.na(HCI_cID))
+```
+
+We see sample ID 78 is missing clinical data. So we just exclude sample 78 for now
+
+```{r}
+d2 <- d2 %>% 
+  filter(!sample_id_Q13356 == 78)
+```
+
+Repeat for Q-15806
+
+```{r}
+d3 <- q_158_d %>% 
+  select(HCI_cID, sample_id) %>% 
+  mutate(sample_id = as.numeric(sample_id)) %>% 
+  rename(sample_id_Q15806 = sample_id)
+```
+
+Finally, combine all sample IDs
+
+```{r}
+# Combine all the sample IDs
+df_meta_f <- df_cohort %>% 
+  left_join(d1) %>% 
+  left_join(d2) %>% 
+  left_join(d3)
+
+write.csv(df_meta_f, file.path(wd$outCurr, "MetaData_Proteomics.csv"))
+```
+
+
+## Num samples
+
+```{r}
+# Step 1: Summarize the data (count samples for each cohort and txt_stat combination)
+summary_df <- df_meta_f %>%
+  mutate(txt_stat = gsub("[1-2]", "", txt_stat),
+         txt_stat = gsub("post", "Post", txt_stat)) %>% 
+  group_by(cohort, txt_stat) 
+
+pr1.1 <- print(paste0("Num of patients in All is ", length(unique(summary_df$mrn))))
+pr1.2 <- print(paste0("Num of samples in All is ", length(unique(summary_df$HCI_cID))))
+
+summary_df1 <- summary_df %>% 
+  summarise(count = n(), .groups = 'drop') %>% 
+  # Create a new column that combines cohort and txt_stat
+  mutate(cohort_txt_stat =
+           paste(cohort, txt_stat, sep = "_"),
+         cohort_txt_stat = factor(cohort_txt_stat, levels=c(
+           "A_Pre", "A_Post", "B_Pre", "B_Post", "C_D_Pre", "C_D_Post"
+         ))) %>% 
+  mutate(Batch = "01_All_cohort")
+
+
+# Psomagen only
+summary_df <- df_meta_f %>%
+  filter(Psomagen == "Y") %>% 
+  mutate(txt_stat = gsub("[1-2]", "", txt_stat),
+         txt_stat = gsub("post", "Post", txt_stat))
+pr2.1 <- print(paste0("Num of patients in Discovery is ", length(unique(summary_df$mrn))))
+pr2.2 <- print(paste0("Num of samples in Discovery is ", length(unique(summary_df$HCI_cID))))
+
+summary_df2 <- summary_df %>% 
+  group_by(cohort, txt_stat) %>%
+  summarise(count = n(), .groups = 'drop') %>% 
+  # Create a new column that combines cohort and txt_stat
+  mutate(cohort_txt_stat =
+           paste(cohort, txt_stat, sep = "_"),
+         cohort_txt_stat = factor(cohort_txt_stat, levels=c(
+           "A_Pre", "A_Post", "B_Pre", "B_Post", "C_D_Pre", "C_D_Post"
+         ))) %>% 
+  mutate(Batch = "02_Discovery")
+
+
+# Olinks only
+summary_df <- df_meta_f %>%
+  filter(!Psomagen == "Y") %>% 
+  filter(Q_13356 == "Y" | Q_15806 == "Y") %>% 
+  mutate(txt_stat = gsub("[1-2]", "", txt_stat),
+         txt_stat = gsub("post", "Post", txt_stat)) %>% 
+  group_by(cohort, txt_stat)
+
+pr3.1 <- print(paste0("Num of patients in Validation is ", length(unique(summary_df$mrn))))
+pr3.2 <- print(paste0("Num of samples in Validation is ", length(unique(summary_df$HCI_cID))))
+
+summary_df3 <- summary_df %>% 
+  summarise(count = n(), .groups = 'drop') %>% 
+  # Create a new column that combines cohort and txt_stat
+  mutate(cohort_txt_stat =
+           paste(cohort, txt_stat, sep = "_"),
+         cohort_txt_stat = factor(cohort_txt_stat, levels=c(
+           "A_Pre", "A_Post", "B_Pre", "B_Post", "C_D_Pre", "C_D_Post"
+         ))) %>% 
+  mutate(Batch = "03_Validation")
+
+
+# Step 1: Summarize the data (count samples for each cohort and txt_stat combination)
+summary_df <- df_meta_f %>%
+  mutate(txt_stat = gsub("[1-2]", "", txt_stat),
+         txt_stat = gsub("post", "Post", txt_stat)) %>% 
+  filter(txt_stat == "Pre") %>% 
+  group_by(cohort, txt_stat) 
+
+pr4.1 <- print(paste0("Num of patients in All is ", length(unique(summary_df$mrn))))
+pr4.2 <- print(paste0("Num of samples in All is ", length(unique(summary_df$HCI_cID))))
+
+summary_df4 <- summary_df %>% 
+  summarise(count = n(), .groups = 'drop') %>% 
+  # Create a new column that combines cohort and txt_stat
+  mutate(cohort_txt_stat =
+           paste(cohort, txt_stat, sep = "_"),
+         cohort_txt_stat = factor(cohort_txt_stat, levels=c(
+           "A_Pre", "A_Post", "B_Pre", "B_Post", "C_D_Pre", "C_D_Post"
+         ))) %>% 
+  mutate(Batch = "04_All_baseline")
+
+
+
+summary_df_all <- rbind(summary_df1, summary_df2, summary_df3)
+
+# Custom colors: you can choose shades inspired by Tableau colors
+custom_colors <- c(
+  "A_Pre" = "#1f77b4", "A_Post" = "#aec7e8",  # Blue shades
+  "B_Pre" = "#ff7f0e", "B_Post" = "#ffbb78",  # Orange shades
+  "C_D_Pre" = "#2ca02c", "C_D_Post" = "#98df8a"  # Green shades
+)
+
+# Updated plot
+p1 <- ggplot(summary_df_all, aes(x = 1, y = Batch, size = count, fill = cohort_txt_stat)) +
+  geom_point(shape = 21, color = "black", position=position_dodge(width=0.5)) +  # Create circles with black border
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circles
+  scale_size_area(max_size = 15) +  # Adjust circle sizes
+  scale_fill_manual(values = custom_colors) +  # Set custom colors
+  labs(x = "Cohort", y = "", fill = "Cohort and txt_stat", size = "Sample Count") +  # Label x-axis and legend
+  theme_bw() +  # Clean background
+  theme(legend.position = "right", axis.ticks.y = element_blank(),
+        panel.grid = element_blank())
+ggsave(p1, file=file.path(wd$outCurr, "Treatment_breakdown.pdf"), height = 5, width = 7)
+p1
+
+
+# Plot without overlaps
+p2 <- ggplot(summary_df_all, 
+             aes(x = c(
+               rep(c(1.2, 0.8, 
+                     2.2, 1.8,
+                     3.2, 2.8),3)
+               ),
+                 y = Batch, 
+                 size = count, fill = cohort_txt_stat)) +
+  geom_point(shape = 21, color = "black") +  # Create circles with black border
+  geom_text(aes(label = count), vjust = 2, size = 5) +  # Add text underneath circles
+  scale_size_area(max_size = 15) +  # Adjust circle sizes
+  scale_fill_manual(values = custom_colors) +  # Set custom colors
+  labs(x = "Cohort", y = "", fill = "Cohort and txt_stat", size = "Sample Count") +  # Label x-axis and legend
+  theme_bw() +  # Clean background
+  theme(legend.position = "right", axis.ticks.y = element_blank(),
+        panel.grid = element_blank(),
+        scale_y_discrete(expand = expansion(add = c(1, 1)))) +
+  annotate("text", x = 1.5, y = 1.2,
+           label = pr1.1) +
+  annotate("text", x = 1.5, y = 1.4,
+           label = pr1.2) +
+  annotate("text", x = 1.5, y = 2.2,
+           label = pr2.1) +
+  annotate("text", x = 1.5, y = 2.4,
+           label = pr2.2) +
+  annotate("text", x = 1.5, y = 3.2,
+           label = pr3.1) +
+  annotate("text", x = 1.5, y = 3.4,
+           label = pr3.2) +
+  NULL
+p2
+
+ggsave(p2, file=file.path(wd$outCurr, "Sample_numbers_discovery_validation.pdf"), height = 5, width = 12)
+
+```
+
+## Longtidudinal 
+
+Lets plot the distribution of samples. To see how many are longtiduinal samples. Ie - same mrn, profiled pre- and post- treatment. 
+
+```{r}
+# Identify patients groups ;
+# Group 1 - mrn that occurs 1x
+# Group 2 - mrn that occurs 2x
+#   -2B - mrn 2x in cohort B 
+#   -2C - mrn 2x in cohort C_D
+#   -2D - mrn 1x in cohort B & 1x in cohort C_D
+# Group 3 - mrn that occurs 3x
+#df_meta_f_ori <- df_meta_f 
+df_meta_f <- df_meta_f %>% 
+  mutate(txt_stat = case_when(txt_stat == "post" ~ "Post",
+                              txt_stat == "Pre2" ~ "Pre",
+                              txt_stat == "Post2" ~ "Post",
+                              TRUE ~ txt_stat)) 
+
+df_tally <- df_meta_f 
+
+df_tally_tmp <- df_tally %>%
+  select(mrn, HCI_cID, cohort) %>% distinct()
+
+mrn_counts <- df_tally_tmp %>%
+  group_by(mrn, cohort) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = cohort, values_from = count, values_fill = 0)
+
+tot_counts <- df_meta_f %>%
+  group_by(mrn) %>% 
+  summarise(total_observations = n())
+
+mrn_counts <- mrn_counts %>% left_join(tot_counts)
+
+
+
+group_1_mrns <- mrn_counts %>% filter(total_observations == 1) %>% pull(mrn)
+group_2_mrns <- mrn_counts %>% filter(total_observations == 2)
+group_2_cohort_B <- group_2_mrns %>% filter(B == 2) %>% pull(mrn)
+group_2_cohort_C <- group_2_mrns %>% filter(C_D == 2) %>% pull(mrn)
+group_2_mrns_set2 <- group_2_mrns %>% filter(B == 1 & B == 1) %>% pull(mrn)
+
+# -- Group 2--- 
+df_group2 <- df_meta_f %>%
+  filter(mrn %in% group_2_cohort_B) %>% 
+  select(mrn, HCI_cID, cohort, txt_stat) %>% arrange(mrn, cohort, txt_stat)
+
+
+# Making a function, to avoid repetition
+# Define a function that processes a cohort
+process_cohort <- function(df_meta_f, cohort_mrns, prefix, start_group) {
+  # Step 1: Filter and arrange
+  df_cohort <- df_meta_f %>%
+    filter(mrn %in% cohort_mrns) %>%
+    select(mrn, HCI_cID, cohort, txt_stat) %>%
+    arrange(mrn, cohort, txt_stat)
+  
+  # Step 2: Create the pattern for each mrn
+  df_cohort <- df_cohort %>%
+    group_by(mrn) %>%
+    arrange(cohort, txt_stat) %>%
+    mutate(pattern = paste(cohort, txt_stat, collapse = "-")) %>%
+    ungroup()
+  
+  # Step 3: Assign groups based on unique patterns
+  unique_patterns <- df_cohort %>%
+    distinct(pattern) %>%
+    mutate(group = paste0(prefix, LETTERS[start_group + row_number() - 1]))
+  
+  # Step 4: Merge group information back
+  df_cohort <- df_cohort %>%
+    left_join(unique_patterns, by = "pattern")
+  
+  # Return the dataframe and the last group number used
+  df_cohort_tmp <- df_cohort %>% select(mrn, group) %>% distinct()
+  last_group <- start_group + nrow(unique_patterns) - 1
+  
+  list(df_cohort_tmp = df_cohort_tmp, last_group = last_group)
+}
+
+# Process Group 2B (group_2_cohort_B)
+result_B <- process_cohort(df_meta_f, group_2_cohort_B, "Group 2", 1)
+
+# Process Group 2C starting from the next group after Group 2B
+result_C <- process_cohort(df_meta_f, group_2_cohort_C, "Group 2", result_B$last_group + 1)
+
+result_CD <- process_cohort(df_meta_f, group_2_mrns_set2, "Group 2", result_C$last_group + 1)
+
+# Combine the results
+df_group2_combined <- bind_rows(result_B$df_cohort_tmp, result_C$df_cohort_tmp, result_CD$df_cohort_tmp)
+
+
+# ---- Group 3 ---- #
+# Step 1: Get unique combinations of mrn, cohort, and txt_stat
+group_4_mrns <- mrn_counts %>% filter(total_observations == 3) %>% pull(mrn)
+df_group4 <- df_meta_f %>%
+  filter(mrn %in% group_4_mrns) %>% 
+  select(mrn, HCI_cID, cohort, txt_stat) %>% arrange(mrn, cohort, txt_stat)
+
+
+# data_labeled <- df_group4 %>%
+#   group_by(mrn, txt_stat) %>%
+#   mutate(txt_stat = ifelse(row_number() == 1, txt_stat, paste0(txt_stat, row_number()))) %>%
+#   ungroup()
+
+
+# Step 1: Create a unique pattern by combining cohort and txt_stat for each mrn
+# This creates a pattern for each mrn's cohort-txt_stat combination
+df_group4 <- df_group4 %>%
+  group_by(mrn) %>%
+  arrange(cohort, txt_stat) %>%  # Ensure consistent order
+  mutate(pattern = paste(cohort, txt_stat, collapse = "-")) %>%
+  ungroup()
+
+# Step 2: Assign groups based on unique patterns
+# We create a lookup table where each unique pattern is assigned a group
+unique_patterns <- df_group4 %>%
+  distinct(pattern) %>%
+  mutate(group = paste0("Group 3", LETTERS[row_number()]))
+
+
+# Step 3: Merge the group information back into the original data
+df_group4 <- df_group4 %>%
+  left_join(unique_patterns, by = "pattern")
+df_group4_tmp <- df_group4 %>% select(mrn, group) %>% distinct()
+
+dat_group <- data.frame(
+  mrn = c(group_1_mrns, 
+          df_group2_combined$mrn,
+          df_group4_tmp$mrn),
+  group = c(
+    rep("Group 1", each=length(group_1_mrns)),
+    df_group2_combined$group,
+    df_group4_tmp$group)
+)
+
+data <- df_meta_f %>% 
+  #select(mrn, HCI_cID, cohort, txt_stat) %>% distinct() %>% 
+  left_join(dat_group)
+
+# Label consequtive pre or post
+data <- data %>%
+  group_by(mrn, txt_stat) %>%
+  mutate(txt_stat = ifelse(row_number() == 1, txt_stat, paste0(txt_stat, row_number()))) %>%
+  ungroup() %>% 
+  mutate(txt_stat = factor(txt_stat, levels=c("Pre", "Pre2", "Post", "Post2")))
+
+df_pre_post <- data
+df_pre_post_tmp <- df_pre_post %>%   
+  dplyr::rename(SampleID = sample_id_psom) %>% 
+  select(cohort, SampleID, txt_stat) %>% 
+  mutate(SampleID = as.character(SampleID)) %>% 
+  distinct()
+
+data2 <- data %>% group_by(group, cohort, txt_stat) %>% 
+  arrange(group) %>% 
+  summarize(count = n()) %>% 
+  mutate(group = factor(group, levels = (unique(group))))
+
+
+ggplot(data2, aes(x=cohort, y=group, size=count, fill=txt_stat)) +
+  geom_point(shape = 21, color = "black", position=position_dodge(width=0.5)) +  
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circles
+  theme_bw() +  # Clean background
+  theme(legend.position = "right", panel.grid = element_blank()) +
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circlesNULL
+  NULL
+
+# Custom colors
+# Create a new column that combines cohort and txt_stat
+data2 <- data2 %>% 
+  mutate(cohort_txt_stat =paste(cohort, txt_stat, sep = "_"),
+         cohort_txt_stat = factor(cohort_txt_stat, levels=unique(cohort_txt_stat))) 
+
+# Custom colors: you can choose shades inspired by Tableau colors
+custom_colors <- c(
+  "A_Pre" = "#1f77b4", "A_Post" = "#aec7e8",  # Blue shades
+  "B_Pre" = "#ff7f0e", "B_Post" = "#ffbb78", "B_Post2" = "#ffbb78", # Orange shades
+  "C_D_Pre" = "#2ca02c", "C_D_Pre2" = "#2ca02c", 
+  "C_D_Post" = "#98df8a",  "C_D_Post2" = "#98df8a" # Green shades
+)
+
+ggplot(data2, aes(x=cohort, y=group, size=count, fill=cohort_txt_stat)) +
+  geom_point(shape = 21, color = "black", position=position_dodge(width=0.5)) +  
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circles
+  theme_bw() +  # Clean background
+  scale_fill_manual(values = custom_colors) +  # Set custom colors 
+  theme(legend.position = "right", panel.grid = element_blank()) +
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circlesNULL
+  NULL
+
+p2 <- 
+ggplot(data2, aes(x=cohort, y=group, size=count, fill=txt_stat)) +
+  geom_point(shape = 21, color = "black", position=position_dodge(width=0.5)) +  
+  scale_size_area(max_size = 15) +  # Adjust circle sizes
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circles
+  theme_bw() +  # Clean background
+  scale_fill_manual(values = c("Pre" = "lightblue", "Pre2" = "lightblue", 
+                               "Post" = "orange", "Post2"= "orange")) +  # Set fill colors
+  theme(legend.position = "right", panel.grid = element_blank()) +
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circlesNULL
+  NULL
+
+
+ggsave(p2, file=file.path(wd$outCurr, "Treatment_grouping_pattern_updated.pdf"), height = 5, width = 12)
+
+write.csv(data, file.path(wd$outCurr, "Treatment_grouping_pattern_updated.csv"))
+```
+
+# Save objects
+
+```{r}
+save(
+  dat_NPX, dat_NPX2, dat_NPX3, 
+  meta_file, df_meta_f, df_id_pro, df_pre_post,
+  file = file.path(wd$outData, "01_Metadata.Rdata"))
+```
+
+

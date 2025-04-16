@@ -1,0 +1,1075 @@
+---
+title: "DE analysis"
+date: "2024-11-29"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+    number_sections: true
+    theme: lumen
+---
+
+# Background
+
+We cleaned the clinical files metadata. Now we analyzed the NPX data generated. For the initial part, focus on the DE on the discovery dataset. Then move to the validation dataset
+
+# Objectives
+
+1. Exploratory analysis
+2. Perform DE with t-test
+3. Perform DE with Wilcoxon rank sum test
+4. Perform DE with linear model t-test
+5. Compare the DE from methods
+6. Overlap with cell surface markers
+
+
+# Conclusion
+
+We will use the limma method for DE testing. 
+
+# Pre-processing 
+
+## Loading packages
+
+```{r, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(readxl)   
+library(readr)
+library(stringr)
+library(limma)
+
+library(tidyverse)
+library(ggplot2)
+library(ggrepel)
+library(gghighlight)
+library(ggbeeswarm)
+library(ggsignif)
+library(VennDiagram)
+library(ggvenn)
+library(ggpubr)
+
+library(OlinkAnalyze) # install.packages("OlinkAnalyze")
+library(paletteer)
+```
+
+
+## Directories
+
+```{r}
+set.seed(1234)
+wd <- list()
+wd$main <- here()
+wd$data <- file.path(wd$main, "data")
+wd$manishData <- file.path(wd$data, "raw/data_fromManish")
+wd$d2024 <- file.path(wd$data, "updated_2024")
+wd$d2024_npx <- file.path(wd$d2024, "NPX_data")
+wd$output <- file.path(wd$main, "output")
+wd$script <- file.path(wd$main, "scripts")
+
+wd$outData <- file.path(wd$output, "data")
+wd$outCurr <- file.path(wd$output, "02_DE")
+```
+
+
+Create directories
+
+```{r}
+if (!file.exists(wd$outCurr)) {
+  dir.create(wd$outCurr)
+} else {
+  print("Directory already exists")
+}
+```
+
+Load functions
+
+```{r}
+source(file.path(wd$script, "functions.R"))
+```
+
+## Load data
+
+Load the processed metadata file
+
+```{r}
+load(file.path(wd$outData, "01_Metadata.Rdata"))
+```
+
+## Survival metadata
+
+We need a date for the OS. The OS for each patient is calculated by subtracting the sample collection date to death date. We censor patients who have missing death date (presumed alive) by the last follow up date.
+
+```{r}
+censor_date <- as.Date('2024-11-14') # November 14, 2024
+```
+
+### Psomagen
+
+We remind ourself of the psomagen clinical sheet. 
+
+> In the Psomagen cohort, some samples were profiled serially. The excel file contains 2 sheets related the Psomagen cohort, sheets 2 & 3.
+
+> Sheet 2 contains only the unique patients IDs per row. It contains all the clinical data, eg - surgery, PSA values, tumor stage, date of death...etc. 
+
+
+> While Sheet 3 have the same number of rows as the NPX data. In sheet 3, the same patient with multiple timepoints is represented in multiple rows. There is a column `sample_id` that links to the NPX `sampleID`. 
+
+We can obtain the patient identifier, death date, deceased status from sheet 2 
+
+```{r}
+# Two clicnial sheets 2
+ps_clin.1 <- read_xlsx(meta_file, sheet = 2)
+ps_clin.2 <- read_xlsx(meta_file, sheet = 3)
+
+
+# Read in the Psomagen metadata
+meta_psom <- ps_clin.1 %>% 
+  select('MRN (UUHSC)', 'Death date', 'Deceased?', 'Sample1_date', 
+         'sample1_psa','sample1_ldh', 'sample1_alk_phos') %>% 
+  rename(mrn = 'MRN (UUHSC)',
+         death_date = 'Death date',
+         death = 'Deceased?',
+         collection_date = 'Sample1_date',
+         psa = 'sample1_psa',
+         ldh = 'sample1_ldh',
+         alk_ph = 'sample1_alk_phos')
+
+# Censor the date
+meta_psom$death_date[is.na(meta_psom$death_date)] <- censor_date
+
+# Calulate OS in months
+meta_psom <- meta_psom %>% 
+  mutate(OS = as.numeric(difftime(death_date, collection_date, units = "days")),
+         OS = round(OS/30.417, digit=2),
+         death = case_when(death == "No" ~ 0,
+                           death == "Yes" ~ 1),
+         sample_id = as.character(sample_id))
+```
+
+# Obj 1: Exploratory analysis
+
+## PCA
+
+```{r}
+meta_psom_tmp <- meta_psom %>% select(-mrn) %>% 
+  dplyr::rename(SampleID = sample_id)
+
+df_meta <- df_pre_post %>%   
+  filter(!is.na(sample_id_psom)) %>% 
+  dplyr::rename(SampleID = sample_id_psom) %>% 
+  select(cohort, SampleID, txt_stat) %>% 
+  distinct() %>% 
+  mutate(SampleID = as.character(SampleID)) %>% 
+  left_join(meta_psom_tmp)
+
+# This removes control samples as well
+dat1_NPX_anno <- dat_NPX %>%
+  mutate(SampleID = as.character(SampleID)) %>% 
+  dplyr::left_join(df_meta) %>%
+  filter(!is.na(cohort))
+```
+
+Quick PCA 
+
+```{r}
+p_pca <-
+  dat1_NPX_anno %>% 
+  filter(!str_detect(SampleID, 'CS')) %>% 
+  olink_pca_plot(df = .,
+                 color_g = "cohort", byPanel = FALSE, quiet = FALSE) 
+
+pca_cor <- p_pca[[1]]$data %>%
+  rename(PC1 = PCX,
+         PC2 = PCY) %>% 
+  #Combine with master annotation
+  left_join(df_meta)
+
+ggplot(pca_cor, aes(x=PC1, y=PC2, colour=cohort)) +
+  geom_point(size=2.5) +
+  ylab(p_pca[[1]]$labels$y) +
+  xlab(p_pca[[1]]$labels$x) +
+  theme_classic() +
+  theme(legend.position = "right",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank")) +
+  scale_colour_manual(values=pal.cohort) +
+  NULL
+```
+
+Get the PCA coordinates
+
+```{r}
+pca_cor <- p_pca[[1]]$data %>%
+  rename(PC1 = PCX,
+         PC2 = PCY) %>% 
+  #Combine with master annotation
+  left_join(df_meta) 
+```
+
+Plot a different colour
+
+```{r}
+p3 <- 
+ggplot(pca_cor, aes(x=PC1, y=PC2, fill=cohort)) +
+  geom_point(shape=21, size=3) +
+  ylab(p_pca[[1]]$labels$y) +
+  xlab(p_pca[[1]]$labels$x) +
+  theme_classic() +
+  theme(legend.position = "right",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank")) +
+  scale_fill_manual(values=pal.cohort.n) +
+  NULL
+
+
+
+ggsave(p3, file=file.path(wd$outCurr, "PCA_discovery.pdf"), height = 5, width = 7)
+```
+
+Colour based on some other variable
+
+```{r}
+ggplot(pca_cor, aes(x=PC1, y=PC2, colour=OS)) +
+  geom_point(size=2.5) +
+  ylab(p_pca[[1]]$labels$y) +
+  xlab(p_pca[[1]]$labels$x) +
+  theme_classic() +
+  theme(legend.position = "right",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank")) +
+  scale_colour_viridis_c() +
+  NULL
+```
+
+## Sample outlier
+
+We check if any samples were considered outlier in all of the 8 panels
+
+```{r}
+outliers_qc_labeled <- dat1_NPX_anno |> 
+  olink_qc_plot(outlierLines = FALSE, label_outliers = TRUE) 
+
+dat_outlier <- outliers_qc_labeled$data
+
+
+sam_outlier <- dat_outlier %>% group_by(SampleID, Outlier) %>% 
+  count() %>% 
+  filter(Outlier == 1) %>% 
+  arrange(desc(n))
+head(sam_outlier)
+```
+
+> No sample failed in all 8 panel. So we retain everything
+
+
+## Assay outlier
+
+We want to check if any proteins needs to be excluded. Olink provides a collumn called "QC_Warning" that we can use to determine. 
+
+```{r}
+warn_assay <- dat1_NPX_anno %>% filter(Assay_Warning == "WARN") %>% select(Assay, OlinkID) %>% distinct()
+```
+
+Or we can determine what number of samples are expressing the protein above the limit of detection
+
+```{r}
+numSample1 <- length(unique(dat1_NPX_anno$SampleID))
+  
+dat1_missing <- dat1_NPX_anno %>% 
+  group_by(OlinkID) %>% 
+  summarise(PercMissing = (sum(NPX < LOD) / numSample1) * 100) %>% 
+  mutate(Group = "Psomagen")
+```
+
+Lets retain all the proteins with less than 80% missing-ness
+
+```{r}
+assay_keep <- dat1_missing %>% 
+  filter(PercMissing <= 80)  %>% 
+  filter(!OlinkID %in% warn_assay$OlinkID)
+length(unique(assay_keep$OlinkID))
+```
+
+Lets subset the NPX data frame to these proteins
+
+```{r}
+dat1_final <- dat1_NPX_anno %>% 
+  filter(OlinkID %in% assay_keep$OlinkID)
+```
+
+Sanity check
+
+```{r}
+length(unique(dat1_NPX_anno$OlinkID))
+length(unique(dat1_final$OlinkID))
+```
+
+# Obj 2: t-test
+
+Lets run DE using one-sided (greater) t-test to find stage specific proteins
+
+```{r}
+# Make a 2-factor comparison for t-test
+dat_NPX <- dat1_final %>%
+  dplyr::mutate(
+    Index = SampleID,
+    cohort2 = cohort, 
+    c_a_vs_b = case_when(cohort2 == "A" ~ "Y", cohort2 == "B" ~ "N"),
+    c_a_vs_cd = case_when(cohort2 == "A" ~ "Y", cohort2 == "C_D" ~ "N"),
+    
+    #c_b = case_when(cohort_simple == "B" ~ "Y", TRUE ~ "N"),
+    c_b_vs_a = case_when(cohort2 == "B" ~ "Y", cohort2 == "A" ~ "N"),
+    c_b_vs_cd = case_when(cohort2 == "B" ~ "Y", cohort2 == "C_D" ~ "N"),
+    
+    #c_cd = case_when(cohort_simple == "C" ~ "Y", TRUE ~ "N"),
+    c_cd_vs_a = case_when(cohort2 == "C_D" ~ "Y", cohort2 == "A" ~ "N"),
+    c_cd_vs_b = case_when(cohort2 == "C_D" ~ "Y", cohort2 == "B" ~ "N")
+  )
+
+sel_cat <- dat_NPX %>% dplyr::select(c_a_vs_b:c_cd_vs_b) %>% colnames()
+
+# Need to remove Assay with NA - function has been adopted
+
+p_list <- list()
+
+for (i in seq_along(sel_cat)){
+  t.tes_res <- t.test_cat_col2(dat_NPX, sel_cat[i])
+  
+  p_list[[i]]  <- t.tes_res
+}
+
+p_list_base <- p_list
+
+df_de_bridge <- do.call(rbind, p_list_base) %>% 
+  mutate(log2FC = round(log2FC, 1))
+```
+
+Show an example gene to get context
+
+```{r}
+# NOTE - if want to find the over expressed proteins in one of the category, the category group of interest should be at the back. Eg - c_b_vs_cd" means we are interested in looking at over-expressed proteins in "cd" group compared to "b". 
+
+ll <- df_de_bridge %>% filter(Cat == "c_b_vs_cd") %>% pull(OlinkID) %>% head()
+
+xxx <- df_de_bridge %>% filter(Cat == "c_b_vs_cd") %>% 
+  dplyr::arrange(desc(log2FC))
+
+df_plot <- dat_NPX %>%
+  dplyr::filter(OlinkID %in% xxx$OlinkID[1]) 
+
+# Show the plot
+max_y <- max(df_plot$NPX)
+min_y <- min(df_plot$NPX)
+
+p_viol_gene <- 
+  df_plot %>%
+  ggplot(aes(x = cohort, y = NPX, fill = cohort)) +
+  geom_quasirandom(dodge.width=0.9, colour="grey30", alpha=0.5) +
+  geom_violin(alpha = 0.5, scale = "width", position = position_dodge(width = 0.9)) +
+  geom_boxplot(outlier.alpha = 0,  width = 0.2, coef=0,
+               position = position_dodge(width = 0.9)) +
+  scale_fill_manual(values=unique(pal.cohort)) +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank"),
+        axis.text.x = element_text(angle = 0)) +
+  facet_wrap(~Assay, ncol=6, scales = "free_y") +
+  geom_signif(
+    comparisons = list(c("A", "B"),
+                       c("B", "C_D"),
+                       c("A", "C_D")),
+    map_signif_level = FALSE,
+    test = "t.test",
+    y_position = c(max_y, max_y+1, max_y+2)
+  ) +
+  scale_y_continuous(limits=c(min_y, max_y+3)) +
+  NULL
+p_viol_gene
+```
+
+Show expression on PCA plot
+
+```{r, eval=FALSE}
+g_exp <- df_plot %>% 
+  select(SampleID, NPX, Assay)
+
+pca_cor_exp <- pca_cor %>% left_join(g_exp) 
+
+ggplot(pca_cor_exp, aes(x=PC1, y=PC2, colour=NPX)) +
+  geom_point(size=2.5) +
+  ylab(p_pca[[1]]$labels$y) +
+  xlab(p_pca[[1]]$labels$x) +
+  theme_classic() +
+  theme(legend.position = "right",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank")) +
+  scale_colour_viridis_c() +
+  ggtitle(unique(g_exp$Assay))+
+  NULL
+```
+
+Find the significant proteins based on the overlap
+
+```{r}
+cut_bfc <- 1.2 # Base fold change cut-off
+cut_logFC <- 0.4 # Log FC cut-iff
+cut_fdr <- 0.05 
+
+# Protein specific to A
+df_cat_a <- df_de_bridge %>%
+  #filter(Cat %in% c("c_b_vs_a", "c_cd_vs_a") & Adjusted_pval <= cut_fdr)
+  filter(Cat %in% c("c_b_vs_a", "c_cd_vs_a") & Adjusted_pval <= cut_fdr & log2FC >= cut_logFC)
+
+df_cat_b <- df_de_bridge %>%
+  #filter(Cat %in% c("c_a_vs_b", "c_cd_vs_b") & Adjusted_pval <= cut_fdr)
+  filter(Cat %in% c("c_a_vs_b", "c_cd_vs_b") & Adjusted_pval <= cut_fdr & log2FC >= cut_logFC)
+
+df_cat_cd <- df_de_bridge %>%
+  #filter(Cat %in% c("c_a_vs_cd", "c_b_vs_cd") & Adjusted_pval <= cut_fdr)
+  filter(Cat %in% c("c_a_vs_cd", "c_b_vs_cd") & Adjusted_pval <= cut_fdr & log2FC >= cut_logFC)
+
+
+un_a <- unique(df_cat_a$OlinkID)
+un_b <- unique(df_cat_b$OlinkID)
+un_cd <- unique(df_cat_cd$OlinkID)
+
+l_uniq <- unique(c(un_a, un_b, un_cd))
+
+l_all <- list(
+  A = un_a,
+  B = un_b,
+  C = un_cd
+)
+
+
+overlap <- calculate.overlap(
+x <- list("Group A"=un_a, 
+          "Group B"=un_b,
+          "Group CD"=un_cd))
+
+pdf(file=file.path(wd$outCurr, "DE_venn_overlap.pdf"), width = 5, height = 5)
+ggvenn(
+  x, 
+  fill_color = pal.cohort.n2,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+dev.off()
+
+
+ggvenn(
+  x, 
+  fill_color = pal.cohort.n2,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+```
+
+Get data frame
+
+```{r}
+# Combine all lists into a single data frame
+all_elements <- unique(c(un_a, un_b, un_cd)) # All unique elements
+
+# Function to determine overlap degree for each element
+get_overlap_degree <- function(element, groups) {
+  present_in <- names(groups)[sapply(groups, function(group) element %in% group)]
+  if (length(present_in) > 1) {
+    return(paste(present_in, collapse = " and ")) # Combine groups if in multiple
+  } else if (length(present_in) == 1) {
+    return(present_in) # Only in one group
+  } else {
+    return("None") # Should not happen in typical use cases
+  }
+}
+
+# Apply the function across all elements
+overlap_degree <- sapply(all_elements, function(x) get_overlap_degree(x, list("Group A" = un_a, "Group B" = un_b, "Group CD" = un_cd)))
+
+# Create final data frame
+overlap_df <- data.frame(
+  OlinkID = all_elements,
+  OverlapDegree = overlap_degree
+) %>% left_join(df_id_pro)
+
+write.csv(overlap_df, file.path(wd$outCurr, "DE_genes_t_test.csv"))
+```
+
+
+# Obj 3: Wilcoxon rank sum
+
+We check the data normality distribution
+
+```{r}
+ggdensity(dat1_final$NPX, 
+          main = "Density plot of NPX expression",
+          xlab = "NPX values")
+```
+
+> Visually inspecting the data shows that it is normally distributed. 
+
+Just run Wilcoxon rank sum test anyway
+
+```{r}
+p_list <- list()
+
+for (i in seq_along(sel_cat)){
+  t.tes_res <- wilcox_cat_col2(dat_NPX, sel_cat[i])
+  
+  p_list[[i]]  <- t.tes_res
+}
+
+p_list_base <- p_list
+
+df_de_wilcox <- do.call(rbind, p_list_base) %>% 
+  mutate(log2FC = round(log2FC, 1))
+```
+
+Repeat the steps above
+
+```{r}
+# Protein specific to A
+df_cat_a <- df_de_wilcox %>%
+  #filter(Cat %in% c("c_b_vs_a", "c_cd_vs_a") & Adjusted_pval <= cut_fdr)
+  filter(Cat %in% c("c_b_vs_a", "c_cd_vs_a") & Adjusted_pval <= cut_fdr & log2FC >= cut_logFC)
+
+df_cat_b <- df_de_wilcox %>%
+  #filter(Cat %in% c("c_a_vs_b", "c_cd_vs_b") & Adjusted_pval <= cut_fdr)
+  filter(Cat %in% c("c_a_vs_b", "c_cd_vs_b") & Adjusted_pval <= cut_fdr & log2FC >= cut_logFC)
+
+df_cat_cd <- df_de_wilcox %>%
+  #filter(Cat %in% c("c_a_vs_cd", "c_b_vs_cd") & Adjusted_pval <= cut_fdr)
+  filter(Cat %in% c("c_a_vs_cd", "c_b_vs_cd") & Adjusted_pval <= cut_fdr & log2FC >= cut_logFC)
+
+
+un_a <- unique(df_cat_a$OlinkID)
+un_b <- unique(df_cat_b$OlinkID)
+un_cd <- unique(df_cat_cd$OlinkID)
+
+l_uniq <- unique(c(un_a, un_b, un_cd))
+
+l_all <- list(
+  A = un_a,
+  B = un_b,
+  C = un_cd
+)
+
+
+overlap <- calculate.overlap(
+x <- list("Group A"=un_a, 
+          "Group B"=un_b,
+          "Group CD"=un_cd))
+
+pdf(file=file.path(wd$outCurr, "DE_venn_overlap_Wilcox.pdf"), width = 5, height = 5)
+ggvenn(
+  x, 
+  fill_color = pal.cohort.n2,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+dev.off()
+
+
+ggvenn(
+  x, 
+  fill_color = pal.cohort.n2,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+```
+Compile into a list
+
+
+```{r}
+# Combine all lists into a single data frame
+all_elements <- unique(c(un_a, un_b, un_cd)) # All unique elements
+
+# Apply the function across all elements
+overlap_degree <- sapply(all_elements, function(x) get_overlap_degree(x, list("Group A" = un_a, "Group B" = un_b, "Group CD" = un_cd)))
+
+# Create final data frame
+overlap_df_wilcox <- data.frame(
+  OlinkID = all_elements,
+  OverlapDegree = overlap_degree
+) %>% left_join(df_id_pro)
+
+write.csv(overlap_df_wilcox, file.path(wd$outCurr, "DE_genes_wilco.csv"))
+```
+
+
+# Obj 4: Linear model t-test
+
+We now use the linear model approach. 
+
+```{r}
+# Limit to baseline (pre-treatment)
+# #full_dat <- dat1_final
+# tmp1 <- full_dat %>% dplyr::filter(cohort %in% c("B", "C_D") & txt_stat %in% c("Pre", "Pre2"))
+# tmp2 <- full_dat %>% dplyr::filter(cohort %in% c("A"))
+# 
+# dat1_final <- rbind(tmp1, tmp2)
+# -----------------------
+# 1) Generate to gene x sample matrix
+# -----------------------
+mat_all <- dat1_final %>%
+  dplyr::select(SampleID, OlinkID, NPX) %>%
+  # Remove contraol samples
+  dplyr::filter(!str_detect(SampleID, 'CONTROL_SAMPLE')) %>% 
+  # Convert to wide
+  tidyr::pivot_wider(names_from = SampleID, values_from = NPX) %>% 
+  as.data.frame() 
+rownames(mat_all) <- mat_all$OlinkID
+mat_all <- mat_all[,-1]
+
+# --------------------------------
+# 2) Create design and contrasts
+# --------------------------------
+# Groups for each of the columns
+df_group <- dat1_final %>% select(SampleID, cohort) %>% distinct()
+identical(colnames(mat_all), df_group$SampleID)
+
+group <- df_group$cohort
+
+# Model matrix with no intercept (i.e., "0 + group" form)
+design <- model.matrix(~ 0 + group)
+colnames(design) <- c("A", "B", "C_D")
+
+# Create two contrasts: A_vs_CD and B_vs_CD
+# +ve fold change will be the one on the left
+contrast.matrix <- makeContrasts(
+  A_vs_CD = C_D - A,
+  B_vs_CD = C_D - B,
+  A_vs_B = B - A,
+  levels   = design
+)
+
+# ------------------------------------------------------------
+# 3) Fit linear model, apply contrasts, and get unfiltered topTable
+# ------------------------------------------------------------
+fit  <- lmFit(mat_all, design)
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+
+# Collect all results (no filtering) in a single data frame:
+results_df <- data.frame()
+
+for(i in seq_len(ncol(contrast.matrix))) {
+  # Extract all genes (number=Inf), no sorting by p-value
+  tt <- topTable(fit2, coef = i, number = Inf, sort.by = "none")
+  
+  # Add columns for clarity
+  tt$Gene     <- rownames(tt)
+  tt$Contrast <- colnames(contrast.matrix)[i]
+  
+  # Combine
+  results_df <- rbind(results_df, tt)
+}
+
+# Print the final results data frame (unfiltered)
+limma_df <- results_df %>% 
+  rename(OlinkID = Gene) %>% 
+  left_join(df_id_pro) %>% 
+  rename(Adjusted_pval = adj.P.Val,
+         log2FC = logFC)
+```
+
+
+Get overlap
+
+```{r}
+# Protein specific to A
+df_cat_a <- limma_df %>%
+  #filter(Cat %in% c("c_b_vs_a", "c_cd_vs_a") & Adjusted_pval <= cut_fdr)
+  filter(Contrast %in% c("A_vs_B", "A_vs_CD") & Adjusted_pval <= cut_fdr & log2FC <= -cut_logFC)
+
+df_cat_b_1 <- limma_df %>%
+  filter(Contrast %in% c("B_vs_CD") & Adjusted_pval <= cut_fdr & log2FC <= -cut_logFC)
+df_cat_b_2 <- limma_df %>%
+  filter(Contrast %in% c("A_vs_B") & Adjusted_pval <= cut_fdr & log2FC >= cut_logFC)
+
+df_cat_b <- rbind(df_cat_b_1, df_cat_b_2)
+
+df_cat_cd <- limma_df %>%
+  #filter(Cat %in% c("c_a_vs_cd", "c_b_vs_cd") & Adjusted_pval <= cut_fdr)
+  filter(Contrast %in% c("A_vs_CD", "B_vs_CD") & Adjusted_pval <= cut_fdr & log2FC >= cut_logFC)
+
+
+un_a <- unique(df_cat_a$OlinkID)
+un_b <- unique(df_cat_b$OlinkID)
+un_cd <- unique(df_cat_cd$OlinkID)
+
+
+overlap <- calculate.overlap(
+x <- list("Group A"=un_a, 
+          "Group B"=un_b,
+          "Group CD"=un_cd))
+
+ggvenn(
+  x, 
+  fill_color = pal.cohort.n2,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+
+pdf(file=file.path(wd$outCurr, "DE_venn_overlap_Limma.pdf"), width = 5, height = 5)
+ggvenn(
+  x, 
+  fill_color = pal.cohort.n2,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+dev.off()
+
+# Protein defining cd stage only
+cd_prot <- overlap$a7
+```
+
+Save the output
+
+```{r}
+# Combine all lists into a single data frame
+all_elements <- unique(c(un_a, un_b, un_cd)) # All unique elements
+
+# Apply the function across all elements
+overlap_degree <- sapply(all_elements, function(x) get_overlap_degree(x, list("Group A" = un_a, "Group B" = un_b, "Group CD" = un_cd)))
+
+# Create final data frame
+overlap_df_limma <- data.frame(
+  OlinkID = all_elements,
+  OverlapDegree = overlap_degree
+) %>% left_join(df_id_pro)
+
+write.csv(overlap_df_limma, file.path(wd$outCurr, "DE_genes_limma.csv"))
+```
+
+
+## Breakdown
+
+Since the comparison is to get the proteins overexpressed in CD state, it can be from comparing A vs CD or B vs CD. Lets get the counts based on the category
+
+```{r}
+pivot_table <- limma_df %>% 
+  filter(Contrast %in% c("A_vs_CD", "B_vs_CD")) %>% 
+  filter (Adjusted_pval  <= cut_fdr & log2FC >= cut_logFC) %>% 
+  filter(OlinkID %in% overlap$a7) %>% 
+  select(OlinkID, Assay, Contrast) %>% 
+  mutate(present = 1) %>%  # Add a column to indicate presence
+  pivot_wider(names_from = Contrast, values_from = present, values_fill = list(present = 0))
+
+summary_cat <- pivot_table %>%
+  mutate(category = case_when(
+    A_vs_CD == 1 & B_vs_CD == 0 ~ "A_vs_CD only",
+    A_vs_CD == 0 & B_vs_CD == 1 ~ "B_vs_CD only",
+    A_vs_CD == 1 & B_vs_CD == 1 ~ "Both A_vs_CD and B_vs_CD",
+    TRUE ~ "Other"
+  ))
+summary_counts <- summary_cat %>% count(category)
+```
+
+
+We shot the plot of the top proteins
+
+```{r}
+tt <- limma_df %>% 
+  filter(Contrast %in% c("A_vs_CD", "B_vs_CD")) %>% 
+  filter (Adjusted_pval  <= cut_fdr & log2FC >= cut_logFC) %>% 
+  filter(OlinkID %in% overlap$a7)
+
+t1 <- summary_cat %>% filter(category == "A_vs_CD only")
+top_a <- tt %>% filter(OlinkID %in% t1$OlinkID) %>% 
+  slice_max(log2FC, n=1, with_ties = FALSE)
+#slice_min(Adjusted_pval, n=1, with_ties = FALSE)
+
+t1 <- summary_cat %>% filter(category == "B_vs_CD only")
+top_b <- tt %>% filter(OlinkID %in% t1$OlinkID) %>% 
+  slice_max(log2FC, n=10, with_ties = FALSE)
+#slice_min(Adjusted_pval, n=1, with_ties = FALSE)
+
+t1 <- summary_cat %>% filter(category == "Both A_vs_CD and B_vs_CD")
+top_both <- tt %>% filter(OlinkID %in% t1$OlinkID) %>% 
+  slice_max(log2FC, n=1, with_ties = FALSE)
+#slice_min(Adjusted_pval, n=1, with_ties = FALSE)
+
+# Generate the plot 
+top_pro <- c(top_a$OlinkID, top_b$OlinkID[6], top_both$OlinkID)
+top_ass <- c(top_a$Assay, top_b$Assay[6], top_both$Assay)
+df_plot <- dat_NPX %>%
+  dplyr::filter(OlinkID %in% top_pro) %>%
+  mutate(Assay = factor(Assay, levels = (top_ass)))
+
+# Show the plot
+max_y <- max(df_plot$NPX)
+min_y <- min(df_plot$NPX)
+
+p_viol_gene <- 
+  df_plot %>%
+  ggplot(aes(x = cohort, y = NPX, fill = cohort)) +
+  geom_quasirandom(dodge.width=0.1, width = 0.3, colour="grey30", alpha=0.5) +
+  geom_violin(alpha = 0.5, scale = "width", width=0.7, position = position_dodge(width = 0.9)) +
+  geom_boxplot(outlier.alpha = 0,  width = 0.2, coef=0,
+               position = position_dodge(width = 0.9)) +
+  scale_fill_manual(values=unique(pal.cohort.n2)) +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank"),
+        axis.text.x = element_text(angle = 0)) +
+  facet_wrap(~Assay, ncol=1, scales = "free_y") +
+  #scale_y_continuous(limits=c(min_y, max_y+3)) +
+  NULL
+p_viol_gene
+
+# Save plot
+ggsave(p_viol_gene, file=file.path(wd$outCurr, "mCRPC_violin_categroies.pdf"), height = 7, width = 5)
+```
+
+
+Rather than a single gene, we can do a trend plot for all the genes
+
+```{r}
+tt <- limma_df %>% 
+  filter(Contrast %in% c("A_vs_CD", "B_vs_CD")) %>% 
+  filter (Adjusted_pval  <= cut_fdr & log2FC >= cut_logFC) %>% 
+  filter(OlinkID %in% overlap$a7)
+
+t1 <- summary_cat %>% filter(category == "A_vs_CD only")
+top_a <- tt %>% filter(OlinkID %in% t1$OlinkID) 
+
+t1 <- summary_cat %>% filter(category == "B_vs_CD only")
+top_b <- tt %>% filter(OlinkID %in% t1$OlinkID) 
+
+t1 <- summary_cat %>% filter(category == "Both A_vs_CD and B_vs_CD")
+top_both <- tt %>% filter(OlinkID %in% t1$OlinkID)
+
+```
+
+Now generate some plots
+
+```{r}
+# Plot a z-normlized 
+df_plot <- dat_NPX %>%
+  dplyr::filter(OlinkID %in% top_pro) %>%
+  mutate(Assay = factor(Assay, levels = (top_ass)))
+
+# Show the plot
+max_y <- max(df_plot$NPX)
+min_y <- min(df_plot$NPX)
+
+p_viol_gene <- 
+  df_plot %>%
+  ggplot(aes(x = cohort, y = NPX, fill = cohort)) +
+  geom_quasirandom(dodge.width=0.1, width = 0.3, colour="grey30", alpha=0.5) +
+  geom_violin(alpha = 0.5, scale = "width", width=0.7, position = position_dodge(width = 0.9)) +
+  geom_boxplot(outlier.alpha = 0,  width = 0.2, coef=0,
+               position = position_dodge(width = 0.9)) +
+  scale_fill_manual(values=unique(pal.cohort.n2)) +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank"),
+        axis.text.x = element_text(angle = 0)) +
+  facet_wrap(~Assay, ncol=1, scales = "free_y") +
+  #scale_y_continuous(limits=c(min_y, max_y+3)) +
+  NULL
+p_viol_gene
+```
+
+## Cluster proteins
+
+Another way to classify this is simply identify which are higher in category A vs B. 
+
+```{r}
+tt2 <- limma_df %>% 
+  filter(Contrast %in% c("A_vs_B")) %>% 
+  filter(OlinkID %in% tt$OlinkID) %>% 
+  arrange(desc(log2FC))
+summary(tt2$log2FC)
+```
+
+Identify proteins that are higher in A compared to B 
+
+```{r}
+high_a <- tt2 %>% filter(log2FC < 0)
+high_b <- tt2 %>% filter(log2FC >= 0)
+```
+
+Lets plot these
+
+```{r}
+df_high <- data.frame(
+  OlinkID = c(high_a$OlinkID, high_b$OlinkID),
+  category = c(rep("High_A", each=nrow(high_a)),
+               rep("High_B", each=nrow(high_b)))
+) %>% left_join(df_id_pro)
+
+# Merge with NPX dataset to keep only relevant OlinkIDs
+merged_data <- dat_NPX %>%
+  dplyr::select(OlinkID, NPX, cohort) %>% 
+  inner_join(df_high, by = "OlinkID")
+
+# Z-score normalization per OlinkID
+scaled_data <- merged_data %>%
+  group_by(OlinkID) %>%
+  mutate(scaled_NPX = scale(NPX)) %>%
+  ungroup()
+
+# Summarize mean NPX per cohort & contrast
+summary_data <- scaled_data %>%
+  group_by(category, cohort) %>%
+  summarise(mean_scaled_NPX = mean(scaled_NPX), .groups = "drop")
+
+ggplot(summary_data, aes(x = cohort, y = mean_scaled_NPX, group = category, colour = cohort)) +
+  geom_point(size = 5) +  # Points
+  scale_colour_manual(values=pal.cohort.n2) +
+  geom_line(aes(group = category), color = "black", linetype = "dashed") +  # Connect points
+  facet_wrap(~ category, scales = "free_y", nrow=2) +  # Facet by contrast
+  theme_minimal() +
+  labs(x = "Cohort", y = "Mean Scaled NPX Expression", title = "Expression Patterns Across Cohorts") +
+  theme_custom +
+  NULL
+
+
+ggsave(file=file.path(wd$outCurr, "GenePatterns.pdf"), height = 5, width = 6)
+```
+
+
+# Obj 5: Compare the DE from methods
+
+Extact all overexpressed mCRPC proteins
+
+```{r}
+cd_test <- df_de_bridge %>% 
+  filter(Cat %in% c("c_a_vs_cd", "c_b_vs_cd") & Adjusted_pval <= cut_fdr & log2FC >= cut_logFC) %>% pull(OlinkID) %>% unique()
+cd_wilcox <- df_de_wilcox %>% 
+  filter(Cat %in% c("c_a_vs_cd", "c_b_vs_cd") & Adjusted_pval <= cut_fdr & log2FC >= cut_logFC) %>% pull(OlinkID) %>% unique()
+cd_limma <- limma_df %>% 
+  filter(Contrast %in% c("A_vs_CD", "B_vs_CD")) %>% 
+  filter (Adjusted_pval  <= cut_fdr & log2FC >= cut_logFC) %>% pull(OlinkID) %>% unique()
+
+overlap <- calculate.overlap(
+  x <- list(
+    "t_test"=cd_test,
+    "Wilcox"=cd_wilcox, 
+    "Limma"=cd_limma))
+
+ggvenn(
+  x, 
+  fill_color = pal.cond3,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+
+pdf(file=file.path(wd$outCurr, "DE_venn_overlap_mcRPC.pdf"), width = 5, height = 5)
+ggvenn(
+  x, 
+  fill_color = pal.cond3,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+dev.off()
+
+```
+
+Lets get the list of proteins in each of the methods
+
+```{r}
+# Apply the function across all elements
+overlap_degree <- sapply(all_elements, function(x) get_overlap_degree(x, list("t_test" = cd_test, "wilcox" = cd_wilcox, "limma" = cd_limma)))
+
+# Combine all lists into a single data frame
+all_elements <- unique(c(cd_test, cd_wilcox, cd_limma)) # All unique elements
+
+df_presence <- data.frame(
+  OlinkID   = all_elements,
+  t_test = as.integer(all_elements %in% cd_test),
+  wilcox = as.integer(all_elements %in% cd_wilcox),
+  limma  = as.integer(all_elements %in% cd_limma)
+)  %>% left_join(df_id_pro)
+
+write.csv(df_presence, file.path(wd$outCurr, "DE_genes_mCRPC.csv"))
+```
+
+Lets plot the top genes in each method based on the p-value
+
+```{r}
+t1 <- df_presence %>% filter(t_test == 1 & wilcox == 0 & limma == 0)
+cd_test <- df_de_bridge %>% 
+  filter(Cat %in% c("c_a_vs_cd", "c_b_vs_cd") & Adjusted_pval <= cut_fdr & log2FC >= cut_logFC) %>% 
+  filter(OlinkID %in% t1$OlinkID) %>% slice_min(Adjusted_pval, n=5)
+
+t1 <- df_presence %>% filter(t_test == 0 & wilcox == 1 & limma == 0)
+cd_wilcox <- df_de_wilcox %>% 
+  filter(Cat %in% c("c_a_vs_cd", "c_b_vs_cd") & Adjusted_pval <= cut_fdr & log2FC >= cut_logFC) %>% 
+  filter(OlinkID %in% t1$OlinkID) %>% slice_min(Adjusted_pval, n=5)
+
+t1 <- df_presence %>% filter(t_test == 1 & wilcox == 1 & limma == 1)
+cd_limma <- limma_df %>% 
+  filter(Contrast %in% c("A_vs_CD", "B_vs_CD")) %>% 
+  filter(Adjusted_pval <= cut_fdr & log2FC >= cut_logFC) %>% 
+  filter(OlinkID %in% t1$OlinkID) %>% slice_min(Adjusted_pval, n=5, with_ties=FALSE)
+```
+
+Copy the plot below to power point
+
+```{r}
+df_plot <- dat_NPX %>%
+  dplyr::filter(OlinkID %in% cd_test$OlinkID)  # <--- Change the subset object
+
+# Show the plot
+max_y <- max(df_plot$NPX)
+min_y <- min(df_plot$NPX)
+
+p_viol_gene <- 
+  df_plot %>%
+  ggplot(aes(x = cohort, y = NPX, fill = cohort)) +
+  geom_quasirandom(dodge.width=0.9, colour="grey30", alpha=0.5) +
+  geom_violin(alpha = 0.5, scale = "width", position = position_dodge(width = 0.9)) +
+  geom_boxplot(outlier.alpha = 0,  width = 0.2, coef=0,
+               position = position_dodge(width = 0.9)) +
+  scale_fill_manual(values=unique(pal.cohort)) +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank"),
+        axis.text.x = element_text(angle = 0)) +
+  facet_wrap(~Assay, ncol=6, scales = "free_y") +
+  # geom_signif(
+  #   comparisons = list(c("A", "B"),
+  #                      c("B", "C_D"),
+  #                      c("A", "C_D")),
+  #   map_signif_level = FALSE,
+  #   test = "t.test",
+  #   y_position = c(max_y, max_y+1, max_y+2)
+  # ) +
+  # scale_y_continuous(limits=c(min_y, max_y+3)) +
+  NULL
+p_viol_gene
+
+```
+
+> Stick to limma for DE
+
+# Obj 6: Overlap with surface marker
+
+One extra thing we want to do is to overlap the mCRPC DE with known cell surfarce markers
+
+> TO DO
+
+
+# Save objects
+
+```{r}
+save(
+  meta_psom, overlap_df_limma, df_high, overlap, censor_date, 
+  dat1_final, assay_keep,
+  limma_df, cut_fdr, cut_logFC, cd_prot,
+  file = file.path(wd$outData, "02_data.Rdata"))
+#save("~/Desktop/02_data.Rdata")
+#load("~/Desktop/02_data.Rdata")
+```
+
+

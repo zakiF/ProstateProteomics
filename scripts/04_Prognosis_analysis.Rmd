@@ -1,0 +1,830 @@
+---
+title: "Prognostic analysis"
+date: "2025-02-28"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+    number_sections: true
+    theme: lumen
+---
+
+# Background
+
+We identified the over-expressed mCRPC proteins from the discovery dataset. As we have the OS clinical data, we can perform prognostic analysis to identify if the overexpressed proteins is associated with survival.
+
+# Objectives
+
+1. Clinical features
+2. Protein - Uni-variate
+  - Continuous expression
+  - Binarize the protein to high vs low
+3. Protein - Multi-variate 
+4. Heatmap Viz
+
+# Conclusion
+
+We will use the binarized NPX protein value when correlating protein expression with OS. In addition, account for PSA, LDH and ALk Phos during the multivariate analysis. For serial samples, we wrote a function to select the patient with the highest NPX value for a given protein. 
+
+# Pre-processing 
+
+## Loading packages
+
+```{r, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(readxl)   
+library(readr)
+library(stringr)
+library(ggplot2)
+library(paletteer)
+library(VennDiagram)
+library(ggvenn)
+# Survival
+library(survival)
+library(ggsurvfit)
+library(survminer)
+# Heatmap
+library(ComplexHeatmap)
+library(circlize)
+```
+
+
+## Directories
+
+```{r}
+set.seed(123)
+wd <- list()
+wd$main <- here()
+wd$data <- file.path(wd$main, "data")
+wd$manishData <- file.path(wd$data, "raw/data_fromManish")
+wd$d2024 <- file.path(wd$data, "updated_2024")
+wd$d2024_npx <- file.path(wd$d2024, "NPX_data")
+wd$output <- file.path(wd$main, "output")
+wd$script <- file.path(wd$main, "scripts")
+
+wd$outData <- file.path(wd$output, "data")
+wd$outCurr <- file.path(wd$output, "04_Prognosis")
+```
+
+
+Create directories
+
+```{r}
+if (!file.exists(wd$outCurr)) {
+  dir.create(wd$outCurr)
+} else {
+  print("Directory already exists")
+}
+```
+
+Load functions
+
+```{r}
+source(file.path(wd$script, "functions.R"))
+```
+
+
+## Load data
+
+Load the processed file
+
+```{r}
+load(file.path(wd$outData, "01_Metadata.Rdata"))
+load(file.path(wd$outData, "02_data.Rdata"))
+```
+
+# Obj 1: Clinical features
+
+Identify the proteins defining group CD
+
+```{r}
+length(cd_prot)
+```
+
+Gather the metadata
+
+Select only the psomagen (discovery cohort)
+
+```{r}
+# Lets get the metadata - This contains the sample ID
+df_meta_f_psom <- df_meta_f %>% 
+  filter(Psomagen == "Y") %>% 
+  filter(cohort == "C_D")
+
+meta_psom_f <- df_meta_f_psom %>% 
+  left_join(meta_psom)
+
+# Fix metadata
+# Fix the PSA to numeric
+meta_psom_f <- meta_psom_f %>% 
+  mutate(psa = gsub("<", "", psa),
+         psa = as.numeric(psa),
+         ldh = as.numeric(ldh),
+         alk_ph = as.numeric(alk_ph))
+```
+
+
+## Clinical factors
+
+Run cox on the clinical variables
+
+We know we have `nrow(meta_psom_f)` samples. But this is from `length(unique(meta_psom_f$mrn))` patients. How do we perform cox on the same samples?
+
+**Use a Cox Model with Clustered Standard Errors**
+
+```{r}
+df_cox <- meta_psom_f %>% 
+  filter(! duplicated(mrn))
+
+# Fit one protein using the clustered standard error (if we are using the data frame with mulitple patients.)
+model_psa <- coxph(Surv(OS, death) ~ psa, data = meta_psom_f, cluster = mrn)
+model_ldh <- coxph(Surv(OS, death) ~ ldh, data = meta_psom_f, , cluster = mrn)
+model_alk <- coxph(Surv(OS, death) ~ alk_ph, data = meta_psom_f, cluster = mrn)
+
+# Fit clinical factor (not accounting for patients)
+# Since the PSA is the same in each patient use this is more appropriate
+model_psa2 <- coxph(Surv(OS, death) ~ psa , data = df_cox)
+model_ldh2 <- coxph(Surv(OS, death) ~ ldh, data = df_cox)
+model_alk2 <- coxph(Surv(OS, death) ~ alk_ph, data = df_cox)
+```
+
+Extract results of all
+
+```{r}
+clin_var <- c("psa", "ldh", "alk_ph")
+results <- cox_extract(clin_var, df_cox)
+
+final_results <- do.call(rbind, results) %>% 
+  mutate(Group = "Discovery")
+
+final_results_dis <- final_results
+```
+
+# Obj 2: Uni-variate Protein
+
+For the proteins highly expressed in C_D, we run a cox proportional analysis. Since we have serial patients, these patients have the same OS. So it would be incorrect to use repeated OS measurement for prognosis. An idea that for each protein, take the patient that has the highest expression of that protein (then discard the remaining serial samples). Next we can run the cox regression. This will means that duplicated patietn are not included. 
+
+We think this is not the case in the discovery cohort, ie - in the discovery cohort only 1 mCRPC patietns were profiled.
+
+```{r}
+# Function to select the highest expression per patient
+select_highest_expression
+```
+
+Lets show an example for one protein
+
+```{r}
+# Extract the NPX value of a gene defining C & D group
+eg_protein <- cd_prot[2]
+
+# Select highest NPX per patietn
+npx_exp <- dat_NPX %>% dplyr::filter(OlinkID %in% eg_protein) %>% 
+  dplyr::rename(sample_id = SampleID) %>% 
+  select(sample_id, NPX) %>% 
+  mutate(sample_id = as.character(sample_id))
+
+# Combine with metadata 
+tmp_df <- meta_psom_f %>% left_join(npx_exp)
+
+# Apply function to select the highest NPX per patient
+filtered_data <- select_highest_expression(tmp_df)
+```
+
+We can indicate a column to binarise the NPX value. 
+
+```{r}
+filtered_data <- filtered_data %>% 
+  mutate(
+    npx_median = median(NPX),
+    npx_bin = case_when(NPX >= npx_median ~ "high",
+                        NPX < npx_median ~ "low"),
+    npx_bin = factor(npx_bin, levels = c("low", "high")))
+
+# Fit cox with continuous data
+model1 <- coxph(Surv(OS, death) ~ NPX, data = filtered_data)
+
+# Fit cox with binarized data
+model2 <- coxph(Surv(OS, death) ~ npx_bin, data = filtered_data)
+```
+
+Extract the cox value
+
+```{r}
+# Function to extract summary from Cox model results
+extract_cox_summary <- function(model, OlinkID) {
+  # Extract coefficients and confidence intervals
+  coef_summary <- summary(model)$coefficients
+  coef_summary2 <- summary(model)$conf.int
+  
+  coef_names <- row.names(coef_summary)
+  coef <- coef_summary[, 1]
+  lower_bound <- coef_summary2[, 3]
+  upper_bound <- coef_summary2[, 4]
+  p_value <- coef_summary[, 5]
+  exp_coef <- coef_summary2[, 1]  # HR (Hazard Ratio)
+  
+  # Create the summary data frame
+  summary_df <- data.frame(
+    OlinkID = OlinkID,
+    Coefficient = coef,
+    Lower_Bound = lower_bound,
+    Upper_Bound = upper_bound,
+    P_Value = p_value,
+    HR = exp_coef,
+    row.names = coef_names
+  )
+  
+  return(summary_df)
+}
+```
+
+Examine the results
+
+```{r}
+cox_results <- extract_cox_summary(model1, eg_protein)
+cox_results2 <- extract_cox_summary(model2, eg_protein)
+```
+
+Lets run in all proteins, selecting the highest patient per- protein expression
+
+```{r, warning=FALSE, message=FALSE}
+cox_p_val <- 0.05
+
+tmp_npx <- dat1_final
+results <- analyze_proteins_highest(cd_prot, npx_in=tmp_npx, meta_in=meta_psom_f)
+results <- left_join(results, df_id_pro)
+res_dis_uni <- results
+
+res_dis_uni <- res_dis_uni %>% 
+  mutate(Group = "Dis_multi") %>% 
+  mutate(
+    Lower_Bound = round(Lower_Bound, 2),
+    Upper_Bound = round(Upper_Bound, 2),
+    bin_Lower_Bound = round(bin_Lower_Bound, 2),
+    bin_Upper_Bound = round(bin_Upper_Bound, 2),
+    
+    HR = round(HR, 2),
+    bin_HR = round(HR, 2),
+    
+    Sig_bin = case_when(
+      bin_P_Value <= cox_p_val & bin_Lower_Bound >=1 ~ "Sig",
+      bin_P_Value <= cox_p_val & bin_Lower_Bound <=1 & bin_Upper_Bound <=1 ~ "Sig",
+      TRUE ~ "Non") )
+
+write.csv(res_dis_uni, file.path(wd$outCurr, "HR_values_mCRPC_specific_univariate.csv"))
+```
+
+## Compare binned vs continous
+
+Check KLK3 and YAP1
+
+```{r}
+res_dis_uni %>% filter(Assay %in% c("KLK3", "YAP1")) %>% 
+  select(Assay, OlinkID, P_Value, HR, bin_P_Value, bin_HR)
+```
+
+Number of proteins considered significant in continous NPX
+
+```{r}
+sig1 <- res_dis_uni %>% filter(P_Value <0.05)
+nrow(sig1)
+
+sig2 <- res_dis_uni %>% filter(bin_P_Value <0.05)
+nrow(sig2)
+```
+
+Show overlap
+
+```{r}
+un_a <- sig1$OlinkID
+un_b <- sig2$OlinkID
+
+overlap <- calculate.overlap(
+x <- list("Cont"=un_a, 
+          "Binary"=un_b))
+
+ggvenn(
+  x, 
+  fill_color = pal.cond3,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+```
+
+> Lets stick to using the binarized NPX for now. Because it will aid risk stratification
+
+## Clusterd model
+
+> WE did not use this model
+
+Since we have serial patients, these patients have the same OS. So it would be incorrect to use repeated measurement. One alternative is to use a cox model that accounts for repeated measurement, called "clustered standard error". 
+
+**Use a Cox Model with Clustered Standard Errors**
+
+```{r,eval=FALSE}
+# Extract the NPX value of a gene defining C & D group
+eg_protein <- cd_prot[2]
+# Binarize protein to low or high based on median
+npx_exp <- dat_NPX %>% dplyr::filter(OlinkID %in% eg_protein) %>% 
+  rename(sample_id = SampleID) %>% 
+  select(sample_id, NPX) %>% 
+  mutate(sample_id = as.character(sample_id),
+         npx_median = median(NPX),
+         npx_bin = case_when(NPX >= npx_median ~ "high",
+                             NPX < npx_median ~ "low"),
+         npx_bin = factor(npx_bin, levels = c("low", "high")))
+# Combine with metadata 
+tmp_df <- meta_psom_f %>% left_join(npx_exp)
+
+# Fit one protein using the clustered standard error
+model <- coxph(Surv(OS, death) ~ NPX, data = tmp_df, cluster = mrn)
+model2 <- coxph(Surv(OS, death) ~ npx_bin, data = tmp_df, cluster = mrn)
+
+# Fit one protein using basic function
+model3 <- coxph(Surv(OS, death) ~ npx_bin, data = tmp_df)
+```
+
+To simplify analysis on all proteins, we wrote a function (using the cluster parameter).
+
+```{r, warning=FALSE, message=FALSE, eval=FALSE}
+cox_p_val <- 0.05
+tmp_npx <- dat_NPX
+# analyze_proteins_cluster is the function
+results <- analyze_proteins_cluster(cd_prot, npx_in=tmp_npx, meta_in=meta_psom_f)
+
+final_results <- do.call(rbind, results) %>% 
+  mutate(Group = "Discovery") %>% 
+  # Adjust the P_value
+  mutate(adj_p_values = p.adjust(P_Value, method = "BH")) 
+  
+
+final_results_dis_uni <- final_results
+
+# Join with Olink identifier
+final_results_dis_uni <- final_results_dis_uni %>% left_join(df_id_pro) %>% 
+  mutate(
+    Lower_Bound = round(Lower_Bound, 2),
+    Upper_Bound = round(Upper_Bound, 2),
+    HR = round(HR, 2),
+    Sig = case_when(
+      adj_p_values <= cox_p_val & Lower_Bound >=1 ~ "Sig",
+      adj_p_values <= cox_p_val & Lower_Bound <=1 & Upper_Bound <=1 ~ "Sig",
+      TRUE ~ "Non") )
+write.csv(final_results_dis_uni, file.path(wd$outCurr, "HR_values_mCRPC_specific_univariate.csv"))
+```
+
+
+# Obj 3: Multi-variate Protein
+
+We use only the proteins considered significant at the uni-variate level
+
+```{r}
+uni_sig <- res_dis_uni %>% filter(P_Value < 0.05) %>% pull(OlinkID)
+# We run all protein for now - we can filter later
+uni_sig <- res_dis_uni$OlinkID
+```
+
+
+To simplify analysis on all proteins, we wrote a function. 
+
+```{r, warning=FALSE, message=FALSE}
+# Run function on multivariate analysis
+results <- analyze_proteins_multi(uni_sig, npx_in=tmp_npx, meta_in=meta_psom_f)
+results <- left_join(results, df_id_pro)
+res_dis_mult <- results
+```
+
+Show overlap
+
+```{r}
+sig1 <- res_dis_mult %>% filter(P_Value <0.05)
+sig2 <- res_dis_mult %>% filter(bin_P_Value <0.05)
+
+un_a <- sig1$OlinkID
+un_b <- sig2$OlinkID
+
+overlap <- calculate.overlap(
+x <- list("Cont"=un_a, 
+          "Binary"=un_b))
+ggvenn(
+  x, 
+  fill_color = pal.cond3,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+```
+
+Check KLK3 and YAP1
+
+```{r}
+res_dis_mult %>% filter(Assay %in% c("KLK3", "YAP1")) %>% 
+  select(Assay, OlinkID, P_Value, HR, bin_P_Value, bin_HR)
+```
+
+## Clean up
+
+Format and save the results
+
+```{r}
+res_dis_mult <- res_dis_mult %>% 
+  mutate(Group = "Dis_multi") %>% 
+  mutate(
+    Lower_Bound = round(Lower_Bound, 2),
+    Upper_Bound = round(Upper_Bound, 2),
+    bin_Lower_Bound = round(bin_Lower_Bound, 2),
+    bin_Upper_Bound = round(bin_Upper_Bound, 2),
+    
+    HR = round(HR, 2),
+    bin_HR = round(HR, 2),
+    
+    Sig_bin = case_when(
+      bin_P_Value <= cox_p_val & bin_Lower_Bound >=1 ~ "Sig",
+      bin_P_Value <= cox_p_val & bin_Lower_Bound <=1 & bin_Upper_Bound <=1 ~ "Sig",
+      TRUE ~ "Non") )
+
+write.csv(res_dis_mult, file.path(wd$outCurr, "HR_values_mCRPC_specific_multivariate.csv"))
+```
+
+Summary stats on the HR of the significant proteins 
+
+```{r}
+filter(res_dis_mult, Sig_bin == "Sig") %>% pull(bin_HR) %>% summary()
+```
+
+Add if the proteins are considered high or low in A
+
+```{r}
+res_dis_mult <- res_dis_mult %>% left_join(df_high)
+```
+
+# Obj 4: Heatmap Viz
+
+Lets visualize the mCRPC specific proteins on a heatmap.
+
+Begin with a basic heatmap representation.
+
+## Basic
+
+Lets plot all the genes significat at univariate level
+
+```{r}
+# Get HR value
+dot_plot_data <- res_dis_mult %>% 
+  select(bin_HR, bin_Lower_Bound, bin_Upper_Bound, OlinkID, bin_P_Value, Sig_bin) %>% 
+  dplyr::rename(Value = bin_HR,
+                Lower = bin_Lower_Bound, 
+                Upper = bin_Upper_Bound,
+                PValue = bin_P_Value,
+                Sig = Sig_bin) %>% 
+   tibble::column_to_rownames(var = "OlinkID") 
+
+# Arrange the rows
+## The significant 
+t1 <- dot_plot_data %>% 
+  #filter(Adj_Pvalue <= cox_p_val) %>% 
+  filter(Sig == "Sig") %>% 
+  arrange((Value))
+## Non-sig
+t2 <- dot_plot_data %>% 
+  #filter(Adj_Pvalue > cox_p_val) %>% 
+  filter(Sig == "Non") %>% 
+  arrange((Value))
+
+dot_plot_data <- rbind(t2, t1)
+
+# Gene expression data (X)
+mat_all <- dat1_final %>%
+  dplyr::select(SampleID, OlinkID, NPX) %>%
+  # Remove contraol samples
+  dplyr::filter(!str_detect(SampleID, 'CONTROL_SAMPLE')) %>% 
+  # Convert to wide
+  tidyr::pivot_wider(names_from = SampleID, values_from = NPX) %>% 
+  as.data.frame() 
+rownames(mat_all) <- mat_all$OlinkID
+mat_all <- mat_all[,-1]
+
+# Subset to genes overxpressed in C_D
+mat_all <- mat_all[rownames(dot_plot_data),]
+# Scale rows of the heatmap
+#heatmap_data <- t(scale(t(mat_all), center = TRUE, scale = TRUE))  # Row scaling
+
+# Scale heatmap
+pheatmap.scale <- function(x) {
+  m = apply(x, 1, mean, na.rm = T)
+  s = apply(x, 1, sd, na.rm = T)
+  return((x - m) / s)
+}
+
+heatmap_data <- pheatmap.scale(mat_all)
+
+
+# Check if dot plot and heatmap are the same order
+identical(rownames(heatmap_data), rownames(dot_plot_data))
+
+
+# Custom annotation function for one dot and error bar per row
+dot_plot_with_colored_error <- AnnotationFunction(
+  fun = function(index) {
+    n <- length(index)
+    pushViewport(viewport(yscale = c(0.5, n + 0.5), xscale = c(0, 6)))  # Set scales
+    
+    # Draw the horizontal axis
+    grid.xaxis(at = seq(0, 6, by = 0.5), label = seq(0, 6, by = 0.5))
+    
+    # Make the horizontal reference line at x = 1 thinner
+    grid.lines(
+      x = unit(1, "native"),
+      y = unit(c(0.5, n + 0.5), "native"),
+      gp = gpar(col = "black", lty = 2, lwd = 1)  # Adjusted line width
+    )
+    
+    for (i in seq_len(n)) {
+      y <- unit(i, "native")  # Set position for the current row
+      x <- dot_plot_data$Value[index[i]]  # Value for the current row
+      lower <- dot_plot_data$Lower[index[i]]  # Lower bound for the current row
+      upper <- dot_plot_data$Upper[index[i]]  # Upper bound for the current row
+      pvalue <- dot_plot_data$PValue[index[i]]  # P-value for the current row
+      
+      # Determine color based on p-value
+      color <- ifelse(pvalue < cox_p_val, "red", "grey50")
+      
+      # Plot dot
+      grid.points(
+        x = unit(x, "native"), 
+        y = y, 
+        pch = 16, 
+        size = unit(2, "mm"),
+        gp = gpar(col = color),
+        default.units = "native"
+      )
+      
+      # Make the error bar line thinner
+      grid.lines(
+        x = unit(c(lower, upper), "native"),
+        y = unit(c(i, i), "native"),
+        gp = gpar(col = color, lwd = 0.2)  # Adjusted line width
+      )
+    }
+    popViewport()
+  },
+  which = "row",
+  width = unit(4, "cm") # Adjust width for the annotation
+)
+
+# Add metadata
+df_meta_id <- data.frame(
+  SampleID = as.character(df_meta_f$sample_id_psom),
+  cohort = df_meta_f$cohort,
+  mrn = df_meta_f$mrn,
+  HCI_cID = df_meta_f$HCI_cID,
+  txt_stat = df_meta_f$txt_stat) 
+
+# Example column groups
+df_colname <- data.frame(
+  SampleID = colnames(heatmap_data)) %>% 
+  left_join(df_meta_id)
+
+group_colors <- c("A" = "#1f77b4", 
+                  "B" = "#ff7f0e",
+                  "C_D" = "#2ca02c")  
+
+group_colors <- c("A" = "#AEC7E8", 
+                  "B" = "#FFBB78",
+                  "C_D" = "#98DF8A")  
+
+# Create column annotation
+column_anno <- HeatmapAnnotation(
+  Group = df_colname$cohort,
+  col = list(Group = group_colors),
+  annotation_legend_param = list(
+    title = "Column Groups",
+    at = names(group_colors),
+    labels = names(group_colors)
+  )
+)
+
+
+# Define the heatmap
+ht <- Heatmap(
+  heatmap_data,
+  name = "Expression",
+  row_title = "Genes",
+  column_title = "Samples",
+  top_annotation = column_anno,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  cluster_rows = FALSE
+)
+
+
+# Add the dot plot with colored error bars and p-value-based coloring as a row annotation
+dot_plot_anno <- rowAnnotation(
+  DotPlot = dot_plot_with_colored_error
+)
+
+# Combine heatmap and annotations
+draw(ht + dot_plot_anno, heatmap_legend_side = "right", annotation_legend_side = "right")
+
+```
+
+## Version 1
+
+Make heatmap better ordered
+
+```{r}
+# Make the heatmap nicer. We want to order sample C_D
+sample_CD <- df_colname %>% filter(cohort == "C_D")
+mat_tmp <-  heatmap_data[,sample_CD$SampleID]
+
+p_heat <- 
+  pheatmap::pheatmap(mat_tmp, 
+           cluster_rows = TRUE, 
+           cluster_cols = TRUE,
+           scale = "none", # Change to none if we scaled the data
+           silent = TRUE)
+cd_or <- sample_CD$SampleID[p_heat$tree_col$order]
+
+
+# Just get the mean / median of all genes and order by it
+column_medians <- sort(apply(mat_tmp, 2, function(x) median(x, na.rm = TRUE)))
+
+
+# Re arrange the heamap 
+# Make cohort A first
+o1 <- df_colname %>% filter(cohort == "A") %>% pull(SampleID)
+# Cohort B 2nd
+o2 <- df_colname %>% filter(cohort == "B") %>% pull(SampleID)
+
+# Now order
+
+mat22_or <- heatmap_data[,c(o1, o2, cd_or)]
+mat22_or <- heatmap_data[,c(o1, o2, names(column_medians))]
+
+# New order 
+new_or <- data.frame(
+  SampleID = c(o1, o2, cd_or)
+) %>% left_join(df_colname)
+
+# Add the OS data as well (just for cohort C_D)
+tmp <- meta_psom_f %>% select(sample_id_psom, death, OS) %>% distinct() %>% 
+  rename(SampleID = sample_id_psom) %>% 
+  mutate(SampleID = as.character(SampleID))
+new_or <- new_or %>% left_join(tmp)
+
+
+
+# Create column annotation
+column_anno2 <- HeatmapAnnotation(
+  Group = new_or$cohort,
+  #OS = new_or$OS,
+  col = list(Group = group_colors),
+  annotation_legend_param = list(
+    title = "Column Groups",
+    at = names(group_colors),
+    labels = names(group_colors)
+  )
+)
+
+
+# Generate a custom color scheme
+paletteLength <- 30
+mypalette1 <- rev(paletteer::paletteer_c('ggthemes::Red-Blue Diverging', paletteLength))
+mypalette1 <- as.character(mypalette1)  # Ensure the colors are character strings
+
+# Define breaks for the colors
+myBreaks <- seq(-2, 3, length.out = paletteLength)  # Match the number of breaks to paletteLength
+
+# Create a custom color function using colorRamp2
+col_fun <- colorRamp2(myBreaks, mypalette1)
+
+
+# Define the heatmap
+ht <- Heatmap(
+  mat22_or,
+  name = "Expression",
+  row_title = "Genes",
+  column_title = "Samples",
+  top_annotation = column_anno2,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  column_split = factor((new_or$cohort)),  # Split columns by groups
+  gap = unit(2, "mm"),  # Specify gap size between groups
+  col = col_fun,  # Apply the custom color function
+  heatmap_legend_param = list(
+    #title = "Z-score",
+    at = seq(-2, 3, by = 1),  # Adjust ticks to match your breaks
+    labels = seq(-2, 3, by = 1)  # Labels for each tick
+  )
+)
+
+# Combine heatmap and annotations
+pdf(file.path(wd$outCurr, "Stage_specific_heatmap.pdf"), height = 6, width = 12)
+draw(ht + dot_plot_anno, heatmap_legend_side = "right", annotation_legend_side = "right")
+dev.off()
+```
+
+# Obj 7: Kaplan-Meier
+
+Generate a risk score and run a Kaplan-Meier on high and low.
+
+Lets calculate the risk score. We first need the OS outcome and the protein expression value.
+
+Show example for 1 patient
+
+```{r}
+# We have the OS outomce here - meta_psom_f
+# Get top proteins
+top_p <- res_dis_mult %>% filter(P_Value < 0.05) %>% slice_max(HR, n=20) %>% 
+  select(OlinkID, Coefficient)
+```
+
+Run risk score calculation for one patient
+
+```{r}
+# Cohort C_D patients
+pat_cd <- meta_psom_f %>% filter(cohort == "C_D") %>% 
+  select(sample_id_psom, death, OS) %>% 
+  rename(SampleID = sample_id_psom) %>% 
+  mutate(SampleID = as.character(SampleID)) 
+uniq_pat <- unique(pat_cd$SampleID)
+# Select one paitent
+dat1_tmp <- dat1_final %>% filter(SampleID %in% uniq_pat[2]) %>% 
+  # Filter to genes of interest
+  filter(OlinkID %in% top_p$OlinkID) %>% 
+  # Just to get a cleaner data
+  select(SampleID, OlinkID, NPX) %>% 
+  # Add coeeficent 
+  left_join(top_p) %>% 
+  # Calculate risk score
+  mutate(RS = Coefficient * NPX,
+         Sum_rs = sum(RS)) %>% 
+  # Sum the risk score
+  select(SampleID, Sum_rs) %>% 
+  distinct() %>% 
+  # Add outcomes
+  left_join(pat_cd) %>% 
+  # Just to get a clean view
+  select(SampleID, Sum_rs, death, OS)  
+```
+
+Repeat for all patient
+
+```{r}
+df_pat_sum <- dat1_final %>% filter(cohort == "C_D") %>% 
+  # Filter to genes of interest
+  filter(OlinkID %in% top_p$OlinkID) %>% 
+  # Just to get a cleaner data
+  select(SampleID, OlinkID, NPX) %>% 
+  # Add coeeficent 
+  left_join(top_p) %>% 
+  # Calculate risk score
+  group_by(SampleID) %>% 
+  mutate(RS = Coefficient * NPX,
+         Sum_rs = sum(RS)) %>% 
+  # Sum the risk score
+  select(SampleID, Sum_rs) %>% 
+  distinct() %>% 
+  # Add outcomes
+  left_join(pat_cd) %>% 
+  # Just to get a clean view
+  select(SampleID, Sum_rs, death, OS) %>% 
+  ungroup()
+```
+
+Now lets dichotomize the risk score
+
+```{r}
+df_pat_sum <- df_pat_sum %>% 
+  mutate(RS_binr = case_when(Sum_rs > median(Sum_rs) ~ "high",
+                             Sum_rs <= median(Sum_rs) ~ "low"),
+         RS_binr = factor(RS_binr, levels=c("low", "high")))
+
+# Fit survival data using the Kaplan-Meier method
+surv_object <- Surv(time = df_pat_sum$OS, event = df_pat_sum$death) 
+# Fit Kaplan-Meier curve
+fit1 <- survfit(surv_object ~ RS_binr, data = df_pat_sum)
+p_OS <- ggsurvplot(fit1, data = df_pat_sum, pval = TRUE, risk.table=TRUE)
+p_OS <- ggsurvplot(fit1, data = df_pat_sum, pval = TRUE, risk.table=TRUE,
+                    conf.int = TRUE,
+                    palette = c("#7F7F7F", "#e41a1c"))
+p_OS
+pdf(file.path(wd$outCurr, "RS_OS.pdf"), width = 12, height = 8)
+p_OS
+dev.off()
+```
+
+
+
+# Save objects
+
+```{r}
+save(
+  res_dis_mult, uni_sig,
+  file = file.path(wd$outData, "04_data.Rdata"))
+```
+
