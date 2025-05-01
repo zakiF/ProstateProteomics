@@ -28,6 +28,10 @@ We identified the over-expressed mCRPC proteins from the discovery dataset. As w
 
 We will use the binarized NPX protein value when correlating protein expression with OS. In addition, account for PSA, LDH and ALk Phos during the multivariate analysis. For serial samples, we wrote a function to select the patient with the highest NPX value for a given protein. 
 
+We will not use the results from this part, because we will pool data from the initial psomagen cohort with the Olink batches. Then only in this pooled data, we will do the prognisis analysis.
+
+> We will not be performing this analysis
+
 # Pre-processing 
 
 ## Loading packages

@@ -69,6 +69,8 @@ wd$script <- file.path(wd$main, "scripts")
 
 wd$outData <- file.path(wd$output, "data")
 wd$outCurr <- file.path(wd$output, "06_Bridging")
+
+set.seed(123)
 ```
 
 
@@ -715,7 +717,7 @@ cor_results <- read.csv(file.path(wd$outCurr, "Filtered_genes_LimmaCorrected_cor
 We saw some correlations are below 0.6, we remove these replicates as the correlation is rather low. 
 
 ```{r}
-df_low <- cor_results_ori %>% filter(!is.na(Rep)) %>% filter(Correlation <= 0.5)
+df_low <- cor_results %>% filter(!is.na(Rep)) %>% filter(Correlation <= 0.5)
 tail(df_low)
 ```
 
@@ -961,7 +963,7 @@ The bridging analysis only works with 2 dataset. Because we want to bridge betwe
 
 ## Q-13356 + Q-15806
 
-```{r}
+```{r,eval=FALSE}
 xx1 <- dat2_final
 xx2 <- dat3_final
 
@@ -1003,7 +1005,7 @@ npx_br_data <- olink_normalization(
 
 ## Q-13356 + Psomagen
 
-```{r}
+```{r,eval=FALSE}
 xx1 <- dat2_final
 xx2 <- dat1_final
 
@@ -1047,7 +1049,7 @@ npx_br_data2 <- olink_normalization(
 
 Here we bridge across 3 cohorts, We simply combine the bridged NPX values. 
 
-```{r}
+```{r,eval=FALSE}
 b1 <- npx_br_data 
 b2 <- npx_br_data2 %>% filter(!Project == "data1") %>%  # Remove data from project 1
   mutate(Project = gsub("data2", "data3", Project),
@@ -1063,7 +1065,7 @@ We can see that technical replicates are kept.
 
 For example
 
-```{r}
+```{r,eval=FALSE}
 length(unique(npx_all$SampleID))
 ```
 
@@ -1071,7 +1073,7 @@ We get 344, but we actually just have 312 samples. So we need to remove technica
 
 So for the samples with repeated measurement, we want to just keep 1. We already removed project Q-13356 data from the 2nd round of bridging (Q-13356 + Psomagen). We may have Psomagen and Q-15806 duplicate values
 
-```{r}
+```{r,eval=FALSE}
 meta_data %>% filter(Rep == "Rep_20") %>% .[,1:5]
 
 npx_all %>% select(SampleID) %>% distinct() %>% filter(SampleID == "data1Q_13356_87") 
@@ -1080,7 +1082,7 @@ npx_all %>% select(SampleID) %>% distinct() %>% filter(SampleID == "Ps_73")
 ```
 For those profiled multiple times. We will keep the Psomagen data first, then the Q15806, then the Q 13356.
 
-```{r}
+```{r,eval=FALSE}
 df <- df_meta_f %>%
   mutate(
     sample_id_psom = paste0("Ps_", sample_id_psom),
@@ -1105,7 +1107,7 @@ Quick PCA analysis
 
 Lets subset to the samples of interest
 
-```{r}
+```{r,eval=FALSE}
 npx_all_sub <- npx_all %>% 
   filter(SampleID %in% df$final_sample_id)
 
@@ -1115,7 +1117,7 @@ length(unique(npx_all_sub$SampleID))
 
 Lets subset to overlapping proteins for PCA analysis
 
-```{r}
+```{r,eval=FALSE}
 ggvenn(
   x, 
   fill_color = pal.cohort.n2,
@@ -1129,7 +1131,7 @@ npx_all_sub <- npx_all_sub %>% filter(OlinkID %in% overlap$a5)
 
 Run PCA
 
-```{r}
+```{r,eval=FALSE}
 ### PCA plot
 p_pca_bridge_all <-
   npx_all_sub %>% 
@@ -1140,7 +1142,7 @@ p_pca_bridge_all <-
 
 Make the colour nicer
 
-```{r}
+```{r,eval=FALSE}
 # Extract metadata
 # Subset to columns of interest
 df_sub <- df %>% select(mrn, HCI_cID, txt_stat, final_sample_id) %>% 
@@ -1165,7 +1167,7 @@ pca_cor_b_all <- p_pca_bridge_all[[1]]$data %>%
 
 Make the plot
 
-```{r}
+```{r,eval=FALSE}
 p3.1 <- 
 ggplot(pca_cor_b_all, aes(x = PC1, y = PC2, color = Batch)) +
   geom_point(size = pt_sz) +
@@ -1195,7 +1197,7 @@ ggplot(pca_cor_b_all, aes(x = PC1, y = PC2, color = cohort)) +
 
 Show all PCA plot
 
-```{r}
+```{r,eval=FALSE}
 p1.1 + p1.2 + 
 p3.1 + p3.2 +  
 p2.1 + p2.2 + plot_layout(ncol=2)
@@ -1204,8 +1206,6 @@ p2.1 + p2.2 + plot_layout(ncol=2)
 > We tried two methods to bridge the data; 1) The Olink default method, 2) Limma batch correction. 
 It seems the Limma methods works best so we will use it
 
-
-
 # Save objects
 
 ```{r}
@@ -1213,3 +1213,4 @@ save(
   exprMatrix_corrected2, exprMatrix_corrected_sub, 
   file = file.path(wd$outData, "06_data.Rdata"))
 ```
+

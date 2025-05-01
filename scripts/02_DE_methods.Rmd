@@ -114,20 +114,22 @@ We remind ourself of the psomagen clinical sheet.
 
 > Sheet 2 contains only the unique patients IDs per row. It contains all the clinical data, eg - surgery, PSA values, tumor stage, date of death...etc. 
 
-
 > While Sheet 3 have the same number of rows as the NPX data. In sheet 3, the same patient with multiple timepoints is represented in multiple rows. There is a column `sample_id` that links to the NPX `sampleID`. 
 
-We can obtain the patient identifier, death date, deceased status from sheet 2 
+
 
 ```{r}
-# Two clicnial sheets 2
+# Two clicnial sheets
 ps_clin.1 <- read_xlsx(meta_file, sheet = 2)
 ps_clin.2 <- read_xlsx(meta_file, sheet = 3)
+```
 
+We can obtain the patient identifier, death date, deceased status from sheet 2.
 
+```{r}
 # Read in the Psomagen metadata
 meta_psom <- ps_clin.1 %>% 
-  select('MRN (UUHSC)', 'Death date', 'Deceased?', 'Sample1_date', 
+  select('sample_id', 'MRN (UUHSC)', 'Death date', 'Deceased?', 'Sample1_date', 
          'sample1_psa','sample1_ldh', 'sample1_alk_phos') %>% 
   rename(mrn = 'MRN (UUHSC)',
          death_date = 'Death date',
@@ -154,13 +156,12 @@ meta_psom <- meta_psom %>%
 ## PCA
 
 ```{r}
-meta_psom_tmp <- meta_psom %>% select(-mrn) %>% 
-  dplyr::rename(SampleID = sample_id)
+meta_psom_tmp <- meta_psom %>% select(-sample_id) 
 
-df_meta <- df_pre_post %>%   
+df_meta <- df_pre_post_ori %>%   
   filter(!is.na(sample_id_psom)) %>% 
   dplyr::rename(SampleID = sample_id_psom) %>% 
-  select(cohort, SampleID, txt_stat) %>% 
+  select(mrn, cohort, SampleID, txt_stat) %>% 
   distinct() %>% 
   mutate(SampleID = as.character(SampleID)) %>% 
   left_join(meta_psom_tmp)
@@ -232,7 +233,8 @@ ggsave(p3, file=file.path(wd$outCurr, "PCA_discovery.pdf"), height = 5, width = 
 Colour based on some other variable
 
 ```{r}
-ggplot(pca_cor, aes(x=PC1, y=PC2, colour=OS)) +
+pca_cor %>% filter(cohort == "C_D") %>% 
+ggplot(., aes(x=PC1, y=PC2, colour=OS)) +
   geom_point(size=2.5) +
   ylab(p_pca[[1]]$labels$y) +
   xlab(p_pca[[1]]$labels$x) +
@@ -306,6 +308,87 @@ Sanity check
 length(unique(dat1_NPX_anno$OlinkID))
 length(unique(dat1_final$OlinkID))
 ```
+
+## PCA
+
+Replot the PCA based on the filtered proteins
+
+```{r}
+#ss <- df_meta %>% filter(txt_stat %in% c("Pre", "Pre2"))
+#dat1_final_tmp <- dat1_final %>% filter(SampleID %in% ss$SampleID)
+# Quick PCA 
+p_pca <-
+  dat1_final %>% 
+  filter(!str_detect(SampleID, 'CS')) %>% 
+  olink_pca_plot(df = .,
+                 color_g = "cohort", byPanel = FALSE, quiet = FALSE) 
+
+pca_cor <- p_pca[[1]]$data %>%
+  rename(PC1 = PCX,
+         PC2 = PCY) %>% 
+  #Combine with master annotation
+  left_join(df_meta)
+
+ggplot(pca_cor, aes(x=PC1, y=PC2, colour=cohort)) +
+  geom_point(size=2.5) +
+  ylab(p_pca[[1]]$labels$y) +
+  xlab(p_pca[[1]]$labels$x) +
+  theme_classic() +
+  theme(legend.position = "right",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank")) +
+  scale_colour_manual(values=pal.cohort) +
+  NULL
+
+# Get the PCA coordinates
+pca_cor <- p_pca[[1]]$data %>%
+  rename(PC1 = PCX,
+         PC2 = PCY) %>% 
+  #Combine with master annotation
+  left_join(df_meta) 
+
+p3 <- 
+ggplot(pca_cor, aes(x=PC1, y=PC2, fill=cohort)) +
+  geom_point(shape=21, size=3) +
+  ylab(p_pca[[1]]$labels$y) +
+  xlab(p_pca[[1]]$labels$x) +
+  theme_classic() +
+  theme(legend.position = "right",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank")) +
+  scale_fill_manual(values=pal.cohort.n) +
+  NULL
+
+
+
+ggsave(p3, file=file.path(wd$outCurr, "PCA_discovery.pdf"), height = 5, width = 7)
+```
+
+### PCA association
+
+Try to see if there is associateion between PC1 and OS
+
+```{r}
+exp <- dat1_final %>%
+  dplyr::select(SampleID, OlinkID, NPX) %>%
+  # Remove contraol samples
+  dplyr::filter(!str_detect(SampleID, 'CONTROL_SAMPLE')) %>% 
+  # Convert to wide
+  tidyr::pivot_wider(names_from = SampleID, values_from = NPX) %>% 
+  as.data.frame() 
+rownames(exp) <- exp$OlinkID
+exp <- exp[,-1]
+
+pc <- prcomp(t(exp), scale. = TRUE)
+
+pc1_scores <- pc$x[, 1]  # First principal component
+
+cor(pc1_scores, df_meta$OS, method = "pearson")
+
+summary(lm(pc$x[,1] ~ df_meta$OS))
+```
+
+
 
 # Obj 2: t-test
 
@@ -745,6 +828,65 @@ overlap_df_limma <- data.frame(
 
 write.csv(overlap_df_limma, file.path(wd$outCurr, "DE_genes_limma.csv"))
 ```
+
+## DE table
+
+Lets generate a table of the proteins to show their mean expression level, fold change and FDR.
+
+```{r}
+# Get the Mean expression in cohort A, B & C_D
+tt <- df_de_bridge %>% select(OlinkID, Cat, Mean_Y, Mean_N) %>% 
+  filter(OlinkID %in% overlap_df_limma$OlinkID)
+
+# Step 1: Extract group1 and group2 from 'Cat'
+df_clean <- tt %>%
+  mutate(
+    group1 = str_extract(Cat, "(?<=c_)[^_]+"),
+    group2 = str_extract(Cat, "(?<=vs_).*")
+  )
+
+# Step 2: Reshape to long format, linking Mean_Y to group1 and Mean_N to group2
+df_long <- df_clean %>%
+  select(OlinkID, group1, group2, Mean_Y, Mean_N) %>%
+  pivot_longer(cols = c(Mean_Y, Mean_N), names_to = "type", values_to = "mean_value") %>%
+  mutate(group = if_else(type == "Mean_Y", group1, group2)) %>%
+  select(OlinkID, group, mean_value) %>%
+  distinct()  # keep unique (OlinkID, group, mean) pairs
+
+# Step 3: Pivot to wide format
+df_wide <- df_long %>%
+  pivot_wider(names_from = group, values_from = mean_value)
+```
+
+For each of the Olink ID add the fold change, p-value and FDR as determined by limma
+
+```{r}
+# Step 1: pivot longer to put all numeric columns under one column with names
+df2_long <- limma_df %>%
+  filter(OlinkID %in% overlap_df_limma$OlinkID) %>% 
+  select(OlinkID, Contrast, log2FC, t, P.Value, Adjusted_pval) %>% 
+  pivot_longer(cols = c(log2FC, t, P.Value, Adjusted_pval),
+               names_to = "metric", values_to = "value")
+
+# Step 2: unite metric and contrast for column names
+df2_wide <- df2_long %>%
+  mutate(name = paste0(metric, "_", Contrast)) %>%
+  select(-metric, -Contrast) %>%
+  pivot_wider(names_from = name, values_from = value)
+```
+
+Join both of them with the overlap data
+
+```{r}
+overlap_df_limma_full <- overlap_df_limma %>% 
+  left_join(df_wide) %>% 
+  left_join(df2_wide) %>% 
+  arrange(OverlapDegree, Assay)
+
+write.csv(overlap_df_limma_full, file.path(wd$outCurr, "DE_genes_limma_with_pVal.csv"))
+```
+
+
 
 
 ## Breakdown

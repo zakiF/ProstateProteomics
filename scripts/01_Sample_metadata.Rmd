@@ -60,10 +60,7 @@ wd$output <- file.path(wd$main, "output")
 wd$script <- file.path(wd$main, "scripts")
 
 wd$outData <- file.path(wd$output, "data")
-wd$outCurr <- file.path(wd$output, "01_InitialAnalys")
-
-t.testDir <- file.path(wd$outCurr , "t_test")
-dir.create(t.testDir)
+wd$outCurr <- file.path(wd$output, "01_InitialAnalysis")
 ```
 
 
@@ -415,6 +412,62 @@ df_meta_f <- df_cohort %>%
 
 write.csv(df_meta_f, file.path(wd$outCurr, "MetaData_Proteomics.csv"))
 ```
+
+## Venn overlap
+
+Lets get a Venn diagram of the number of samples in each batch
+
+```{r}
+un_a <- df_meta_f %>% filter(Psomagen == "Y") %>% pull(HCI_cID)
+un_b <- df_meta_f %>% filter(Q_13356 == "Y") %>% pull(HCI_cID)
+un_c <- df_meta_f %>% filter(Q_15806 == "Y") %>% pull(HCI_cID)
+
+l_all <- list(
+  Psomagen = un_a,
+  Q_13356 = un_b,
+  Q_15806 = un_c
+)
+
+overlap <- calculate.overlap(
+x <- list("Psomagen"=un_a, 
+          "Q_13356"=un_b,
+          "Q_15806"=un_c))
+
+pdf(file=file.path(wd$outCurr, "Samples_venn_overlap.pdf"), width = 5, height = 5)
+ggvenn(
+  x, 
+  fill_color = pal.study,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+dev.off()
+
+un_a <- df_meta_f %>% filter(Psomagen == "Y") %>% pull(mrn) %>% unique()
+un_b <- df_meta_f %>% filter(Q_13356 == "Y") %>% pull(mrn) %>% unique()
+un_c <- df_meta_f %>% filter(Q_15806 == "Y") %>% pull(mrn) %>% unique()
+
+l_all <- list(
+  Psomagen = un_a,
+  Q_13356 = un_b,
+  Q_15806 = un_c
+)
+
+overlap <- calculate.overlap(
+x <- list("Psomagen"=un_a, 
+          "Q_13356"=un_b,
+          "Q_15806"=un_c))
+
+pdf(file=file.path(wd$outCurr, "Patient_venn_overlap.pdf"), width = 5, height = 5)
+ggvenn(
+  x, 
+  fill_color = pal.study,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+dev.off()
+```
+
+
 
 
 ## Num samples
@@ -772,14 +825,496 @@ ggplot(data2, aes(x=cohort, y=group, size=count, fill=txt_stat)) +
 ggsave(p2, file=file.path(wd$outCurr, "Treatment_grouping_pattern_updated.pdf"), height = 5, width = 12)
 
 write.csv(data, file.path(wd$outCurr, "Treatment_grouping_pattern_updated.csv"))
+
+df_pre_post_ori <- df_pre_post
 ```
+In the local stage, lets group all together. So the plots are on the same scale. Also add the total number of samples
+
+```{r}
+# Sum of A (Pre + Post)
+sum_A <- data2 %>%
+  filter(cohort == "A") %>%
+  summarise(total = sum(count)) %>%
+  pull(total)
+
+# Create Group 0
+# First, summarize "pre/post" status for each cohort
+group_0 <- data2 %>%
+  mutate(
+    txt_stat_grouped = case_when(
+      str_detect(txt_stat, regex("pre", ignore_case = TRUE)) ~ "Pre",
+      str_detect(txt_stat, regex("post", ignore_case = TRUE)) ~ "Post",
+      TRUE ~ as.character(txt_stat)
+    )
+  ) %>%
+  group_by(cohort, txt_stat_grouped) %>%
+  summarise(count = sum(count), .groups = "drop") %>%
+  
+  # Special step: handle A separately
+  mutate(
+    count = if_else(cohort == "A",
+                    sum(count[cohort == "A"]),
+                    count)
+  ) %>%
+  
+  mutate(
+    group = "Group 01",
+    cohort_txt_stat = paste0(cohort, "_", txt_stat_grouped)
+  ) %>%
+  select(group, cohort, txt_stat = txt_stat_grouped, count, cohort_txt_stat)
+
+
+
+# Bind Group 1 and Group 0 together
+df_new <- bind_rows(data2, group_0) %>% ungroup %>% distinct()
+
+# Extend view
+df_new <- df_new %>%
+  bind_rows(tibble(
+    group = "Group 00",
+    cohort = "A",
+    txt_stat = "Pre",
+    count = NA,
+    cohort_txt_stat = "A_Pre"
+  )) %>% mutate(
+    txt_stat = factor(txt_stat, levels=c("Pre", "Pre2", "Post", "Post2")),
+    cohort_txt_stat = factor(cohort_txt_stat, 
+                             levels=c("A_Pre", "A_Post",
+                                      "B_Pre", "B_Post", "B_Post2",
+                                      "C_D_Pre", "C_D_Pre2", "C_D_Post", "C_D_Post2"
+                                      ))
+  )
+
+tmp_width <- 0
+p2 <- 
+ggplot(df_new, aes(x=cohort_txt_stat, y=group, size=count, fill=cohort_txt_stat)) +
+  geom_point(shape = 21, color = "black", position=position_dodge(width=tmp_width)) +  
+  scale_size_area(max_size = 15) +  # Adjust circle sizes
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=tmp_width)) +  # Add text underneath circles
+  theme_bw() +  # Clean background
+  scale_fill_manual(
+    values = c("A_Pre" = "lightblue", "A_Pre2" = "lightblue", 
+               "B_Pre" = "lightblue", "B_Pre2" = "lightblue", 
+               "C_D_Pre" = "lightblue", "C_D_Pre2" = "lightblue", 
+               "A_Post" = "orange", "A_Post2"= "orange",
+               "B_Post" = "orange", "B_Post2"= "orange",
+               "C_D_Post" = "orange", "C_D_Post2"= "orange")
+    ) +  # Set fill colors
+  theme(legend.position = "right", panel.grid = element_blank()) +
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=tmp_width)) +  # Add text underneath circlesNULL
+  NULL
+
+
+ggsave(p2, file=file.path(wd$outCurr, "Treatment_grouping_pattern_all.pdf"), height = 5, width = 12)
+```
+
+
+
+
+
+### Discovery
+
+We repeat this for discovery cohort alone
+
+```{r}
+df_tally <- df_meta_f %>% filter(Psomagen == "Y")
+
+df_tally_tmp <- df_tally %>%
+  select(mrn, HCI_cID, cohort) %>% distinct()
+
+mrn_counts <- df_tally_tmp %>%
+  group_by(mrn, cohort) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = cohort, values_from = count, values_fill = 0)
+
+tot_counts <- df_tally %>%
+  group_by(mrn) %>% 
+  summarise(total_observations = n())
+
+mrn_counts <- mrn_counts %>% left_join(tot_counts)
+
+
+
+group_1_mrns <- mrn_counts %>% filter(total_observations == 1) %>% pull(mrn)
+group_2_mrns <- mrn_counts %>% filter(total_observations == 2)
+group_2_cohort_B <- group_2_mrns %>% filter(B == 2) %>% pull(mrn)
+group_2_cohort_C <- group_2_mrns %>% filter(C_D == 2) %>% pull(mrn)
+group_2_mrns_set2 <- group_2_mrns %>% filter(B == 1 & B == 1) %>% pull(mrn)
+
+# -- Group 2--- 
+df_group2 <- df_tally %>%
+  filter(mrn %in% group_2_cohort_B) %>% 
+  select(mrn, HCI_cID, cohort, txt_stat) %>% arrange(mrn, cohort, txt_stat)
+
+
+# Making a function, to avoid repetition
+# Define a function that processes a cohort
+process_cohort <- function(df_tally, cohort_mrns, prefix, start_group) {
+  # Step 1: Filter and arrange
+  df_cohort <- df_tally %>%
+    filter(mrn %in% cohort_mrns) %>%
+    select(mrn, HCI_cID, cohort, txt_stat) %>%
+    arrange(mrn, cohort, txt_stat)
+  
+  # Step 2: Create the pattern for each mrn
+  df_cohort <- df_cohort %>%
+    group_by(mrn) %>%
+    arrange(cohort, txt_stat) %>%
+    mutate(pattern = paste(cohort, txt_stat, collapse = "-")) %>%
+    ungroup()
+  
+  # Step 3: Assign groups based on unique patterns
+  unique_patterns <- df_cohort %>%
+    distinct(pattern) %>%
+    mutate(group = paste0(prefix, LETTERS[start_group + row_number() - 1]))
+  
+  # Step 4: Merge group information back
+  df_cohort <- df_cohort %>%
+    left_join(unique_patterns, by = "pattern")
+  
+  # Return the dataframe and the last group number used
+  df_cohort_tmp <- df_cohort %>% select(mrn, group) %>% distinct()
+  last_group <- start_group + nrow(unique_patterns) - 1
+  
+  list(df_cohort_tmp = df_cohort_tmp, last_group = last_group)
+}
+
+# Process Group 2B (group_2_cohort_B)
+result_B <- process_cohort(df_tally, group_2_cohort_B, "Group 2", 1)
+
+# Process Group 2C starting from the next group after Group 2B
+result_C <- process_cohort(df_tally, group_2_cohort_C, "Group 2", result_B$last_group + 1)
+
+result_CD <- process_cohort(df_tally, group_2_mrns_set2, "Group 2", result_C$last_group + 1)
+
+# Combine the results
+df_group2_combined <- bind_rows(result_B$df_cohort_tmp, result_C$df_cohort_tmp, result_CD$df_cohort_tmp)
+
+
+# ---- Group 3 ---- #
+# Step 1: Get unique combinations of mrn, cohort, and txt_stat
+group_4_mrns <- mrn_counts %>% filter(total_observations == 3) %>% pull(mrn)
+df_group4 <- df_tally %>%
+  filter(mrn %in% group_4_mrns) %>% 
+  select(mrn, HCI_cID, cohort, txt_stat) %>% arrange(mrn, cohort, txt_stat)
+
+
+# data_labeled <- df_group4 %>%
+#   group_by(mrn, txt_stat) %>%
+#   mutate(txt_stat = ifelse(row_number() == 1, txt_stat, paste0(txt_stat, row_number()))) %>%
+#   ungroup()
+
+
+# Step 1: Create a unique pattern by combining cohort and txt_stat for each mrn
+# This creates a pattern for each mrn's cohort-txt_stat combination
+df_group4 <- df_group4 %>%
+  group_by(mrn) %>%
+  arrange(cohort, txt_stat) %>%  # Ensure consistent order
+  mutate(pattern = paste(cohort, txt_stat, collapse = "-")) %>%
+  ungroup()
+
+# Step 2: Assign groups based on unique patterns
+# We create a lookup table where each unique pattern is assigned a group
+unique_patterns <- df_group4 %>%
+  distinct(pattern) %>%
+  mutate(group = paste0("Group 3", LETTERS[row_number()]))
+
+
+# Step 3: Merge the group information back into the original data
+df_group4 <- df_group4 %>%
+  left_join(unique_patterns, by = "pattern")
+df_group4_tmp <- df_group4 %>% select(mrn, group) %>% distinct()
+
+dat_group <- data.frame(
+  mrn = c(group_1_mrns, 
+          df_group2_combined$mrn,
+          df_group4_tmp$mrn),
+  group = c(
+    rep("Group 1", each=length(group_1_mrns)),
+    df_group2_combined$group,
+    df_group4_tmp$group)
+)
+
+data <- df_tally %>% 
+  #select(mrn, HCI_cID, cohort, txt_stat) %>% distinct() %>% 
+  left_join(dat_group)
+
+# Label consequtive pre or post
+data <- data %>%
+  group_by(mrn, txt_stat) %>%
+  mutate(txt_stat = ifelse(row_number() == 1, txt_stat, paste0(txt_stat, row_number()))) %>%
+  ungroup() %>% 
+  mutate(txt_stat = factor(txt_stat, levels=c("Pre", "Pre2", "Post", "Post2")))
+
+df_pre_post <- data
+df_pre_post_tmp <- df_pre_post %>%   
+  dplyr::rename(SampleID = sample_id_psom) %>% 
+  select(cohort, SampleID, txt_stat) %>% 
+  mutate(SampleID = as.character(SampleID)) %>% 
+  distinct()
+
+data2 <- data %>% group_by(group, cohort, txt_stat) %>% 
+  arrange(group) %>% 
+  summarize(count = n()) %>% 
+  mutate(group = factor(group, levels = (unique(group))))
+
+
+ggplot(data2, aes(x=cohort, y=group, size=count, fill=txt_stat)) +
+  geom_point(shape = 21, color = "black", position=position_dodge(width=0.5)) +  
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circles
+  theme_bw() +  # Clean background
+  theme(legend.position = "right", panel.grid = element_blank()) +
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circlesNULL
+  NULL
+
+# Custom colors
+# Create a new column that combines cohort and txt_stat
+data2 <- data2 %>% 
+  mutate(cohort_txt_stat =paste(cohort, txt_stat, sep = "_"),
+         cohort_txt_stat = factor(cohort_txt_stat, levels=unique(cohort_txt_stat))) 
+
+# Custom colors: you can choose shades inspired by Tableau colors
+custom_colors <- c(
+  "A_Pre" = "#1f77b4", "A_Post" = "#aec7e8",  # Blue shades
+  "B_Pre" = "#ff7f0e", "B_Post" = "#ffbb78", "B_Post2" = "#ffbb78", # Orange shades
+  "C_D_Pre" = "#2ca02c", "C_D_Pre2" = "#2ca02c", 
+  "C_D_Post" = "#98df8a",  "C_D_Post2" = "#98df8a" # Green shades
+)
+
+ggplot(data2, aes(x=cohort, y=group, size=count, fill=cohort_txt_stat)) +
+  geom_point(shape = 21, color = "black", position=position_dodge(width=0.5)) +  
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circles
+  theme_bw() +  # Clean background
+  scale_fill_manual(values = custom_colors) +  # Set custom colors 
+  theme(legend.position = "right", panel.grid = element_blank()) +
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circlesNULL
+  NULL
+
+p2 <- 
+ggplot(data2, aes(x=cohort, y=group, size=count, fill=txt_stat)) +
+  geom_point(shape = 21, color = "black", position=position_dodge(width=0.5)) +  
+  scale_size_area(max_size = 15) +  # Adjust circle sizes
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circles
+  theme_bw() +  # Clean background
+  scale_fill_manual(values = c("Pre" = "lightblue", "Pre2" = "lightblue", 
+                               "Post" = "orange", "Post2"= "orange")) +  # Set fill colors
+  theme(legend.position = "right", panel.grid = element_blank()) +
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circlesNULL
+  NULL
+
+
+ggsave(p2, file=file.path(wd$outCurr, "Treatment_grouping_pattern_psomagen.pdf"), height = 5, width = 12)
+
+write.csv(data, file.path(wd$outCurr, "Treatment_grouping_pattern_psomagen.csv"))
+```
+
+
+### Independent
+
+Repeat this for the independent cohort alone
+
+We repeat this for discovery cohort alone
+
+```{r}
+df_tally <- df_meta_f %>% filter(Psomagen == "N")
+
+df_tally_tmp <- df_tally %>%
+  select(mrn, HCI_cID, cohort) %>% distinct()
+
+mrn_counts <- df_tally_tmp %>%
+  group_by(mrn, cohort) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = cohort, values_from = count, values_fill = 0)
+
+tot_counts <- df_tally %>%
+  group_by(mrn) %>% 
+  summarise(total_observations = n())
+
+mrn_counts <- mrn_counts %>% left_join(tot_counts)
+
+
+
+group_1_mrns <- mrn_counts %>% filter(total_observations == 1) %>% pull(mrn)
+group_2_mrns <- mrn_counts %>% filter(total_observations == 2)
+group_2_cohort_B <- group_2_mrns %>% filter(B == 2) %>% pull(mrn)
+group_2_cohort_C <- group_2_mrns %>% filter(C_D == 2) %>% pull(mrn)
+group_2_mrns_set2 <- group_2_mrns %>% filter(B == 1 & B == 1) %>% pull(mrn)
+
+# -- Group 2--- 
+df_group2 <- df_tally %>%
+  filter(mrn %in% group_2_cohort_B) %>% 
+  select(mrn, HCI_cID, cohort, txt_stat) %>% arrange(mrn, cohort, txt_stat)
+
+
+# Making a function, to avoid repetition
+# Define a function that processes a cohort
+process_cohort <- function(df_tally, cohort_mrns, prefix, start_group) {
+  # Step 1: Filter and arrange
+  df_cohort <- df_tally %>%
+    filter(mrn %in% cohort_mrns) %>%
+    select(mrn, HCI_cID, cohort, txt_stat) %>%
+    arrange(mrn, cohort, txt_stat)
+  
+  # Step 2: Create the pattern for each mrn
+  df_cohort <- df_cohort %>%
+    group_by(mrn) %>%
+    arrange(cohort, txt_stat) %>%
+    mutate(pattern = paste(cohort, txt_stat, collapse = "-")) %>%
+    ungroup()
+  
+  # Step 3: Assign groups based on unique patterns
+  unique_patterns <- df_cohort %>%
+    distinct(pattern) %>%
+    mutate(group = paste0(prefix, LETTERS[start_group + row_number() - 1]))
+  
+  # Step 4: Merge group information back
+  df_cohort <- df_cohort %>%
+    left_join(unique_patterns, by = "pattern")
+  
+  # Return the dataframe and the last group number used
+  df_cohort_tmp <- df_cohort %>% select(mrn, group) %>% distinct()
+  last_group <- start_group + nrow(unique_patterns) - 1
+  
+  list(df_cohort_tmp = df_cohort_tmp, last_group = last_group)
+}
+
+# Process Group 2B (group_2_cohort_B)
+result_B <- process_cohort(df_tally, group_2_cohort_B, "Group 2", 1)
+
+# Process Group 2C starting from the next group after Group 2B
+result_C <- process_cohort(df_tally, group_2_cohort_C, "Group 2", result_B$last_group + 1)
+
+result_CD <- process_cohort(df_tally, group_2_mrns_set2, "Group 2", result_C$last_group + 1)
+
+# Combine the results
+df_group2_combined <- bind_rows(result_B$df_cohort_tmp, result_C$df_cohort_tmp, result_CD$df_cohort_tmp)
+
+
+# ---- Group 3 ---- #
+# Step 1: Get unique combinations of mrn, cohort, and txt_stat
+group_4_mrns <- mrn_counts %>% filter(total_observations == 3) %>% pull(mrn)
+df_group4 <- df_tally %>%
+  filter(mrn %in% group_4_mrns) %>% 
+  select(mrn, HCI_cID, cohort, txt_stat) %>% arrange(mrn, cohort, txt_stat)
+
+
+# data_labeled <- df_group4 %>%
+#   group_by(mrn, txt_stat) %>%
+#   mutate(txt_stat = ifelse(row_number() == 1, txt_stat, paste0(txt_stat, row_number()))) %>%
+#   ungroup()
+
+
+# Step 1: Create a unique pattern by combining cohort and txt_stat for each mrn
+# This creates a pattern for each mrn's cohort-txt_stat combination
+df_group4 <- df_group4 %>%
+  group_by(mrn) %>%
+  arrange(cohort, txt_stat) %>%  # Ensure consistent order
+  mutate(pattern = paste(cohort, txt_stat, collapse = "-")) %>%
+  ungroup()
+
+# Step 2: Assign groups based on unique patterns
+# We create a lookup table where each unique pattern is assigned a group
+unique_patterns <- df_group4 %>%
+  distinct(pattern) %>%
+  mutate(group = paste0("Group 3", LETTERS[row_number()]))
+
+
+# Step 3: Merge the group information back into the original data
+df_group4 <- df_group4 %>%
+  left_join(unique_patterns, by = "pattern")
+df_group4_tmp <- df_group4 %>% select(mrn, group) %>% distinct()
+
+dat_group <- data.frame(
+  mrn = c(group_1_mrns, 
+          df_group2_combined$mrn,
+          df_group4_tmp$mrn),
+  group = c(
+    rep("Group 1", each=length(group_1_mrns)),
+    df_group2_combined$group,
+    df_group4_tmp$group)
+)
+
+data <- df_tally %>% 
+  #select(mrn, HCI_cID, cohort, txt_stat) %>% distinct() %>% 
+  left_join(dat_group)
+
+# Label consequtive pre or post
+data <- data %>%
+  group_by(mrn, txt_stat) %>%
+  mutate(txt_stat = ifelse(row_number() == 1, txt_stat, paste0(txt_stat, row_number()))) %>%
+  ungroup() %>% 
+  mutate(txt_stat = factor(txt_stat, levels=c("Pre", "Pre2", "Post", "Post2")))
+
+df_pre_post <- data
+df_pre_post_tmp <- df_pre_post %>%   
+  dplyr::rename(SampleID = sample_id_psom) %>% 
+  select(cohort, SampleID, txt_stat) %>% 
+  mutate(SampleID = as.character(SampleID)) %>% 
+  distinct()
+
+data2 <- data %>% group_by(group, cohort, txt_stat) %>% 
+  arrange(group) %>% 
+  summarize(count = n()) %>% 
+  mutate(group = factor(group, levels = (unique(group))))
+
+
+ggplot(data2, aes(x=cohort, y=group, size=count, fill=txt_stat)) +
+  geom_point(shape = 21, color = "black", position=position_dodge(width=0.5)) +  
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circles
+  theme_bw() +  # Clean background
+  theme(legend.position = "right", panel.grid = element_blank()) +
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circlesNULL
+  NULL
+
+# Custom colors
+# Create a new column that combines cohort and txt_stat
+data2 <- data2 %>% 
+  mutate(cohort_txt_stat =paste(cohort, txt_stat, sep = "_"),
+         cohort_txt_stat = factor(cohort_txt_stat, levels=unique(cohort_txt_stat))) 
+
+# Custom colors: you can choose shades inspired by Tableau colors
+custom_colors <- c(
+  "A_Pre" = "#1f77b4", "A_Post" = "#aec7e8",  # Blue shades
+  "B_Pre" = "#ff7f0e", "B_Post" = "#ffbb78", "B_Post2" = "#ffbb78", # Orange shades
+  "C_D_Pre" = "#2ca02c", "C_D_Pre2" = "#2ca02c", 
+  "C_D_Post" = "#98df8a",  "C_D_Post2" = "#98df8a" # Green shades
+)
+
+ggplot(data2, aes(x=cohort, y=group, size=count, fill=cohort_txt_stat)) +
+  geom_point(shape = 21, color = "black", position=position_dodge(width=0.5)) +  
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circles
+  theme_bw() +  # Clean background
+  scale_fill_manual(values = custom_colors) +  # Set custom colors 
+  theme(legend.position = "right", panel.grid = element_blank()) +
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circlesNULL
+  NULL
+
+p2 <- 
+ggplot(data2, aes(x=cohort, y=group, size=count, fill=txt_stat)) +
+  geom_point(shape = 21, color = "black", position=position_dodge(width=0.5)) +  
+  scale_size_area(max_size = 15) +  # Adjust circle sizes
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circles
+  theme_bw() +  # Clean background
+  scale_fill_manual(values = c("Pre" = "lightblue", "Pre2" = "lightblue", 
+                               "Post" = "orange", "Post2"= "orange")) +  # Set fill colors
+  theme(legend.position = "right", panel.grid = element_blank()) +
+  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circlesNULL
+  NULL
+
+
+ggsave(p2, file=file.path(wd$outCurr, "Treatment_grouping_pattern_indpnt.pdf"), height = 5, width = 12)
+
+write.csv(data, file.path(wd$outCurr, "Treatment_grouping_pattern_indpnt.csv"))
+```
+
+
 
 # Save objects
 
 ```{r}
 save(
   dat_NPX, dat_NPX2, dat_NPX3, 
-  meta_file, df_meta_f, df_id_pro, df_pre_post,
+  meta_file, df_meta_f, df_id_pro, df_pre_post_ori,
   file = file.path(wd$outData, "01_Metadata.Rdata"))
 ```
 

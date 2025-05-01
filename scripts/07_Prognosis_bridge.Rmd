@@ -129,7 +129,7 @@ cd_prot_sub <- cd_prot[cd_prot %in% rownames(exprMatrix_corrected_sub)]
 # CD34 gave HR to 0.8 - non significant
 ```
 
-For these proteins run a cox proportional analysis. For completness, we will do this analysis in the Olink batch corrected NPX value and the Limma batch corrected NPX values
+For these proteins run a cox proportional analysis. For completeness, we will do this analysis in the Olink batch corrected NPX value and the Limma batch corrected NPX values
 
 ## Limma 
 
@@ -481,10 +481,6 @@ res_bridge_olink <- res_bridge_olink %>%
 write.csv(res_bridge_olink, file.path(wd$outCurr, "HR_values_mCRPC_specific_multivariate_olink.csv"))
 ```
 
-
-
-
-
 ## Top HR
 
 Lets make a plot of the proteins for the paper.
@@ -492,7 +488,7 @@ Lets make a plot of the proteins for the paper.
 Lets select the top 20 HRs.
 
 ```{r}
-top_x <- 20
+top_x <- 10
 df <- res_all2 %>%
   arrange(desc(HR)) %>% 
   # Select top x
@@ -587,8 +583,6 @@ p_OS <- ggsurvplot(fit1, data = dat1_tmp, pval = TRUE, risk.table=TRUE,
                     palette = c("#7F7F7F", "#e41a1c"))
 p_OS
 ```
-
-
 
 # Obj 2: Risk score
 
@@ -879,7 +873,15 @@ p2 <- ggplot(df, aes(y = Features)) +
 final_plot <- p1 + p2 + plot_layout(widths = c(2, 1))
 final_plot
 ggsave(filename=file.path(wd$outCurr, "RS_HRs.pdf"), device="pdf", width=11, height=8)
-
-
 ```
+
+# Save objects
+
+```{r}
+save(
+  df_pat_sum, res_all2, 
+  file = file.path(wd$outData, "07_data.Rdata"))
+```
+
+
 

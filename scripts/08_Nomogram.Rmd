@@ -1,0 +1,91 @@
+---
+title: "Pronosis"
+date: "2025-04-24"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+    number_sections: true
+    theme: lumen
+---
+
+# Background
+
+We bridged the different batches using limma. Now we want to run prognosis analysis on this. 
+
+# Objectives
+
+1. Perform nomogram
+2. Get AUC
+
+# Conclusion
+
+> TO DO 
+
+# Pre-processing 
+
+## Loading packages
+
+```{r, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(readxl)   
+library(readr)
+library(stringr)
+library(ggplot2)
+library(paletteer)
+library(VennDiagram)
+library(ggvenn)
+# Survival
+library(survival)
+library(ggsurvfit)
+library(survminer)
+```
+
+## Directories
+
+```{r}
+wd <- list()
+wd$main <- here()
+wd$data <- file.path(wd$main, "data")
+wd$manishData <- file.path(wd$data, "raw/data_fromManish")
+wd$d2024 <- file.path(wd$data, "updated_2024")
+wd$d2024_npx <- file.path(wd$d2024, "NPX_data")
+wd$output <- file.path(wd$main, "output")
+wd$script <- file.path(wd$main, "scripts")
+
+wd$outData <- file.path(wd$output, "data")
+wd$outCurr <- file.path(wd$output, "08_Nomogram")
+```
+
+
+Create directories
+
+```{r}
+if (!file.exists(wd$outCurr)) {
+  dir.create(wd$outCurr)
+} else {
+  print("Directory already exists")
+}
+```
+
+Load functions
+
+```{r}
+source(file.path(wd$script, "functions.R"))
+```
+
+## Load data
+
+Load the processed metadata file
+
+```{r}
+# TO DO - load the saved R object
+load(file.path(wd$outData, "01_Metadata.Rdata"))
+load(file.path(wd$outData, "02_data.Rdata"))
+load(file.path(wd$outData, "04_data.Rdata"))
+load(file.path(wd$outData, "06_data.Rdata"))
+load(file.path(wd$outData, "07_data.Rdata"))
+```

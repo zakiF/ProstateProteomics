@@ -1,0 +1,450 @@
+---
+title: "Pronosis"
+date: "2025-04-24"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+    number_sections: true
+    theme: lumen
+---
+
+# Background
+
+Within this cohort of patients, we have patients in the mHHPSC and the mcRPC stage that has serial samples. What we want to identify is which patients are responsive to treatment. 
+
+For the mHSPC where we have pre- and post- treatment, we will compare the PSA values and determine which patients are responder to the treatment. 
+
+In the mCRPC we will compare the OS of the patients
+
+# Objectives
+
+1. Identify serial samples
+2. mHSPC response
+
+# Conclusion
+
+> TO DO 
+
+# Pre-processing 
+
+## Loading packages
+
+```{r, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(readxl)   
+library(readr)
+library(stringr)
+library(ggplot2)
+library(paletteer)
+library(VennDiagram)
+library(ggvenn)
+# Survival
+library(survival)
+library(ggsurvfit)
+library(survminer)
+```
+
+## Directories
+
+```{r}
+wd <- list()
+wd$main <- here()
+wd$data <- file.path(wd$main, "data")
+wd$manishData <- file.path(wd$data, "raw/data_fromManish")
+wd$d2024 <- file.path(wd$data, "updated_2024")
+wd$d2024_npx <- file.path(wd$d2024, "NPX_data")
+wd$output <- file.path(wd$main, "output")
+wd$script <- file.path(wd$main, "scripts")
+
+wd$outData <- file.path(wd$output, "data")
+wd$outCurr <- file.path(wd$output, "09_SerialSamples")
+```
+
+
+Create directories
+
+```{r}
+if (!file.exists(wd$outCurr)) {
+  dir.create(wd$outCurr)
+} else {
+  print("Directory already exists")
+}
+```
+
+Load functions
+
+```{r}
+source(file.path(wd$script, "functions.R"))
+```
+
+## Load data
+
+Load the processed metadata file
+
+```{r}
+# TO DO - load the saved R object
+load(file.path(wd$outData, "01_Metadata.Rdata"))
+load(file.path(wd$outData, "02_data.Rdata"))
+load(file.path(wd$outData, "04_data.Rdata"))
+load(file.path(wd$outData, "06_data.Rdata"))
+load(file.path(wd$outData, "07_data.Rdata"))
+```
+
+
+Identify samples that are serial in mHSPC
+
+
+```{r}
+serial_b <- df_pre_post_ori %>% 
+  filter(group == "Group 2A")
+
+serial_b2 <- df_pre_post_ori %>% 
+  filter(group == "Group 3B")
+```
+
+
+> Need to add the other serial (contains 2x post txt)
+
+Get the PSA data frame
+
+```{r}
+pp <- "/Users/zakiwilmot/Desktop/ZW_004_ProstateProteomics/data/updated_2024/clinical_data"
+
+dd <- read_xlsx(file.path(pp, "Demographics Patients_Proteomics 4-14-25 1.xlsx"),
+sheet = 2)
+dd2 <- data.frame(
+  HCI_cID = c(dd$Sample1_HCI_Num, dd$Sample2_HCI_Num, dd$Sample3_HCI_Num),
+  PSA = c(dd$sample1_psa, dd$sample2_psa, dd$sample3_psa),
+  date = c(dd$Sample1_date, dd$`Sample 2 Start date`, dd$`Sample3_Start date`)
+  )
+```
+
+For the one with 2x date get the earliest
+
+```{r}
+df_psa2 <- serial_b2 %>% select(mrn, HCI_cID, txt_stat) %>% 
+  left_join(dd2) %>% 
+  # Make PSA numeric
+  mutate(PSA = gsub("<", "", PSA),
+         PSA = as.numeric(PSA))
+
+
+# Filter the dataframe to include only 'Post' and 'Post2' rows
+post_data <- df_psa2 %>%
+ filter(txt_stat %in% c("Post", "Post2"))
+
+# Find the HCI_cID with the earliest 'Post' or 'Post2' date for each mrn
+result <- post_data %>%
+ group_by(mrn) %>%
+ slice(which.min(date))
+
+
+# Convert the date column to Date type
+data <- df_psa2 %>%
+  mutate(date = as.Date(date))
+
+# Add new label
+data_labeled <- data %>%
+  group_by(mrn) %>%
+  mutate(
+    post_dates = list(date[txt_stat %in% c("Post", "Post2")]),
+    sorted_posts = list(sort(post_dates[[1]])),
+    new_label = case_when(
+      txt_stat == "Pre" ~ "Pre",
+      date == sorted_posts[[1]][1] ~ "date1",
+      date == sorted_posts[[1]][2] ~ "date2",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  select(-post_dates, -sorted_posts) %>%
+  ungroup()
+
+# Create the plot
+ggplot(data_labeled, aes(x = new_label, y = PSA, group = mrn)) +
+ geom_point(aes(color = new_label)) +
+ geom_line() +
+ theme_bw() +
+ labs(title = "PSA Pre and Post for Each Patient", x = "Treatment Status", y = "PSA") +
+ scale_x_discrete(limits = c("Pre", "date1", "date2"))
+
+
+
+```
+
+```{r}
+# Using data_labeled from previous step
+date_differences <- data_labeled %>%
+  filter(new_label %in% c("date1", "date2")) %>%
+  select(mrn, new_label, date) %>%
+  pivot_wider(names_from = new_label, values_from = date) %>%
+  mutate(diff_days = as.integer(date2 - date1))
+```
+
+
+
+
+
+```{r}
+df_psa <- serial_b %>% select(mrn, HCI_cID, txt_stat) %>% 
+  left_join(dd2) %>% 
+  # Make PSA numeric
+  mutate(PSA = gsub("<", "", PSA),
+         PSA = as.numeric(PSA))
+
+
+wide_data <- df_psa %>%
+  pivot_wider(
+    names_from = txt_stat,
+    values_from = c(HCI_cID, PSA),
+    names_sep = "_"
+) 
+
+# Categorise the PSA
+wide_data <- wide_data %>% 
+  mutate(Category = ifelse(PSA_Pre > PSA_Post, "Pre higher", "Post higher")
+ )
+
+
+
+```
+
+
+Plot
+
+```{r}
+# Create the plot
+ggplot(df_psa, aes(x = txt_stat, y = PSA, group = mrn)) +
+ geom_point(aes(color = txt_stat)) +
+ geom_line() +
+ theme_bw() +
+ labs(title = "PSA Pre and Post for Each Patient", x = "Treatment Status", y = "PSA") +
+ scale_x_discrete(limits = c("Pre", "Post"))
+
+
+```
+
+
+
+Run DE on the pre- and post
+
+```{r}
+# -----------------------
+# 1) Gather the gene expression matrix
+# -----------------------
+exp_mat <- exprMatrix_corrected_sub
+
+# --------------------------------
+# 2) Create design and contrasts
+# --------------------------------
+# Groups for each of the columns
+df_group <- df_meta_f %>% select(HCI_cID, sample_id_psom, sample_id_Q13356, sample_id_Q15806) %>% 
+  mutate(id1 = paste0("Disc_", sample_id_psom),
+         id2 = paste0("Proj2_", sample_id_Q13356),
+         id3 = paste0("Proj4_", sample_id_Q15806)
+         )
+df_group <- data.frame(
+  HCI_cID = df_group$HCI_cID,
+  sampleID = c(df_group$id1, df_group$id2, df_group$id3)
+) %>% filter(!str_detect(sampleID, 'NA'))
+
+df_psa_meta <- df_psa %>% left_join(df_group) %>% 
+  filter(sampleID %in% colnames(exp_mat)) %>% 
+  filter(HCI_cID %in% df_psa$HCI_cID)
+
+exp_mat_sub <- exp_mat[,df_psa_meta$sampleID]
+
+identical(colnames(exp_mat_sub), df_psa_meta$sampleID)
+
+group <- as.character(df_psa_meta$txt_stat)
+
+# Model matrix with no intercept (i.e., "0 + group" form)
+design <- model.matrix(~ 0 + group)
+colnames(design) <- c("Pre", "Post")
+
+# Create two contrasts: A_vs_CD and B_vs_CD
+# +ve fold change will be the one on the left
+contrast.matrix <- makeContrasts(
+  Pre_vs_Post = Pre - Post,
+  levels   = design
+)
+
+# ------------------------------------------------------------
+# 3) Fit linear model, apply contrasts, and get unfiltered topTable
+# ------------------------------------------------------------
+fit  <- lmFit(exp_mat_sub, design)
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+
+# Collect all results (no filtering) in a single data frame:
+results_df <- data.frame()
+
+for(i in seq_len(ncol(contrast.matrix))) {
+  # Extract all genes (number=Inf), no sorting by p-value
+  tt <- topTable(fit2, coef = i, number = Inf, sort.by = "none")
+  
+  # Add columns for clarity
+  tt$Gene     <- rownames(tt)
+  tt$Contrast <- colnames(contrast.matrix)[i]
+  
+  # Combine
+  results_df <- rbind(results_df, tt)
+}
+
+# Print the final results data frame (unfiltered)
+limma_pre <- results_df %>% 
+  rename(OlinkID = Gene) %>% 
+  left_join(df_id_pro) %>% 
+  rename(Adjusted_pval = adj.P.Val,
+         log2FC = logFC)
+```
+
+We can run DE with just the discovery cohort alone 
+
+```{r}
+# -----------------------
+# 1) Generate to gene x sample matrix
+# -----------------------
+exp_mat <- dat1_final %>%
+  dplyr::select(SampleID, OlinkID, NPX) %>%
+  # Remove contraol samples
+  dplyr::filter(!str_detect(SampleID, 'CONTROL_SAMPLE')) %>% 
+  # Convert to wide
+  tidyr::pivot_wider(names_from = SampleID, values_from = NPX) %>% 
+  as.data.frame() 
+rownames(exp_mat) <- exp_mat$OlinkID
+exp_mat <- exp_mat[,-1]
+colnames(exp_mat) <- paste0("Disc_", colnames(exp_mat))
+
+# --------------------------------
+# 2) Create design and contrasts
+# --------------------------------
+# Groups for each of the columns
+df_group <- df_meta_f %>% select(HCI_cID, sample_id_psom, sample_id_Q13356, sample_id_Q15806) %>% 
+  mutate(id1 = paste0("Disc_", sample_id_psom),
+         id2 = paste0("Proj2_", sample_id_Q13356),
+         id3 = paste0("Proj4_", sample_id_Q15806)
+         )
+df_group <- data.frame(
+  HCI_cID = df_group$HCI_cID,
+  sampleID = c(df_group$id1, df_group$id2, df_group$id3)
+) %>% filter(!str_detect(sampleID, 'NA'))
+
+df_psa_meta <- df_psa %>% left_join(df_group) %>% 
+  filter(sampleID %in% colnames(exp_mat)) %>% 
+  filter(HCI_cID %in% df_psa$HCI_cID)
+
+exp_mat_sub <- exp_mat[,df_psa_meta$sampleID]
+
+identical(colnames(exp_mat_sub), df_psa_meta$sampleID)
+
+group <- as.character(df_psa_meta$txt_stat)
+
+# Model matrix with no intercept (i.e., "0 + group" form)
+design <- model.matrix(~ 0 + group)
+colnames(design) <- c("Pre", "Post")
+
+# Create two contrasts: A_vs_CD and B_vs_CD
+# +ve fold change will be the one on the left
+contrast.matrix <- makeContrasts(
+  Pre_vs_Post = Pre - Post,
+  levels   = design
+)
+
+# ------------------------------------------------------------
+# 3) Fit linear model, apply contrasts, and get unfiltered topTable
+# ------------------------------------------------------------
+fit  <- lmFit(exp_mat_sub, design)
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+
+# Collect all results (no filtering) in a single data frame:
+results_df <- data.frame()
+
+for(i in seq_len(ncol(contrast.matrix))) {
+  # Extract all genes (number=Inf), no sorting by p-value
+  tt <- topTable(fit2, coef = i, number = Inf, sort.by = "none")
+  
+  # Add columns for clarity
+  tt$Gene     <- rownames(tt)
+  tt$Contrast <- colnames(contrast.matrix)[i]
+  
+  # Combine
+  results_df <- rbind(results_df, tt)
+}
+
+# Print the final results data frame (unfiltered)
+limma_pre <- results_df %>% 
+  rename(OlinkID = Gene) %>% 
+  left_join(df_id_pro) %>% 
+  rename(Adjusted_pval = adj.P.Val,
+         log2FC = logFC)
+```
+
+Plot
+
+```{r}
+df_plot <- dat1_final %>%
+  mutate(SampleID = paste0("Disc_", SampleID)) %>% 
+  dplyr::filter(OlinkID %in% "OID30364") %>% 
+  filter(SampleID %in% colnames(exp_mat_sub))
+
+# Show the plot
+max_y <- max(df_plot$NPX)
+min_y <- min(df_plot$NPX)
+
+p_viol_gene <- 
+  df_plot %>%
+  ggplot(aes(x = txt_stat, y = NPX, fill = txt_stat)) +
+  geom_quasirandom(dodge.width=0.1, width = 0.3, colour="grey30", alpha=0.5) +
+  geom_violin(alpha = 0.5, scale = "width", width=0.7, position = position_dodge(width = 0.9)) +
+  geom_boxplot(outlier.alpha = 0,  width = 0.2, coef=0,
+               position = position_dodge(width = 0.9)) +
+  #scale_fill_manual(values=unique(pal.cohort.n2)) +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank"),
+        axis.text.x = element_text(angle = 0)) +
+  facet_wrap(~Assay, ncol=1, scales = "free_y") +
+  #scale_y_continuous(limits=c(min_y, max_y+3)) +
+  NULL
+p_viol_gene
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
