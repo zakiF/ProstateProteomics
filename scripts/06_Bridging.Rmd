@@ -878,6 +878,7 @@ df_unq <- df_meta_f %>%
     sample_id_Q15806 = case_when(sample_id_Q15806 == "Proj4_NA" ~ NA, TRUE ~ sample_id_Q15806),
     final_sample_id = coalesce(sample_id_psom, sample_id_Q13356, sample_id_Q15806))
 length(unique(df_unq$final_sample_id))
+df_final_ids <- df_unq
 ```
 
 Lets subset to the samples of interest
@@ -951,6 +952,118 @@ Show all PCA plot
 p_all <- p1.1 + p1.2 + p2.1 + p2.2 + plot_layout(ncol=2)
 p_all
 ggsave(filename=file.path(wd$outCurr, "PCA_beforeAfter.pdf"), device="pdf", width=9, height=8)
+```
+
+## Keeping all proteins
+
+In the batch correction strategy above, we limited our analysis to the common proteins (intersection proteins). Now we attempt to keep all the genes but also batch correct the data. We will reuse the correlation estimate and apply it to the indiviudal expression. 
+
+
+```{r}
+pad_matrix <- function(mat, gene_list) {
+  mat_df <- as.data.frame(mat)
+  rownames(mat_df) <- mat_df[[1]]             # Set rownames using OlinkID column
+  mat_df <- mat_df[,-1]                       # Drop OlinkID column
+  mat_full <- matrix(NA, nrow = length(gene_list), ncol = ncol(mat_df))
+  rownames(mat_full) <- gene_list
+  colnames(mat_full) <- colnames(mat_df)
+  shared_genes <- intersect(rownames(mat_df), gene_list)
+  mat_full[shared_genes, ] <- as.matrix(mat_df[shared_genes, ])
+  return(mat_full)
+}
+
+# 1. Create union of genes
+all_genes <- Reduce(union, list(
+  mat_olink1$OlinkID,
+  mat_olink2$OlinkID,
+  mat_olink3$OlinkID
+))
+
+# 2. Pad each batch
+m1_full <- pad_matrix(mat_olink1, all_genes)
+m2_full <- pad_matrix(mat_olink2, all_genes)
+m3_full <- pad_matrix(mat_olink3, all_genes)
+
+# 3. Combine all batches
+m_all <- cbind(m1_full, m2_full, m3_full)
+
+# 4. Subset metadata to match columns
+meta_data <- meta_data[match(colnames(m_all), meta_data$SampleID), ]
+
+# 5. Apply batch correction to full matrix (using the previosly computed corfit)
+m_all_corrected <- removeBatchEffect(
+  m_all,
+  batch = meta_data$Batch,
+  block = meta_data$ReplicateID,
+  correlation = corfit$consensus
+)
+```
+
+### Asses PCA
+
+Lets use this version to check the PCA. Again, we need to remove technical duplicates
+
+
+```{r}
+# Important - select the variable after removing the poor correlations
+df_tmp <- df_unq %>% filter(final_sample_id %in% colnames(m_all_corrected))
+m_all_corrected_sub <- m_all_corrected[,df_tmp$final_sample_id] 
+expr_corrc_allGenes <- m_all_corrected_sub
+```
+
+
+
+```{r}
+# PCA after batch correction
+mat_in <- m_all_corrected_sub[complete.cases(m_all_corrected_sub), ]
+pca_after <- prcomp(t(mat_in), scale. = TRUE)
+df_pca <- pca_after$x %>% as.data.frame() %>% 
+  tibble::rownames_to_column(var = "SampleID") %>% 
+  select(SampleID, PC1, PC2, PC3) %>% 
+  rename(PC1_after = PC1,
+         PC2_after = PC2,
+         PC3_after = PC3) %>% 
+  left_join(meta_data_sub)
+
+# Calculate variance explained
+pc_variances <- pca_after$sdev^2
+variance_explained <- pc_variances / sum(pc_variances)
+percent_variance_explained <- variance_explained * 100
+
+# Extract variance for PC1 and PC2
+pc1_variance <- percent_variance_explained[1]
+pc2_variance <- percent_variance_explained[2]
+
+# Create labels for plotting
+pc1_labe_a <- paste0("PC1 (", round(pc1_variance, 2), "%)")
+pc2_label_a <- paste0("PC2 (", round(pc2_variance, 2), "%)")
+
+
+p3.1 <- 
+ggplot(df_pca, aes(x = PC1_after, y = PC2_after, color = Batch)) +
+  geom_point(size = pt_sz) +
+  labs(
+    title = "PCA After Limma Batch Correction",
+    x = pc1_labe_a,
+    y = pc2_label_a) +
+  theme_bw() +
+  theme_custom +
+  theme(legend.position = "bottom") +
+  scale_colour_manual(values = pal.study) +
+  NULL
+
+p3.2 <- 
+ggplot(df_pca, aes(x = PC1_after, y = PC2_after, color = cohort)) +
+  geom_point(size = pt_sz) +
+  labs(
+    title = "PCA After Limma Batch Correction",
+    x = pc1_labe_a,
+    y = pc2_label_a) +
+  theme_bw() +
+  theme_custom +
+  theme(legend.position = "bottom") +
+  scale_colour_manual(values = pal.cohort.n2) +
+  NULL
 ```
 
 # Obj 3: Perform bridging
@@ -1211,6 +1324,7 @@ It seems the Limma methods works best so we will use it
 ```{r}
 save(
   exprMatrix_corrected2, exprMatrix_corrected_sub, 
+  expr_corrc_allGenes, df_final_ids,
   file = file.path(wd$outData, "06_data.Rdata"))
 ```
 

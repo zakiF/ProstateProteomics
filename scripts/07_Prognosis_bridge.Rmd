@@ -181,7 +181,7 @@ We run two version of the prognositc model
 
 The first with just the pre-txt mCRPC samples
 
-```{r}
+```{r, warning=FALSE, message=FALSE}
 # Select the highest expressing protein per- patient
 tmp_npx <- exprMatrix_long 
 results <- analyze_proteins_highest(cd_prot_sub, npx_in=tmp_npx, meta_in=meta_bridge_pre)
@@ -658,6 +658,19 @@ df_pat_sum <- exp_long %>%
   select(SampleID, Sum_rs, death, OS) %>% 
   ungroup()
 ```
+
+Plot the histogram
+
+```{r}
+ggplot(df_pat_sum, aes(x=Sum_rs)) + 
+  geom_histogram(color="black", fill="grey50", binwidth=1) +
+  theme_classic() +
+  xlab("Proteomics risk score") +
+  geom_vline(aes(xintercept=median(Sum_rs)),
+            color="red", linetype="dashed", size=1) +
+  NULL
+```
+
 
 Now lets dichotomize the risk score
 

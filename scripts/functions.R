@@ -1103,3 +1103,14 @@ select_highest_expression <- function(df) {
     ungroup()
 }
 
+
+get_overlap_degree <- function(element, groups) {
+  present_in <- names(groups)[sapply(groups, function(group) element %in% group)]
+  if (length(present_in) > 1) {
+    return(paste(present_in, collapse = " and ")) # Combine groups if in multiple
+  } else if (length(present_in) == 1) {
+    return(present_in) # Only in one group
+  } else {
+    return("None") # Should not happen in typical use cases
+  }
+}
