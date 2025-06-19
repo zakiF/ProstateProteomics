@@ -28,6 +28,7 @@ In addition, some patients were also profiled by genomics (KLK2 SNPs) and methyl
 1. Gather data
 2. Clean up clinical data
 3. Summary of data
+4. Adding dates
 
 # Pre-processing 
 
@@ -107,6 +108,11 @@ This contains the clinical files of all Proteomics cohort
 meta_file <- file.path(file.path(wd$d2024, "clinical_data/Proteomic Project Clinical file 09_10_24_Combined_ID_zaki_edited.xlsx"))
 ```
 
+> As of June 2025, Manish's team, Enos and Becky provided an updated clinical file. So we will use this
+
+```{r}
+meta_file <- file.path(file.path(wd$d2024, "clinical_data/Proteomic Demographic 06-19-25.xlsx"))
+```
 
 ### NPX data
 
@@ -324,10 +330,22 @@ write.csv(df_id_pro, file.path(wd$outCurr, "Olink_assay_table.csv"))
 We want to combine all data as one df. To make counting and overlapping easier. The unique IDs to merge across these different platforms will be the HCI ID. For the clinical data with mrn & HCI collection ID, we make them into a data frame. 
 
 
+Enos provided us with the HCI_id and updated sample collection date
+
+```{r}
+df_date <- read_xlsx(file.path(wd$d2024, "clinical_data/Demographics Patients_Proteomics 4-14-25 1.xlsx"),
+sheet = 2)
+dd <- df_date
+df_date <- data.frame(
+  HCI_cID = c(dd$Sample1_HCI_Num, dd$Sample2_HCI_Num, dd$Sample3_HCI_Num),
+  date = c(dd$Sample1_date, dd$`Sample 2 Start date`, dd$`Sample3_Start date`)
+  ) %>% filter(!is.na(HCI_cID))
+```
+
 Matt provided us with an updated cohort information. Lets read it in.
 
 ```{r}
-df_cohort <- read_xlsx(file.path(wd$d2024, "clinical_data/Cohort_grouping_2024_10_21.xlsx")) %>% 
+df_cohort <- read_xlsx(file.path(wd$d2024, "clinical_data/Cohort_grouping_2025_05_30.xlsx")) %>% 
   select(mrn:txt_stat) %>% 
   rename(Psomagen = Discovery,
          Q_13356 = Project_2,
@@ -412,6 +430,19 @@ df_meta_f <- df_cohort %>%
 
 write.csv(df_meta_f, file.path(wd$outCurr, "MetaData_Proteomics.csv"))
 ```
+
+## Dates
+
+Lets also add the date of sample collection
+
+```{r}
+
+```
+
+
+
+Update May 29 2025. In the mHSPC cohort, we had sample with post and post2. Ie these samples 
+
 
 ## Venn overlap
 
@@ -1307,7 +1338,7 @@ ggsave(p2, file=file.path(wd$outCurr, "Treatment_grouping_pattern_indpnt.pdf"), 
 write.csv(data, file.path(wd$outCurr, "Treatment_grouping_pattern_indpnt.csv"))
 ```
 
-## Objective 3
+# Objective 3
 
 Lets summarize the data
 
@@ -1486,7 +1517,10 @@ print(serial_samples)
 ggsave(p_serial, file=file.path(wd$outCurr, "Serial_samples_breakdown.pdf"), height = 5, width = 7)
 ```
 
-# Create swimmers plot for sample collection timeline
+## Swimmers plot 
+
+Make a timeline 
+
 ```{r}
 # Function to determine patient pattern
 get_patient_pattern <- function(data) {
@@ -1698,8 +1732,8 @@ p_swimmers_ordered
 #   width = 8
 # )
 ```
+## Swimmers plot clustered
 
-# Cluster and order patients based on sample patterns
 ```{r}
 # Function to determine patient pattern
 get_patient_pattern <- function(data) {
@@ -1912,16 +1946,11 @@ p_swimmers_ordered
 # )
 ```
 
-# Save objects
+# Objective 4
 
-```{r}
-save(
-  dat_NPX, dat_NPX2, dat_NPX3, 
-  meta_file, df_meta_f, df_id_pro, df_pre_post_ori,
-  file = file.path(wd$outData, "01_Metadata.Rdata"))
-```
+*Adding the dates*
 
-Adding the dates
+Some samples have multiple collections. So it would be good to add the sample colelction date to the data. 
 
 ```{r}
 # First, clean up the dates in dd2
@@ -1973,3 +2002,16 @@ df_meta_f2 %>%
   arrange(mrn, date) %>%
   print(n = Inf)
 ```
+
+
+
+# Save objects
+
+```{r}
+save(
+  dat_NPX, dat_NPX2, dat_NPX3, 
+  meta_file, df_meta_f, df_id_pro, df_pre_post_ori,
+  file = file.path(wd$outData, "01_Metadata.Rdata"))
+```
+
+
