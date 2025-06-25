@@ -7,7 +7,7 @@ output:
     toc_float:
       collapsed: true
     toc_depth: 3
-    number_sections: true
+    number_sections: false
     theme: lumen
 ---
 
@@ -348,6 +348,7 @@ df_b <- data.frame(
   testo = c(dd$sample1_testos, dd$`Sample 2 Testerone`, dd$`Sample 3 Testosterone`), 
   txt_ori = dd$txt_stat,
   death_date = c(dd$`Death date`),
+  death_status = dd$`Deceased?`,
   txt_nhspc_1st_type = dd$`1st_nmhspc_rx`,
   txt_nhspc_1st_date = dd$`1st_nmhspc_rx_date`,
   txt_mhspc_1st_type = dd$`1st_mhspc_rx`,
@@ -694,6 +695,7 @@ ggvenn(
 )
 dev.off()
 ```
+
 ## Num samples
 
 ```{r}
