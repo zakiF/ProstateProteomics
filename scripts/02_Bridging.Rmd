@@ -1346,253 +1346,7 @@ ggplot(df_pca, aes(x = PC1_after, y = PC2_after, color = cohort)) +
 
 # Obj 3: Perform bridging
 
-> TL/DR - This step gives sub-optimal batch correction. The PCA does NOT look like its been integrated well between batches. So, no need to do this analysis. 
-
-Lets do bridging analysis. We follow the workflow on Olink website - https://cran.r-project.org/web//packages/OlinkAnalyze/vignettes/bridging_introduction.html
-
-The bridging analysis only works with 2 dataset. Because we want to bridge between 3 datasets, we need to do the bridging twice.
-
-## Q-13356 + Q-15806
-
-```{r,eval=FALSE}
-xx1 <- dat2_final
-xx2 <- dat3_final
-
-xx1 <- xx1 %>% 
-  mutate(SampleID = paste0("Q_13356_", SampleID))
-
-xx2 <- xx2 %>% 
-  mutate(SampleID = paste0("Q_15806_", SampleID))
-
-# Identify bridging samples
-hci_ids_br1 <- df_meta_f %>% filter(Q_13356 == "Y") %>% pull(HCI_cID)
-hci_ids_br2 <- df_meta_f %>% filter(Q_15806 == "Y") %>% pull(HCI_cID)
-int_ids <- intersect(hci_ids_br1, hci_ids_br2)
-
-
-df_ints <- df_meta_f %>% filter(HCI_cID %in% int_ids)
-
-br_1 <- df_ints %>% pull(sample_id_Q13356) %>% paste0("Q_13356_", .)
-br_2 <- df_ints %>% pull(sample_id_Q15806) %>% paste0("Q_15806_", .)
-
-
-overlap_sample_list <-list("DF1" = br_1,
-                           "DF2" = br_2)
-
-xx1.1 <- xx1 #%>% select(SampleID, OlinkID, UniProt, NPX, Panel, cohort)
-xx2.1 <- xx2 #%>% select(SampleID, OlinkID, UniProt, NPX, Panel, cohort)
-
-
-# Perform Bridging normalization
-npx_br_data <- olink_normalization(
-  df1 = xx1.1,
-  df2 = xx2.1,
-  overlapping_samples_df1 = br_1,
-  overlapping_samples_df2 = br_2,
-  df1_project_nr = "data1",
-  df2_project_nr = "data2",
-  reference_project = "data1")
-```
-
-## Q-13356 + Psomagen
-
-```{r,eval=FALSE}
-xx1 <- dat2_final
-xx2 <- dat1_final
-
-xx1 <- xx1 %>% 
-  mutate(SampleID = paste0("Q_13356_", SampleID))
-
-xx2 <- xx2 %>% 
-  mutate(SampleID = paste0("Ps_", SampleID))
-
-# Identify bridging samples
-hci_ids_br1 <- df_meta_f %>% filter(Q_13356 == "Y") %>% pull(HCI_cID)
-hci_ids_br2 <- df_meta_f %>% filter(Psomagen == "Y") %>% pull(HCI_cID)
-int_ids <- intersect(hci_ids_br1, hci_ids_br2)
-
-
-df_ints <- df_meta_f %>% filter(HCI_cID %in% int_ids)
-
-br_1 <- df_ints %>% pull(sample_id_Q13356) %>% paste0("Q_13356_", .)
-br_2 <- df_ints %>% pull(sample_id_psom) %>% paste0("Ps_", .)
-
-
-overlap_sample_list <-list("DF1" = br_1,
-                           "DF2" = br_2)
-
-xx1.1 <- xx1 #%>% select(SampleID, OlinkID, UniProt, NPX, Panel, cohort)
-xx2.1 <- xx2 #%>% select(SampleID, OlinkID, UniProt, NPX, Panel, cohort)
-
-
-# Perform Bridging normalization
-npx_br_data2 <- olink_normalization(
-  df1 = xx1.1,
-  df2 = xx2.1,
-  overlapping_samples_df1 = br_1,
-  overlapping_samples_df2 = br_2,
-  df1_project_nr = "data1",
-  df2_project_nr = "data3",
-  reference_project = "data1")
-```
-
-## Final analysis
-
-Here we bridge across 3 cohorts, We simply combine the bridged NPX values. 
-
-```{r,eval=FALSE}
-b1 <- npx_br_data 
-b2 <- npx_br_data2 %>% filter(!Project == "data1") %>%  # Remove data from project 1
-  mutate(Project = gsub("data2", "data3", Project),
-         SampleID = gsub("data2", "data3", SampleID))
-
-b1_sub <- b1 %>% select(SampleID, OlinkID, Assay, NPX, cohort)
-b2_sub <- b2 %>% select(SampleID, OlinkID, Assay, NPX, cohort)
-
-npx_all <- rbind(b1_sub, b2_sub)
-```
-
-We can see that technical replicates are kept. 
-
-For example
-
-```{r,eval=FALSE}
-length(unique(npx_all$SampleID))
-```
-
-We get 344, but we actually just have 312 samples. So we need to remove technical duplicates. 
-
-So for the samples with repeated measurement, we want to just keep 1. We already removed project Q-13356 data from the 2nd round of bridging (Q-13356 + Psomagen). We may have Psomagen and Q-15806 duplicate values
-
-```{r,eval=FALSE}
-meta_data %>% filter(Rep == "Rep_20") %>% .[,1:5]
-
-npx_all %>% select(SampleID) %>% distinct() %>% filter(SampleID == "data1Q_13356_87") 
-npx_all %>% select(SampleID) %>% distinct() %>% filter(SampleID == "data2Q_15806_52") 
-npx_all %>% select(SampleID) %>% distinct() %>% filter(SampleID == "Ps_73") 
-```
-For those profiled multiple times. We will keep the Psomagen data first, then the Q15806, then the Q 13356.
-
-```{r,eval=FALSE}
-df <- df_meta_f %>%
-  mutate(
-    sample_id_psom = paste0("Ps_", sample_id_psom),
-    sample_id_psom = case_when(sample_id_psom == "Ps_NA" ~ NA, TRUE ~ sample_id_psom),
-    # sample_id_Q13356 = paste0("data1Q_13356_", sample_id_Q13356),
-    # sample_id_Q13356 = case_when(sample_id_Q13356 == "data1Q_13356_NA" ~ NA, TRUE ~ sample_id_Q13356),
-    # sample_id_Q15806 = paste0("data2Q_15806_", sample_id_Q15806),
-    # sample_id_Q15806 = case_when(sample_id_Q15806 == "data2Q_15806_NA" ~ NA, TRUE ~ sample_id_Q15806),
-    sample_id_Q13356 = paste0("Q_13356_", sample_id_Q13356),
-    sample_id_Q13356 = case_when(sample_id_Q13356 == "Q_13356_NA" ~ NA, TRUE ~ sample_id_Q13356),
-    sample_id_Q15806 = paste0("Q_15806_", sample_id_Q15806),
-    sample_id_Q15806 = case_when(sample_id_Q15806 == "Q_15806_NA" ~ NA, TRUE ~ sample_id_Q15806),
-    final_sample_id = coalesce(sample_id_psom, sample_id_Q13356, sample_id_Q15806))
-length(unique(df$final_sample_id))
-```
-
-The number of samples is 312, matching what we expect of the sample number. 
-
-## PCA
-
-Quick PCA analysis
-
-Lets subset to the samples of interest
-
-```{r,eval=FALSE}
-npx_all_sub <- npx_all %>% 
-  filter(SampleID %in% df$final_sample_id)
-
-length(unique(npx_all$SampleID))
-length(unique(npx_all_sub$SampleID))
-```
-
-Lets subset to overlapping proteins for PCA analysis
-
-```{r,eval=FALSE}
-ggvenn(
-  x, 
-  fill_color = pal.cohort.n2,
-  show_percentage = FALSE,
-  stroke_size = 0.5, set_name_size = 4
-)
-
-npx_all_sub <- npx_all_sub %>% filter(OlinkID %in% overlap$a5)
-```
-
-
-Run PCA
-
-```{r,eval=FALSE}
-### PCA plot
-p_pca_bridge_all <-
-  npx_all_sub %>% 
-  filter(!str_detect(SampleID, 'CS')) %>% 
-  olink_pca_plot(df = .,
-                 color_g = "cohort", byPanel = FALSE, quiet = FALSE) 
-```
-
-Make the colour nicer
-
-```{r,eval=FALSE}
-# Extract metadata
-# Subset to columns of interest
-df_sub <- df %>% select(mrn, HCI_cID, txt_stat, final_sample_id) %>% 
-  distinct() %>% 
-  rename(SampleID = final_sample_id)
-
-# Extract PCA coordinate
-pca_cor_b_all <- p_pca_bridge_all[[1]]$data %>%
-  rename(PC1 = PCX,
-         PC2 = PCY) %>%
-  mutate(Batch = gsub("data1.*", "Q_13356", SampleID),
-         Batch = gsub("data2.*", "Q_15806", Batch),
-         Batch = gsub("Ps.*", "Psomagen", Batch)
-         # SampleID = gsub("data1", "", SampleID),
-         # SampleID = gsub("data2", "", SampleID),
-         # SampleID = gsub("data3", "", SampleID),
-         ) %>% 
-  # Combine with additional metadata
-  left_join(df_sub) %>% 
-  rename(cohort = colors)
-```
-
-Make the plot
-
-```{r,eval=FALSE}
-p3.1 <- 
-ggplot(pca_cor_b_all, aes(x = PC1, y = PC2, color = Batch)) +
-  geom_point(size = pt_sz) +
-  labs(
-    title = "PCA After Olink Batch Correction",
-    x = p_pca_bridge_all[[1]]$labels$x,
-    y = p_pca_bridge_all[[1]]$labels$y) +
-  theme_bw() +
-  theme_custom +
-  theme(legend.position = "none") +
-  scale_colour_manual(values = pal.study) +
-  NULL
-
-p3.2 <- 
-ggplot(pca_cor_b_all, aes(x = PC1, y = PC2, color = cohort)) +
-  geom_point(size = pt_sz) +
-  labs(
-    title = "PCA After Olink Batch Correction",
-    x = p_pca_bridge_all[[1]]$labels$x,
-    y = p_pca_bridge_all[[1]]$labels$y) +
-  theme_bw() +
-  theme_custom +
-  theme(legend.position = "none") +
-  scale_colour_manual(values = pal.cohort.n2) +
-  NULL
-```
-
-Show all PCA plot
-
-```{r,eval=FALSE}
-p1.1 + p1.2 + 
-p3.1 + p3.2 +  
-p2.1 + p2.2 + plot_layout(ncol=2)
-```
+> TL/DR - This step gives sub-optimal batch correction. The PCA does NOT look like its been integrated well between batches. So, no need to do this analysis. Scritps is archived in github
 
 > We tried two methods to bridge the data; 1) The Olink default method, 2) Limma batch correction. 
 It seems the Limma methods works best so we will use it
@@ -1601,13 +1355,20 @@ It seems the Limma methods works best so we will use it
 
 After filtering the samples, we want to get the sample numbers. We know the `ncol(exprMatrix_corrected_sub)` is the number of samples that were retained. So lets breakdown the samples
 
+Generate a data frame of these samples that were retained
+
+```{r}
+df_meta_f5 <- df_unq %>% filter(final_sample_id %in% colnames(exprMatrix_corrected2))
+nrow(df_meta_f5)
+```
+
 ## Bar plot
 
 Make a simple barplot to summarize the data. Two columns per cohort. Number of patients & number of samples. 
 
 ```{r}
 # Calculate overlap between B and C_D cohorts
-overlap_patients <- df_final_ids %>%
+overlap_patients <- df_meta_f5 %>%
   filter(cohort %in% c("B", "C")) %>%
   group_by(mrn) %>%
   filter(n_distinct(cohort) > 1) %>%
@@ -1615,7 +1376,7 @@ overlap_patients <- df_final_ids %>%
   unique()
 
 # Create summary data frame
-summary_data <- df_meta_f %>%
+summary_data <- df_meta_f5 %>%
   group_by(cohort) %>%
   summarise(
     n_patients = n_distinct(mrn),
@@ -1678,6 +1439,233 @@ p_bar <- ggplot(summary_data, aes(x = cohort, y = count, fill = metric)) +
 ggsave(p_bar, file=file.path(wd$outCurr, "Patients_number_bar.pdf"), height = 5, width = 7)
 ```
 
+## Swimmers plot
+
+```{r}
+df_meta_in <- df_meta_f5 %>% 
+  select(mrn, HCI_cID, date, cohort, txt_stat, time2txt)
+
+# 3. Relabel txt_stat as Pre1, Pre2, Post1, etc. by date within each patient/cohort/status
+df_meta_in <- df_meta_in %>%
+  group_by(mrn, cohort, txt_stat) %>%
+  arrange(date, .by_group = TRUE) %>%
+  mutate(
+    txt_stat_ordered = paste0(txt_stat, row_number())
+  ) %>%
+  ungroup()
+
+# 4. Assign pattern to each sample
+patient_patterns <- get_patient_pattern(df_meta_in %>% mutate(txt_stat = txt_stat_ordered))
+df_meta_in <- df_meta_in %>%
+  left_join(patient_patterns %>% select(mrn, pattern, total_samples), by = "mrn")
+
+# 5. Order patients by pattern and total_samples
+ordered_mrns <- df_meta_in %>%
+  distinct(mrn, pattern, total_samples) %>%
+  arrange(
+    factor(pattern, levels = pattern_order2),
+    desc(total_samples)
+  ) %>%
+  pull(mrn)
+
+# 6. Prepare swimmers_data with correct offsets and positions
+swimmers_data <- df_meta_in %>%
+  mutate(
+    base_pos = case_when(
+      cohort == "A" ~ 0,
+      cohort == "B" ~ 1,
+      cohort == "C" ~ 2
+    ),
+    # Extract trailing number from txt_stat_ordered, default to 1 if missing
+    sample_num = as.numeric(str_extract(txt_stat_ordered, "\\d+$")),
+    sample_num = ifelse(is.na(sample_num), 1, sample_num),
+    # Offset for multiple samples of the same type
+    x_offset = (sample_num - 1) * 0.2,
+    # Treatment offset: Pre left, Post right
+    treatment_offset = case_when(
+      grepl("^Pre", txt_stat_ordered) ~ -0.2,
+      grepl("^Post", txt_stat_ordered) ~ 0.2,
+      TRUE ~ 0
+    ),
+    # Final x position, shifted to avoid 1/2 dashed line
+    x_pos = base_pos + treatment_offset + x_offset - 0.05,
+    # y position based on patient order
+    y_pos = match(mrn, ordered_mrns),
+    # For labeling
+    sample_label = txt_stat_ordered
+  )
+
+# 7. Rectangle data for cohort boxes
+rect_data <- data.frame(
+  cohort = c("A", "B", "C"),
+  xmin = c(-0.5, 0.5, 1.5),
+  xmax = c(0.5, 1.5, 2.5)
+)
+
+# 8. Swimmers plot with time2txt above each point
+p_swimmers_ordered <- ggplot(swimmers_data, aes(x = x_pos, y = y_pos)) +
+  geom_rect(
+    data = rect_data,
+    inherit.aes = FALSE,
+    aes(xmin = xmin, xmax = xmax, ymin = 0, ymax = max(swimmers_data$y_pos) + 1),
+    fill = "grey95",
+    alpha = 0.5
+  ) +
+  geom_vline(
+    xintercept = c(0, 1, 2),
+    linetype = "dashed",
+    color = "grey50",
+    alpha = 0.5
+  ) +
+  geom_point(
+    aes(color = txt_stat_ordered),
+    size = 3,
+    shape = 16
+  ) +
+  # geom_text(
+  #   aes(label = time2txt),
+  #   vjust = -1,
+  #   size = 3
+  # ) +
+  geom_line(
+    aes(group = mrn),
+    color = "grey50",
+    alpha = 0.5
+  ) +
+  scale_x_continuous(
+    breaks = 0:2,
+    labels = c("Cohort A", "Cohort B", "Cohort C/D"),
+    limits = c(-0.5, 2.5)
+  ) +
+  scale_color_manual(
+    values = c(
+      "Pre1" = "steelblue", "Pre2" = "steelblue", "Pre3" = "red",
+      "Post1" = "orange", "Post2" = "orange", "Post3" = "orange"
+    )
+    #labels = c("Pre1", "Pre2", "Pre3", "Post1", "Post2", "Post3")
+  ) +
+  labs(
+    x = "",
+    y = "Patient",
+    color = "Sample Type"
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    legend.position = "right"
+  )
+
+print(p_swimmers_ordered)
+
+# 9. Save the plot
+ggsave(
+  p_swimmers_ordered,
+  file = file.path(wd$outCurr, "Sample_collection_timeline_ordered.pdf"),
+  height = max(10, length(unique(swimmers_data$mrn)) * 0.3),
+  width = 8,
+  limitsize = FALSE
+)
+write.csv(swimmers_data, file.path(wd$outCurr, "SwimmersData.csv"))
+
+
+# 11. Zommed section
+p_swimmers_ordered3 <- ggplot(
+  swimmers_data %>% filter(!pattern %in% c("A", "B_Pre_Only", "B_Post_Only",
+                                           "C_Pre_Only", "C_Post_Only")), 
+  aes(x = x_pos, y = y_pos)) +
+  geom_vline(
+    xintercept = c(0, 1, 2),
+    linetype = "dashed",
+    color = "grey50",
+    alpha = 0.5
+  ) +
+  geom_point(
+    aes(color = txt_stat_ordered),
+    size = 3,
+    shape = 16
+  ) +
+  geom_line(
+    aes(group = mrn),
+    color = "grey50",
+    alpha = 0.5
+  ) +
+  geom_text(
+    aes(label = time2txt),
+    vjust = -1,
+    size = 3
+  ) +
+  scale_x_continuous(
+    breaks = 0:2,
+    labels = c("Cohort A", "Cohort B", "Cohort C/D"),
+    limits = c(-0.5, 2.5)
+  ) +
+  scale_color_manual(
+    values = c(
+      "Pre1" = "steelblue", "Pre2" = "steelblue", "Pre3" = "red",
+      "Post1" = "orange", "Post2" = "orange", "Post3" = "orange"
+    )
+    #labels = c("Pre1", "Pre2", "Pre3", "Post1", "Post2", "Post3")
+  ) +
+  labs(
+    x = "",
+    y = "Patient",
+    color = "Sample Type"
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    legend.position = "right"
+  )
+
+ggsave(
+  p_swimmers_ordered3,
+  file = file.path(wd$outCurr, "Sample_collection_timeline_ordered_noTime_Zommed.pdf"),
+  height = 15,
+  width = 8,
+  limitsize = FALSE
+)
+
+print(p_swimmers_ordered3)
+```
+
+
+
+## Sample number 
+
+Lets get the sample numbers
+
+```{r}
+df_meta_in <- df_meta_f5
+# For Cohort B
+n_pre_b_samples <- df_meta_in %>% filter(cohort == "B", txt_stat %in% c("Pre", "Pre1", "Pre2", "Pre3")) %>% pull(HCI_cID) %>% unique() %>% length()
+n_post_b_samples <- df_meta_in %>% filter(cohort == "B", txt_stat %in% c("Post", "Post1", "Post2", "Post3")) %>% pull(HCI_cID) %>% unique() %>% length()
+n_pre_b_patients <- df_meta_in %>% filter(cohort == "B", txt_stat %in% c("Pre", "Pre1", "Pre2", "Pre3")) %>% pull(mrn) %>% unique() %>% length()
+n_post_b_patients <- df_meta_in %>% filter(cohort == "B", txt_stat %in% c("Post", "Post1", "Post2", "Post3")) %>% pull(mrn) %>% unique() %>% length()
+
+# For Cohort C
+n_pre_c_samples <- df_meta_in %>% filter(cohort == "C", txt_stat %in% c("Pre", "Pre1", "Pre2", "Pre3")) %>% pull(HCI_cID) %>% unique() %>% length()
+n_post_c_samples <- df_meta_in %>% filter(cohort == "C", txt_stat %in% c("Post", "Post1", "Post2", "Post3")) %>% pull(HCI_cID) %>% unique() %>% length()
+n_pre_c_patients <- df_meta_in %>% filter(cohort == "C", txt_stat %in% c("Pre", "Pre1", "Pre2", "Pre3")) %>% pull(mrn) %>% unique() %>% length()
+n_post_c_patients <- df_meta_in %>% filter(cohort == "C", txt_stat %in% c("Post", "Post1", "Post2", "Post3")) %>% pull(mrn) %>% unique() %>% length()
+
+cat("B cohort:\n")
+cat("  Pre samples:", n_pre_b_samples, "\n")
+cat("  Post samples:", n_post_b_samples, "\n")
+cat("  Pre patients:", n_pre_b_patients, "\n")
+cat("  Post patients:", n_post_b_patients, "\n\n")
+
+cat("C cohort:\n")
+cat("  Pre samples:", n_pre_c_samples, "\n")
+cat("  Post samples:", n_post_c_samples, "\n")
+cat("  Pre patients:", n_pre_c_patients, "\n")
+cat("  Post patients:", n_post_c_patients, "\n")
+```
 
 
 # Save objects
@@ -1685,7 +1673,7 @@ ggsave(p_bar, file=file.path(wd$outCurr, "Patients_number_bar.pdf"), height = 5,
 ```{r}
 save(
   exprMatrix_corrected2, exprMatrix_corrected_sub, 
-  expr_corrc_allGenes, df_final_ids,
+  expr_corrc_allGenes, df_final_ids, df_meta_f5,
   file = file.path(wd$outData, "02_data.Rdata"))
 ```
 

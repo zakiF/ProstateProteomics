@@ -1,0 +1,927 @@
+---
+title: "DE analysis"
+date: "2025-06-25"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+    number_sections: false
+    theme: lumen
+---
+
+# Background
+
+We bridged the different batches using limma. Now we want to run DE to find cohort specific proteins.
+
+# Objectives
+
+1. Perform DE 
+2. Heatmap
+3. Perform prognosis
+
+# Conclusion
+
+We used a cut-off of 0.2 FDR and 1.4 log fold change
+
+# Pre-processing 
+
+## Loading packages
+
+```{r, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(readxl)   
+library(readr)
+library(stringr)
+library(ggplot2)
+library(paletteer)
+library(VennDiagram)
+library(ggvenn)
+# DE
+library(limma)
+# Survival
+library(survival)
+library(ggsurvfit)
+library(survminer)
+# Heatmap
+library(ComplexHeatmap)
+library(circlize)
+```
+
+## Directories
+
+```{r}
+wd <- list()
+wd$main <- here()
+wd$data <- file.path(wd$main, "data")
+wd$manishData <- file.path(wd$data, "raw/data_fromManish")
+wd$d2024 <- file.path(wd$data, "updated_2024")
+wd$d2024_npx <- file.path(wd$d2024, "NPX_data")
+wd$output <- file.path(wd$main, "output")
+wd$script <- file.path(wd$main, "scripts")
+
+wd$outData <- file.path(wd$output, "data")
+wd$outCurr <- file.path(wd$output, "03_Bridge_DE")
+```
+
+
+Create directories
+
+```{r}
+if (!file.exists(wd$outCurr)) {
+  dir.create(wd$outCurr)
+} else {
+  print("Directory already exists")
+}
+```
+
+Load functions
+
+```{r}
+source(file.path(wd$script, "functions.R"))
+```
+
+## Load data
+
+Load the processed metadata file
+
+```{r}
+# TO DO - load the saved R object
+load(file.path(wd$outData, "01_Metadata.Rdata"))
+load(file.path(wd$outData, "02_data.Rdata"))
+```
+
+### Load other files
+
+List of cell surface markers, Olink flex panel...etc
+
+```{r}
+# List of cell surface markers
+cs <- read.delim(file.path(wd$outData, "CS_human.txt"))
+
+# Olink FLEX proteins
+df_flex <- read.csv(file.path(wd$data, "Olink Flex - 2025-04-08.csv"), sep = ";")
+```
+
+We also have genes that are druggable from DrugBank https://go.drugbank.com/releases/latest#protein-identifiers
+
+```{r}
+# Downloaded the file from DrugBank
+df_target <- read.csv(file.path(wd$data, "DrugBank/drugbank_all_target_polypeptide_ids.csv/all.csv"))
+df_vocab <- read.csv(file.path(wd$data, "DrugBank/drugbank vocabulary.csv"))
+```
+
+## Other variables
+
+Specify the cut-off for DE
+
+```{r}
+cut_logFC <- 0.4 # Log FC cut-off
+cut_bfc <- 2^cut_logFC # Base fold change cut-off (Around 1.3 if the log2FC os 0.4)
+cut_fdr <- 0.2 
+```
+
+# Obj 1: DE
+
+Use the linear model approach. Note we will run DE on Pre- and Post- treated samples
+
+```{r}
+# -----------------------
+# 1) Generate to gene x sample matrix
+# -----------------------
+mat_all <- exprMatrix_corrected_sub
+
+# --------------------------------
+# 2) Create design and contrasts
+# --------------------------------
+# Groups for each of the columns
+df_group <- df_meta_f2 %>% select(HCI_cID, sample_id_psom, sample_id_Q13356, sample_id_Q15806, txt_stat_ordered) %>% 
+  mutate(id1 = paste0("Disc_", sample_id_psom),
+         id2 = paste0("Proj2_", sample_id_Q13356),
+         id3 = paste0("Proj4_", sample_id_Q15806)
+         ) #%>% 
+  # Select earliest Pre- treatment
+  #filter(txt_stat_ordered %in% c("Pre1"))
+df_group <- data.frame(
+  HCI_cID = df_group$HCI_cID,
+  sampleID = c(df_group$id1, df_group$id2, df_group$id3)
+) %>% 
+  filter(!str_detect(sampleID, 'NA')) %>% 
+  filter(sampleID %in% colnames(mat_all))
+
+# Data frame for design matrix
+df_de_anno <- df_group %>% left_join(df_meta_f2) %>% 
+  filter(sampleID %in% colnames(mat_all)) 
+
+exp_mat_sub <- mat_all[,df_de_anno$sampleID]
+
+identical(colnames(exp_mat_sub), df_de_anno$sampleID)
+
+group <- df_de_anno$cohort
+
+# Model matrix with no intercept (i.e., "0 + group" form)
+design <- model.matrix(~ 0 + group)
+colnames(design) <- c("A", "B", "C_D")
+
+# Create two contrasts: A_vs_CD and B_vs_CD
+# +ve fold change will be the one on the left
+contrast.matrix <- makeContrasts(
+  A_vs_CD = C_D - A,
+  B_vs_CD = C_D - B,
+  A_vs_B = B - A,
+  levels   = design
+)
+
+# ------------------------------------------------------------
+# 3) Fit linear model, apply contrasts, and get unfiltered topTable
+# ------------------------------------------------------------
+fit  <- lmFit(exp_mat_sub, design)
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+
+# Collect all results (no filtering) in a single data frame:
+results_df <- data.frame()
+
+for(i in seq_len(ncol(contrast.matrix))) {
+  # Extract all genes (number=Inf), no sorting by p-value
+  tt <- topTable(fit2, coef = i, number = Inf, sort.by = "none")
+  
+  # Add columns for clarity
+  tt$Gene     <- rownames(tt)
+  tt$Contrast <- colnames(contrast.matrix)[i]
+  
+  # Combine
+  results_df <- rbind(results_df, tt)
+}
+
+# Print the final results data frame (unfiltered)
+limma_df <- results_df %>% 
+  rename(OlinkID = Gene) %>% 
+  left_join(df_id_pro) %>% 
+  rename(Adjusted_pval = adj.P.Val,
+         log2FC = logFC) %>% 
+  # For table purpose keep it clean (round the number)
+  mutate(log2FC = round(log2FC, 2),
+         P.Value = as.numeric(sprintf("%.1e", P.Value)),
+         Adjusted_pval = as.numeric(sprintf("%.1e", Adjusted_pval)))
+```
+
+## MA plot
+
+Just have a look at some of the MA plots
+
+```{r MA-plot, fig.width=12, fig.height=4}
+# MA plot for all contrasts in limma_df
+# A is usually the average log2 expression (AveExpr)
+# M is log2FC
+
+ggplot(limma_df, aes(x = AveExpr, y = log2FC)) +
+  geom_point(aes(color = Adjusted_pval < cut_fdr), alpha = 0.6, size = 1) +
+  scale_color_manual(values = c("grey", "red"), labels = c("NS", "FDR < 0.2")) +
+  geom_hline(yintercept = c(-cut_logFC, cut_logFC), linetype = "dashed", color = "blue") +
+  facet_wrap(~Contrast, nrow = 1) +
+  labs(
+    title = "MA Plots for All Contrasts",
+    x = "Average Expression (AveExpr)",
+    y = "log2 Fold Change (M)",
+    color = "Significant"
+  ) +
+  theme_bw()
+```
+
+## Overlap
+
+Get overlap
+
+```{r}
+# Protein specific to A
+df_cat_a <- limma_df %>%
+  #filter(Cat %in% c("c_b_vs_a", "c_cd_vs_a") & Adjusted_pval <= cut_fdr)
+  filter(Contrast %in% c("A_vs_B", "A_vs_CD") & Adjusted_pval <= cut_fdr & log2FC <= -cut_logFC)
+
+df_cat_b_1 <- limma_df %>%
+  filter(Contrast %in% c("B_vs_CD") & Adjusted_pval <= cut_fdr & log2FC <= -cut_logFC)
+df_cat_b_2 <- limma_df %>%
+  filter(Contrast %in% c("A_vs_B") & Adjusted_pval <= cut_fdr & log2FC >= cut_logFC)
+
+df_cat_b <- rbind(df_cat_b_1, df_cat_b_2)
+
+df_cat_cd <- limma_df %>%
+  #filter(Cat %in% c("c_a_vs_cd", "c_b_vs_cd") & Adjusted_pval <= cut_fdr)
+  filter(Contrast %in% c("A_vs_CD", "B_vs_CD") & Adjusted_pval <= cut_fdr & log2FC >= cut_logFC)
+
+
+un_a <- unique(df_cat_a$OlinkID)
+un_b <- unique(df_cat_b$OlinkID)
+un_cd <- unique(df_cat_cd$OlinkID)
+
+
+overlap <- calculate.overlap(
+x <- list("Group A"=un_a, 
+          "Group B"=un_b,
+          "Group CD"=un_cd))
+
+ggvenn(
+  x, 
+  fill_color = pal.cohort.n2,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+
+pdf(file=file.path(wd$outCurr, "DE_venn_overlap_Limma.pdf"), width = 5, height = 5)
+ggvenn(
+  x, 
+  fill_color = pal.cohort.n2,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+dev.off()
+
+# Protein defining cd stage only
+cd_prot <- overlap$a7
+```
+
+Save the output
+
+```{r}
+# Combine all lists into a single data frame
+all_elements <- unique(c(un_a, un_b, un_cd)) # All unique elements
+
+# Apply the function across all elements
+overlap_degree <- sapply(all_elements, function(x) get_overlap_degree(x, list("Group A" = un_a, "Group B" = un_b, "Group CD" = un_cd)))
+
+# Create final data frame
+overlap_df_limma <- data.frame(
+  OlinkID = all_elements,
+  OverlapDegree = overlap_degree
+) %>% left_join(df_id_pro)
+
+write.csv(overlap_df_limma, file.path(wd$outCurr, "DE_genes_limma.csv"))
+```
+
+# Obj 2: Heatmap Viz
+
+Lets visualize the proteins in the venn diagram.
+
+Begin with a basic heatmap representation.
+
+I want the order to be
+
+```{r}
+order_proteins <- c("Group A", "Group A and Group B",
+                    "Group B", "Group B and Group CD",
+                    "Group CD")
+```
+
+
+## Basic
+
+Heatmap based on overlap_df_limma proteins using exp_mat_sub
+
+```{r heatmap-overlap-exp_mat_sub, fig.width=10, fig.height=6}
+# Subset exp_mat_sub to only proteins in overlap_df_limma
+mat_overlap <- exp_mat_sub[intersect(overlap_df_limma$OlinkID, rownames(exp_mat_sub)), ]
+
+# Scale rows (z-score)
+pheatmap.scale <- function(x) {
+  m = apply(x, 1, mean, na.rm = T)
+  s = apply(x, 1, sd, na.rm = T)
+  return((x - m) / s)
+}
+heatmap_data_overlap <- pheatmap.scale(mat_overlap)
+
+# Example column groups
+df_colname <- data.frame(
+  SampleID = colnames(heatmap_data_overlap)) %>% 
+  left_join(df_meta_f5 %>% rename(SampleID = final_sample_id))
+
+# group_colors <- c("A" = "#1f77b4", 
+#                   "B" = "#ff7f0e",
+#                   "C_D" = "#2ca02c")  
+
+
+group_colors <- c("A" = "#AEC7E8", 
+                  "B" = "#FFBB78",
+                  "C" = "#98DF8A")  
+
+
+# Add metadata (reuse df_meta_id and df_colname from previous code)
+
+# Create column annotation
+column_anno_overlap <- HeatmapAnnotation(
+  Group = df_colname$cohort,
+  col = list(Group = group_colors),
+  annotation_legend_param = list(
+    title = "Column Groups",
+    at = names(group_colors),
+    labels = names(group_colors)
+  )
+)
+
+# Define the heatmap
+ht_overlap <- Heatmap(
+  heatmap_data_overlap,
+  name = "Expression",
+  row_title = "Genes (overlap)",
+  column_title = "Samples",
+  top_annotation = column_anno_overlap,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  cluster_rows = FALSE
+)
+
+# Draw the heatmap
+pdf(file.path(wd$outCurr, "Heatmap_overlap_df_limma.pdf"), height = 6, width = 10)
+draw(ht_overlap, heatmap_legend_side = "right", annotation_legend_side = "right")
+dev.off()
+```
+
+## Version 1
+
+Make heatmap better ordered
+
+```{r}
+# Use the overlap-based heatmap data
+# Cluster A samples
+sample_A <- df_colname %>% filter(cohort == "A")
+mat_tmp <-  heatmap_data_overlap[,sample_A$SampleID]
+
+p_heat <- 
+  pheatmap::pheatmap(mat_tmp, 
+                     cluster_rows = TRUE, 
+                     cluster_cols = TRUE,
+                     scale = "none", # Change to none if we scaled the data
+                     silent = TRUE)
+a_or <- sample_A$SampleID[p_heat$tree_col$order]
+
+# Just get the mean / median of all genes and order by it
+column_medians_a <- sort(apply(mat_tmp, 2, function(x) median(x, na.rm = TRUE)))
+
+
+# Use the overlap-based heatmap data
+# Cluster B samples
+sample_B <- df_colname %>% filter(cohort == "B")
+mat_tmp <-  heatmap_data_overlap[,sample_B$SampleID]
+
+p_heat <- 
+  pheatmap::pheatmap(mat_tmp, 
+                     cluster_rows = TRUE, 
+                     cluster_cols = TRUE,
+                     scale = "none", # Change to none if we scaled the data
+                     silent = TRUE)
+b_or <- sample_B$SampleID[p_heat$tree_col$order]
+
+# Just get the mean / median of all genes and order by it
+column_medians_b <- sort(apply(mat_tmp, 2, function(x) median(x, na.rm = TRUE)))
+
+
+# Use the overlap-based heatmap data
+# Cluster C samples
+sample_CD <- df_colname %>% filter(cohort == "C")
+mat_tmp <-  heatmap_data_overlap[,sample_CD$SampleID]
+
+p_heat <- 
+  pheatmap::pheatmap(mat_tmp, 
+                     cluster_rows = TRUE, 
+                     cluster_cols = TRUE,
+                     scale = "none", # Change to none if we scaled the data
+                     silent = TRUE)
+cd_or <- sample_CD$SampleID[p_heat$tree_col$order]
+
+# Just get the mean / median of all genes and order by it
+column_medians <- sort(apply(mat_tmp, 2, function(x) median(x, na.rm = TRUE)))
+
+# Re arrange the heatmap 
+# Make cohort A first
+o1 <- df_colname %>% filter(cohort == "A") %>% pull(SampleID)
+# Cohort B 2nd
+o2 <- df_colname %>% filter(cohort == "B") %>% pull(SampleID)
+
+# Now order
+mat22_or <- heatmap_data_overlap[,c(o1, o2, names(column_medians))]
+mat22_or <- heatmap_data_overlap[,c(
+  names(column_medians_a),
+  o2,
+  names(column_medians))]
+
+# New order 
+new_or <- data.frame(
+  SampleID = c(o1, o2, cd_or)
+) %>% left_join(df_colname)
+
+# Add the txt_stats data as well 
+# df_colname - Use this
+
+
+# Create column annotation
+column_anno2 <- HeatmapAnnotation(
+  Group = new_or$cohort,
+  #OS = new_or$OS,
+  col = list(Group = group_colors),
+  annotation_legend_param = list(
+    title = "Column Groups",
+    at = names(group_colors),
+    labels = names(group_colors)
+  )
+)
+
+
+# Generate a custom color scheme
+paletteLength <- 30
+mypalette1 <- rev(paletteer::paletteer_c('ggthemes::Red-Blue Diverging', paletteLength))
+mypalette1 <- as.character(mypalette1)  # Ensure the colors are character strings
+
+# Define breaks for the colors
+myBreaks <- seq(-2, 3, length.out = paletteLength)  # Match the number of breaks to paletteLength
+
+# Create a custom color function using colorRamp2
+col_fun <- colorRamp2(myBreaks, mypalette1)
+
+
+# --- Row annotation and ordering ---
+order_proteins <- c("A", "A and B", "B", "B and CD", "CD")
+
+# Map OverlapDegree to new labels (remove 'Group ')
+overlap_df_limma$OverlapSimple <- gsub("Group ", "", overlap_df_limma$OverlapDegree)
+
+# Add a category column to overlap_df_limma if not present
+if (!"Category" %in% colnames(overlap_df_limma)) {
+  overlap_df_limma$Category <- factor(overlap_df_limma$OverlapSimple, levels = order_proteins)
+}
+
+# Order overlap_df_limma by Category and OverlapDegree
+row_annot_df <- overlap_df_limma %>%
+  mutate(Category = factor(OverlapSimple, levels = order_proteins)) %>%
+  arrange(Category, OverlapDegree)
+
+# Subset to only those in the heatmap
+row_annot_df <- row_annot_df[row_annot_df$OlinkID %in% rownames(mat22_or), ]
+
+# Reorder mat22_or to match row_annot_df
+mat22_or <- mat22_or[row_annot_df$OlinkID, ]
+
+# Create row annotation with simplified labels
+row_anno <- rowAnnotation(
+  Overlap = row_annot_df$Category,
+  col = list(Overlap = structure(RColorBrewer::brewer.pal(length(order_proteins), "Set1"), names = order_proteins)),
+  annotation_legend_param = list(title = "Overlap Category")
+)
+
+# Calculate row gaps for group separators
+gaps_row <- cumsum(as.numeric(table(row_annot_df$Category)))
+if (length(gaps_row) > 0) {
+  gaps_row <- gaps_row[-length(gaps_row)] # Remove last, no gap after last group
+}
+
+# Add txt_stat to column annotation
+txt_stat_vec <- new_or$txt_stat
+if (is.null(txt_stat_vec)) {
+  txt_stat_vec <- df_colname$txt_stat[match(new_or$SampleID, df_colname$SampleID)]
+}
+
+column_anno2 <- HeatmapAnnotation(
+  Group = new_or$cohort,
+  txt_stat = txt_stat_vec,
+  col = list(Group = group_colors),
+  annotation_legend_param = list(
+    title = "Column Groups",
+    at = names(group_colors),
+    labels = names(group_colors)
+  )
+)
+
+# Calculate row gaps for group separators
+gaps_row <- cumsum(as.numeric(table(row_annot_df$Category)))
+if (length(gaps_row) > 0) {
+  gaps_row <- gaps_row[-length(gaps_row)] # Remove last, no gap after last group
+}
+
+# Define the heatmap with row annotation and row separators
+ht <- Heatmap(
+  mat22_or,
+  name = "Expression",
+  row_title = "Genes",
+  column_title = "Samples",
+  top_annotation = column_anno2,
+  left_annotation = row_anno,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  column_split = factor((new_or$cohort)),  # Split columns by groups
+  gap = unit(2, "mm"),  # Specify gap size between groups
+  row_split = row_annot_df$Category,      # Split rows by group
+  row_gap = unit(2, "mm"),                # Gap between row groups
+  col = col_fun,  # Apply the custom color function
+  heatmap_legend_param = list(
+    #title = "Z-score",
+    at = seq(-2, 3, by = 1),  # Adjust ticks to match your breaks
+    labels = seq(-2, 3, by = 1)  # Labels for each tick
+  )
+)
+
+# Combine heatmap and annotations
+pdf(file.path(wd$outCurr, "Stage_specific_heatmap.pdf"), height = 6, width = 12)
+draw(ht, heatmap_legend_side = "right", annotation_legend_side = "right")
+dev.off()
+```
+
+## Boxplot
+
+Boxplot of expression for each gene group (order_proteins) across the three cohorts
+
+```{r boxplot-gene-groups, fig.width=8, fig.height=5}
+# Long format: each row = (protein, sample, NPX, group, cohort)
+mat_long <- as.data.frame(mat22_or)
+mat_long$OlinkID <- rownames(mat22_or)
+mat_long$Group <- row_annot_df$Category
+mat_long <- tidyr::pivot_longer(mat_long, -c(OlinkID, Group), names_to = "SampleID", values_to = "NPX")
+mat_long <- dplyr::left_join(mat_long, new_or[,c("SampleID", "cohort")], by = "SampleID")
+
+# Only keep A, B, C cohorts
+mat_long <- mat_long %>% filter(cohort %in% c("A", "B", "C"))
+
+# Plot
+p <- ggplot(mat_long, aes(x = cohort, y = NPX, fill = cohort)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  #geom_jitter(width = 0.2, size = 0.5, alpha = 0.5) +
+  facet_wrap(~ Group) +
+  scale_fill_manual(values = group_colors) +
+  scale_y_continuous(limits=c(-2.5,2.5)) +
+  theme_bw() +
+  labs(title = "Expression by Gene Group and Cohort",
+       x = "Cohort",
+       y = "NPX Expression") +
+  theme_custom
+
+print(p)
+ggsave(p, file=file.path(wd$outCurr, "Median_NPX.pdf"), height = 5, width = 7)
+```
+
+# Obj 2: Prognosis
+
+We perform multivariate analysis on the patients. We want to see if the proteins that are over-expressed in the discovery cohort are associated with prognosis. 
+
+Its best if we limit our analysis to the proteins over-expressed in mCRPC
+
+```{r}
+length(cd_prot)
+```
+
+We need to trim down the protein to those that were detected
+
+```{r}
+cd_prot_sub <- cd_prot[cd_prot %in% rownames(exprMatrix_corrected_sub)]  # <------
+# # Manish mentioned CD34, it is currently tested in clicnial trials
+# id1 <- df_id_pro %>% filter(Assay == "CD34") %>% pull(OlinkID)
+# cd_prot_sub <- c(cd_prot_sub, id1)
+# CD34 gave HR to 0.8 - non significant
+```
+
+For these proteins run a cox proportional analysis. 
+
+## Clinical data
+
+Lets re-set the clinical data. Because Enos provided an updated annotation
+
+```{r}
+# 1st file has all the HCI_id
+dd <- read_xlsx(file.path(wd$d2024, "clinical_data/Demographics Patients_Proteomics 4-14-25 1.xlsx"),
+sheet = 2)
+df_clin1 <- data.frame(
+  mrn = dd$`MRN (UUHSC)`,
+  HCI_cID = c(dd$Sample1_HCI_Num, dd$Sample2_HCI_Num, dd$Sample3_HCI_Num),
+  collection_date = c(dd$Sample1_date, dd$`Sample 2 Start date`, dd$`Sample3_Start date`),
+  psa = c(dd$sample1_psa, dd$sample2_psa, dd$sample3_psa),
+  ldh = c(dd$sample1_ldh, dd$sample2_ldh, dd$sample3_ldh),
+  alk_ph = c(dd$sample1_alk_phos, dd$sample2_alk_phos, dd$sample3_alk_phos)
+  ) %>% 
+  mutate(psa = gsub("<", "", psa),
+         psa = as.numeric(psa),
+         ldh = as.numeric(ldh),
+         alk_ph = as.numeric(alk_ph)) %>% 
+  filter(!is.na(HCI_cID))
+
+# 2nd file has the corrected diagnosis dates, biochem date and mcrpc_txt date
+
+#censor_date <- "2025-05-02"
+censor_date <- as.Date('2024-11-14') # November 14, 2024
+dd <- read_xlsx(file.path(wd$d2024, "clinical_data/Proteomic study (Zaki) excel file_2025_05_02.xlsx"),
+sheet = 3)
+df_clin2 <- data.frame(
+  mrn = dd$`MRN (UUHSC)`,
+  biochem_date = dd$biochem_crpc_date,
+  mcrpc_tx_date = dd$`1st_mcrpc_rx_date`,
+  death_date = dd$`Death date`,
+  death = dd$`Deceased?`,
+  diag_date = dd$`Diagnosis date`
+  ) 
+
+df_clin <- df_clin1 %>% left_join(df_clin2)
+
+# Censor the date
+df_clin$death_date[is.na(df_clin$death_date)] <- censor_date
+
+# Calulate OS in months 
+# Time to event is defined as ;
+# As per conversation with Manish, we will take the earliest date between ;
+# biochem or mcrpc_txt_date. If no dates are available take the sample collection
+# Creatre a column to indicate this
+df_clin <- df_clin %>%
+  mutate(
+    # Get the earliest of biochem and mcrpc_tx
+    earliest_tx_date = pmin(biochem_date, mcrpc_tx_date, na.rm = TRUE),
+    
+    # Use collection_date if both are NA
+    final_date = if_else(is.na(earliest_tx_date), collection_date, earliest_tx_date),
+    
+    # Indicator of source
+    date_source = case_when(
+      !is.na(earliest_tx_date) & earliest_tx_date == biochem_date ~ "biochem",
+      !is.na(earliest_tx_date) & earliest_tx_date == mcrpc_tx_date ~ "mcrpc_tx",
+      TRUE ~ "collection"
+    )
+  )
+
+# Calculate OS
+df_clin <- df_clin %>% 
+  mutate(OS = as.numeric(difftime(death_date, final_date, units = "days")),
+         OS = round(OS/30.417, digit=2),
+         death = case_when(death == "No" ~ 0,
+                           death == "Yes" ~ 1))
+```
+
+Merge the clinical information with the proteomics sample IDs
+
+```{r}
+df_meta_tmp <- df_final_ids %>% select(HCI_cID, cohort, final_sample_id) %>% 
+  filter(final_sample_id %in% colnames(exprMatrix_corrected_sub)) # <------
+
+meta_bridge <- df_meta_tmp %>% left_join(df_clin)
+  
+df_tmp <- df_pca %>% select(SampleID, cohort, HCI_cID) %>% distinct() %>% 
+  rename(sample_id = SampleID)
+
+meta_bridge2 <- meta_bridge %>% left_join(df_tmp) %>% 
+  filter(cohort == "C_D") %>% 
+  left_join(select(df_meta_f, HCI_cID, txt_stat)) 
+
+# If we want just pre
+meta_bridge_pre <- meta_bridge2 %>% 
+  filter(txt_stat == "Pre")
+
+# For patients with multiple samples, keep the sample closest before treatment date, per patient.
+dupe_mrn <- meta_bridge_pre %>%
+  count(mrn) %>%
+  filter(n > 1)
+tmp_df <- meta_bridge_pre %>% 
+  filter(mrn %in% dupe_mrn$mrn)
+
+# selecting the earilest collection date
+# meta_bridge_pre <- meta_bridge_pre %>%
+#   group_by(mrn) %>%
+#   slice_min(collection_date, with_ties = FALSE) %>%
+#   ungroup()
+
+# selecting the closest to tx date
+meta_bridge_pre <- meta_bridge_pre %>%
+  mutate(days_diff = abs(as.numeric(difftime(collection_date, final_date, units = "days")))) %>%
+  group_by(mrn) %>%
+  slice_min(days_diff, with_ties = FALSE) %>%
+  ungroup()
+
+# Convert the gene x sample to the long NPX format
+# Convert to long format
+exprMatrix_long <- exprMatrix_corrected_sub %>% # <------
+  as.data.frame() %>%
+  rownames_to_column(var = "OlinkID") %>%  # Preserve row names as a column
+  pivot_longer(cols = -OlinkID, names_to = "SampleID", values_to = "Value") %>% 
+  left_join(df_pca) %>% 
+  rename(NPX = Value)
+```
+
+Since we have serial patients, it would be incorrect to use repeated OS measurement for prognosis (violates the independent assumption of cox regression). An idea that for each protein, take the patient that has the highest expression of that protein (then discard the remaining serial samples). Next we can run the cox regression. This will means that duplicated proteins are not included. 
+
+> Afeter talking to Manish and AC, a more logical approach is to use the baseline (pre-treatment) sample, if there are multiple pre-treatment, use the higest expressing one. 
+
+## Univariate
+
+Run the pre-txt mCRPC samples
+
+```{r, warning=FALSE, message=FALSE}
+# Select the highest expressing protein per- patient
+tmp_npx <- exprMatrix_long 
+results <- analyze_proteins_highest(cd_prot_sub, npx_in=tmp_npx, meta_in=meta_bridge_pre)
+results <- left_join(results, df_id_pro)
+res_bridge_limma_pre <- results
+```
+
+## Multi-variate
+
+We use only the proteins considered significant at the uni-variate level
+
+```{r}
+uni_sig1 <- res_bridge_limma_pre %>% filter(P_Value < 0.05) %>% pull(OlinkID)
+# We run all protein for now - we can filter later
+uni_sig <- res_bridge_limma_pre$OlinkID
+```
+
+To simplify analysis on all proteins, we wrote a function. 
+
+```{r, warning=FALSE, message=FALSE}
+# Run function on multivariate analysis
+results <- analyze_proteins_multi(uni_sig, npx_in=tmp_npx, meta_in=meta_bridge_pre)
+results <- left_join(results, df_id_pro)
+res_bridge_limma_pre_multi <- results
+```
+
+
+### Clean up
+
+Format and save the results. 
+
+```{r}
+cox_p_val <- 0.05
+res_bridge_limma_pre <- res_bridge_limma_pre %>% 
+  mutate(Group = "Uni") %>% 
+  mutate(
+    Lower_Bound = round(Lower_Bound, 2),
+    Upper_Bound = round(Upper_Bound, 2),
+    bin_Lower_Bound = round(bin_Lower_Bound, 2),
+    bin_Upper_Bound = round(bin_Upper_Bound, 2),
+    
+    HR = round(HR, 2),
+    bin_HR = round(HR, 2),
+    
+    Sig_bin = case_when(
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound >=1 ~ "Sig",
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound <=1 & bin_Upper_Bound <=1 ~ "Sig",
+      bin_P_Value <= cox_p_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"),
+    
+    fdr_cont = p.adjust(P_Value, method = "fdr"),
+    
+    Sig_fdr_cont = case_when(
+      P_Value <= cox_p_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"))
+
+write.csv(res_bridge_limma_pre, file.path(wd$outCurr, "HR_values_mCRPC_specific_UNI_variate_limma_pre.csv"))
+
+cox_p_val <- 0.05
+res_bridge_limma_pre_multi <- res_bridge_limma_pre_multi %>% 
+  #filter(OlinkID %in% uni_sig1) %>% 
+  mutate(Group = "Multi") %>% 
+  mutate(
+    Lower_Bound = round(Lower_Bound, 2),
+    Upper_Bound = round(Upper_Bound, 2),
+    bin_Lower_Bound = round(bin_Lower_Bound, 2),
+    bin_Upper_Bound = round(bin_Upper_Bound, 2),
+    
+    HR = round(HR, 2),
+    bin_HR = round(HR, 2),
+    
+    Sig_bin = case_when(
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound >=1 ~ "Sig",
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound <=1 & bin_Upper_Bound <=1 ~ "Sig",
+      bin_P_Value <= cox_p_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"),
+    
+    fdr_cont = p.adjust(P_Value, method = "fdr"),
+    
+    Sig_fdr_cont = case_when(
+      P_Value <= cox_p_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"))
+
+write.csv(res_bridge_limma_pre_multi, file.path(wd$outCurr, "HR_values_mCRPC_specific_MULTI_variate_limma_pre.csv"))
+
+
+```
+
+Combine the uni and multi in one table
+
+```{r}
+uni_renamed <- res_bridge_limma_pre %>%
+  select(OlinkID, Assay, Coefficient, Lower_Bound, Upper_Bound, P_Value, HR) %>%
+  rename(
+    Uni_Coefficient = Coefficient,
+    Uni_Lower = Lower_Bound,
+    Uni_Upper = Upper_Bound,
+    Uni_P = P_Value,
+    Uni_HR = HR
+  ) %>% 
+  mutate(Uni_Significant = case_when(
+      Uni_P <= 0.05  ~ "Yes",
+      TRUE ~ "No"))
+
+multi_renamed <- res_bridge_limma_pre_multi %>%
+  select(OlinkID, Coefficient, Lower_Bound, Upper_Bound, P_Value, HR) %>%
+  rename(
+    Multi_Coefficient = Coefficient,
+    Multi_Lower = Lower_Bound,
+    Multi_Upper = Upper_Bound,
+    Multi_P = P_Value,
+    Multi_HR = HR
+  )   %>% mutate(Multi_Significant = case_when(
+      Multi_P <= 0.05  ~ "Yes",
+      TRUE ~ "No"))
+
+combined <- left_join(uni_renamed, multi_renamed, by = "OlinkID")
+```
+
+## Add drug and CS
+
+
+Overlap with CS data
+
+```{r}
+combined <- combined %>% 
+  mutate(is_CS = case_when(Assay %in% cs$Approved.symbol ~ "Yes", TRUE ~ "No"))
+res_all <- left_join(combined, cs, by = c("Assay" = "Approved.symbol"))
+```
+
+Add if the proteins are available on the Olink FLEX platform
+
+```{r}
+res_all <- res_all %>% 
+  mutate(
+    is_flex = case_when(Assay %in% df_flex$Gene ~ "Yes", TRUE ~ "No")) 
+```
+
+Also indicate if the protein is targetable
+
+```{r}
+df_target_sub <- df_target %>% select(Gene.Name, Drug.IDs) %>% 
+  # Ensure one gene row for each drug
+  group_by(Gene.Name) %>%
+  summarise(
+    DrugBank.ID = str_c(unique(unlist(str_split(Drug.IDs, ","))), collapse = ",")
+  )
+res_all2 <- res_all %>% left_join(df_target_sub, by = c("Assay" = "Gene.Name"))
+```
+
+Replace DrugID with common name
+
+```{r}
+df_vocab_sub <- df_vocab %>% select(DrugBank.ID, Common.name)
+# Replace each DrugBank ID with the corresponding Common name
+res_all2 <- res_all2 %>%
+  # Split the Drug.IDs by semicolon
+  mutate(DrugBank.ID = str_split(DrugBank.ID, "; ")) %>%
+  # Use a custom function to replace IDs with common names
+  mutate(drugname = sapply(DrugBank.ID, function(ids) {
+    # Join the common names of the IDs in the list
+    names <- df_vocab_sub %>% 
+      filter(DrugBank.ID %in% ids) %>%
+      pull(`Common.name`)
+    # Combine the common names into a single string
+    str_c(names, collapse = "; ")
+  })) %>%
+  mutate(DrugBank.ID = as.character(DrugBank.ID))  # Clean up the original Drug.IDs column if desired
+
+write.csv(res_all2, file.path(wd$outCurr, "HR_values_mCRPC_specific_multivariate_limma_all_cell_surface.csv"))
+```
+
+
+

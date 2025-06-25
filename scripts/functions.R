@@ -397,7 +397,7 @@ analyze_proteins_bin <- function(cd_prot, npx_in, meta_in) {
     npx_exp <- npx_in %>%
       filter(OlinkID %in% eg_protein) %>%
       select(SampleID, NPX, Assay) %>%
-      dplry::rename(sample_id = SampleID) %>%
+      dplyr::rename(sample_id = SampleID) %>%
       mutate(
         sample_id = as.character(sample_id),
         npx_median = median(NPX),
@@ -1114,3 +1114,91 @@ get_overlap_degree <- function(element, groups) {
     return("None") # Should not happen in typical use cases
   }
 }
+
+# Function to get the pattern to make swimmers plot
+get_patient_pattern <- function(data) {
+  data %>%
+    group_by(mrn) %>%
+    summarise(
+      has_a = any(cohort == "A"),
+      has_b_pre = any(cohort == "B" & str_detect(txt_stat, "^Pre")),
+      has_b_post = any(cohort == "B" & str_detect(txt_stat, "^Post")),
+      n_b_samples = sum(cohort == "B"),
+      has_c_pre = any(cohort == "C" & str_detect(txt_stat, "^Pre")),
+      has_c_post = any(cohort == "C" & str_detect(txt_stat, "^Post")),
+      n_c_samples = sum(cohort == "C"),
+      n_b_post = sum(cohort == "B" & str_detect(txt_stat, "^Post")),
+      n_c_post = sum(cohort == "C" & str_detect(txt_stat, "^Post")),
+      # New: check for specific sample types
+      has_c_post1 = any(cohort == "C" & txt_stat == "Post1"),
+      has_c_post2 = any(cohort == "C" & txt_stat == "Post2"),
+      has_c_pre1  = any(cohort == "C" & txt_stat == "Pre1"),
+      has_c_pre2  = any(cohort == "C" & txt_stat == "Pre2"),
+      has_b_pre1  = any(cohort == "B" & txt_stat == "Pre1"),
+      has_b_pre2  = any(cohort == "B" & txt_stat == "Pre2"),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      is_b_serial = n_b_samples > 1,
+      is_c_serial = n_c_samples > 1,
+      pattern = case_when(
+        has_a & !has_b_pre & !has_b_post & !has_c_pre & !has_c_post ~ "A",
+        has_b_pre & !has_b_post & !has_c_pre & !has_c_post & !is_b_serial ~ "B_Pre_Only",
+        !has_b_pre & has_b_post & !has_c_pre & !has_c_post & !is_b_serial ~ "B_Post_Only",
+        !has_b_pre & !has_b_post & has_c_pre & !has_c_post & !is_c_serial ~ "C_Pre_Only",
+        !has_b_pre & !has_b_post & !has_c_pre & has_c_post & !is_c_serial ~ "C_Post_Only",
+        is_b_serial & has_b_pre & has_b_post & !has_c_pre & !has_c_post ~ "B_Serial_PrePost",
+        is_c_serial & has_c_pre & has_c_post & !has_b_pre & !has_b_post ~ "C_Serial_PrePost",
+        has_b_pre & has_c_pre & !has_b_post & !has_c_post ~ "B_Pre_to_C_Pre",
+        has_b_post & has_c_post & !has_b_pre & !has_c_pre ~ "B_Post_to_C_Post",
+        # New patterns:
+        has_b_post & has_c_pre & !has_b_pre & !has_c_post ~ "B_Post_to_C_Pre",
+        has_c_post1 & has_c_post2 & !has_c_pre & !has_b_pre & !has_b_post & !has_c_pre1 & !has_c_pre2 & !has_b_pre1 & !has_b_pre2 ~ "C_Post1_to_C_Post2",
+        has_c_pre1 & has_c_pre2 & !has_c_post & !has_b_pre & !has_b_post & !has_c_post1 & !has_c_post2 & !has_b_pre1 & !has_b_pre2 ~ "C_Pre1_to_C_Pre2",
+        has_b_pre1 & has_b_pre2 & !has_b_post & !has_c_pre & !has_c_post & !has_c_post1 & !has_c_post2 & !has_c_pre1 & !has_c_pre2 ~ "B_Pre1_to_B_Pre2",
+        # New: B_post_to_C_Pre_to_C_Post
+        has_b_post & has_c_pre & has_c_post & !has_b_pre ~ "B_Post_to_C_Pre_to_C_Post",
+        (has_b_pre | has_b_post) & (has_c_pre | has_c_post) ~ "Mixed",
+        TRUE ~ "Other"
+      ),
+      total_samples = n_b_samples + n_c_samples
+    )
+}
+
+
+pattern_order <- c(
+  "A",
+  "B_Pre_Only", "B_Post_Only",
+  "C_Pre_Only", "C_Post_Only",
+  "B_Serial_PrePost",
+  "C_Serial_PrePost",
+  "B_Pre_to_C_Pre",
+  "B_Post_to_C_Post",
+  "C_Post1_to_C_Post2",
+  "B_Post_to_C_Pre",
+  "C_Pre1_to_C_Pre2",
+  "B_Pre1_to_B_Pre2",
+  "B_Post_to_C_Pre_to_C_Post",
+  "Mixed", "Other"
+)
+
+
+
+pattern_order2 <- c(
+  "A",
+  "B_Pre_Only", "B_Post_Only",
+  "C_Pre_Only", "C_Post_Only",
+  "B_Serial_PrePost",
+  
+  "B_Pre_to_C_Pre",
+  "B_Post_to_C_Post",
+  "B_Post_to_C_Pre",
+  "B_Post_to_C_Pre_to_C_Post",
+  
+  "C_Serial_PrePost",
+  "C_Post1_to_C_Post2",
+  
+  "C_Pre1_to_C_Pre2",
+  "Mixed", "Other"
+)
+
