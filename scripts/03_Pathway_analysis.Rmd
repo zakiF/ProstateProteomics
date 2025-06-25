@@ -24,6 +24,8 @@ We cleaned the clinical files metadata. Now we analze the NPX data generated. Fo
 
 Pathway analysis was performed on the prteins upregulated in mCRPC. We ran pathway analysis on proteins that showed progressive increase and non-linear increase separately.
 
+> Update June 25 2025. This section is depreciated. Because this section was running Pathway only on the Psomagen cohort. 
+
 
 # Pre-processing 
 

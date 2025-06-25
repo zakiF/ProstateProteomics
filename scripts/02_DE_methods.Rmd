@@ -24,10 +24,11 @@ We cleaned the clinical files metadata. Now we analyzed the NPX data generated. 
 5. Compare the DE from methods
 6. Overlap with cell surface markers
 
-
 # Conclusion
 
 We will use the limma method for DE testing. 
+
+> Update June 25 2025. This section is depreciated. Because this section was running DE only on the Psomagen cohort. We now want to combine all dataset (bridging) then run DE. 
 
 # Pre-processing 
 

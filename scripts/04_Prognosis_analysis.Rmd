@@ -30,7 +30,7 @@ We will use the binarized NPX protein value when correlating protein expression 
 
 We will not use the results from this part, because we will pool data from the initial psomagen cohort with the Olink batches. Then only in this pooled data, we will do the prognisis analysis.
 
-> We will not be performing this analysis
+> Update June 25 2025. This section is depreciated. Because this section was running Pathway only on the Psomagen cohort. 
 
 # Pre-processing 
 

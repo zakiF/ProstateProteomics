@@ -18,8 +18,8 @@ We have cohort of samples profiled for proteomics, genomics and metylation. We w
 In regards to proteomics. Samples were profiled ;
 
 1) Psomagen cohort
-2) Olink 2023 cohort (Q-13356)
-3) Olink 2024 cohort
+2) Olink 2023 cohort (Q-13356) - Also called Project 2
+3) Olink 2024 cohort (Q-15806) - Also called Project 4
 
 In addition, some patients were also profiled by genomics (KLK2 SNPs) and methylation.
 
@@ -27,8 +27,11 @@ In addition, some patients were also profiled by genomics (KLK2 SNPs) and methyl
 
 1. Gather data
 2. Clean up clinical data
-3. Summary of data
-4. Adding dates
+3. Viz of data
+
+# Conclusion 
+
+We extracted the metadata from 3 proteomics experiment. Identified samples to be used in future analysis. We have the final patient and sample numbers. 
 
 # Pre-processing 
 
@@ -82,16 +85,32 @@ source(file.path(wd$script, "functions.R"))
 ```
 
 
-
 # Objective 1
 
 **Gather data**
 
+We start with the information that there are 312 samples sent for Proteomics profiling. For each patient, we have the HCI collection ID (HCI_cID) and the sample ID by Olink. 
+
+We read the master file of all the HCI_cID into R
+
+```{r}
+df_hci_id <- read.csv(file.path(wd$d2024, "clinical_data/MetaData_Proteomics.csv"))
+nrow(df_hci_id)
+```
+
+We also specify in the clinical file provided by Enos and Becky. This file is available in the cloud as well at - 
+
+```{r}
+meta_file <- file.path(wd$d2024, "clinical_data/Proteomic Demographic 06_23_25.xlsx")
+```
+
+This excel file contains a few sheets, each sheet represent the particular disease cohort. 
+
+Next, for each the proteomics batch, we read in the NPX reading. 
+
 ## Psomagen 
 
-There were 2 files provided by Manish, we detail them here and read into R.
-
-1. **E3072_AN00003660_AN00003661_NPX_2022-04-21-columns**
+**E3072_AN00003660_AN00003661_NPX_2022-04-21-columns**
 
 This file is the NPX values from Olink. Samples are listed in the `SampleID` column
 
@@ -99,28 +118,6 @@ This file is the NPX values from Olink. Samples are listed in the `SampleID` col
 # Read the files
 dat_NPX <- readxl::read_excel(file.path(wd$d2024_npx, "batch_01_E3072_AN00003660_AN00003661_NPX_2022-04-21-columns.xlsx"))
 ```
-
-2. **Proteomic Project Clinical file 07_23_24_Combined_ID.xlsx**
-
-This contains the clinical files of all Proteomics cohort
-
-```{r}
-meta_file <- file.path(file.path(wd$d2024, "clinical_data/Proteomic Project Clinical file 09_10_24_Combined_ID_zaki_edited.xlsx"))
-```
-
-> As of June 2025, Manish's team, Enos and Becky provided an updated clinical file. So we will use this
-
-```{r}
-meta_file <- file.path(file.path(wd$d2024, "clinical_data/Proteomic Demographic 06-19-25.xlsx"))
-```
-
-### NPX data
-
-Read the NPX data 
-
-**E3072_AN00003660_AN00003661_NPX_2022-04-21-columns**
-
-This file is the NPX values from Olink. 
 
 Get Sample ID (listed in the `SampleID` column)
 
@@ -138,45 +135,32 @@ b1_noCtrl <- b1_id[!grepl("SC", b1_id)]
 length(b1_noCtrl)
 ```
 
-### Clinical data
-
-In the Psomagen cohort, some samples were profiled serially. The excel file contains 2 sheets related the Psomagen cohort, sheets 2 & 3.
-
-Sheet 2 contains only the unique patients IDs per row. It contains all the clinical data, eg - surgery, PSA values, tumor stage, date of death...etc. 
-
-
-While Sheet 3 have the same number of rows as the NPX data. In sheet 3, the same patient with multiple timepoints is represented in multiple rows. There is a column `sample_id` that links to the NPX `sampleID`. 
-
+Lets check if there are equal number in our master sample sheet
 
 ```{r}
-ps_clin.1 <- read_xlsx(meta_file, sheet = 3)
+df_hci_id %>% filter(Psomagen == "Y") %>% nrow()
 ```
+
+Its the same number of samples from NPX data and our sample information sheet. 
 
 ## Olink Q-13356 
 
-There were 2 files provided by Manish, we detail them here and read into R.
-
-1. **Q-13356_Kohli_EXTENDED_NPX_2024-03-11**
+**Q-13356_Kohli_EXTENDED_NPX_2024-03-11**
 
 This file is the NPX values from Olink. Samples are listed in the `SampleID` column
 
-
-2. The same clinical file as above
-
-This contains the clinical files of Psomagen cohort and Olink Q-13356 cohort
-
-
-### NPX data
-
-Read the NPX data. Samples are listed in the `SampleID` column
+Read the NPX data. Initially we read in this file - but this file was not "intensity normalized" rather it was "plate control" normalized. 
 
 ```{r}
 # Read the files
-dat_NPX2 <- readr::read_delim(file.path(wd$d2024_npx, "batch_02_Q-13356_Kohli_EXTENDED_NPX_2024-03-11.csv"), delim = ";")
-
-dat_NPX2 <- readr::read_delim(file.path(wd$d2024_npx, "Re_delivery_Intensity_based/Q-13356_Data Delivery/Q-13356_Kohli_Intensity_EXTENDED_NPX_2024-10-30.csv"), delim = ";")
+# dat_NPX2 <- readr::read_delim(file.path(wd$d2024_npx, "batch_02_Q-13356_Kohli_EXTENDED_NPX_2024-03-11.csv"), delim = ";") 
 ```
 
+We requested Olink to resend the "intensity normalzed" NPX, to match Psomagen data
+
+```{r}
+dat_NPX2 <- readr::read_delim(file.path(wd$d2024_npx, "Re_delivery_Intensity_based/Q-13356_Data Delivery/Q-13356_Kohli_Intensity_EXTENDED_NPX_2024-10-30.csv"), delim = ";")
+```
 Get Sample ID
 
 ```{r}
@@ -193,32 +177,14 @@ b2_noCtrl <- b2_id[!grepl("CONTROL_SAMPLE|NEG_CTRL|PLATE_CTRL", b2_id)]
 length(b2_noCtrl)
 ```
 
-### Clinical data
-
-In the this Olink Q-13356 cohort, there are no serial samples. Clinical data is contained in sheet 4 & 5. of the excel files.
-
-Sheets 4 & 5 contains contains all the clinical data, eg - surgery, PSA values, tumor stage, date of death...etc. Sheet 4 is limited to the CRPC cohort and sheet 5 is limited to HSPC cohort. There is a column `Sample ID (validation)` that links to the NPX `sampleID`.
-
+Lets check if there are equal number of samples in our master sample sheet
 
 ```{r}
-q_133_clin.1 <- read_xlsx(meta_file, sheet = 4) %>% 
-  # Rename columns
-  dplyr::rename(sample_id = 'Sample ID (validation)')
-n1 <- length(unique(q_133_clin.1$`HCI number`)) 
-n1
+df_hci_id %>% filter(Q_13356 == "Y") %>% nrow()
 ```
 
-We repeat reading the clinical data of the HSPC cohort
 
-```{r}
-q_133_clin.2 <- read_xlsx(meta_file, sheet = 5) %>% 
-  # Rename columns
-  dplyr::rename(sample_id = 'Sample ID (validation)')
-n2 <- length(unique(q_133_clin.2$`HCI Number`)) 
-n2
-```
-
-Based on the NPX, we have `r length(b2_noCtrl)` samples. Meanwhile in the clinical file, we have `r n1` in CRPC and `r n2` for HSCP. The total in clinical file is `r n1 + n2`.
+Based on the NPX, we have `r length(b2_noCtrl)` samples. Meanwhile in the clinical file, we have 87. 
 
 There is one less patient in the clinical sheet. 
 
@@ -236,19 +202,31 @@ To: Zaki Wilmot <zaki.wilmot@hci.utah.edu>; Manish Kohli <Manish.Kohli@hci.utah.
 >Thanks, 
 Claire 
 
-We will keep this in mind when we process the NPX data
+We noted here that there is one sample missing a clinical ID. We go back to the email from Claire that mentioned the sample "2021-2165" was profiled twice and should have the assigned sample_id : 34 and 78 
+
+```{r}
+#filter(d2, is.na(HCI_cID))
+```
+
+We see sample ID 78 is missing clinical data. So we just exclude sample 78 for now
+
+```{r}
+#d2 <- d2 %>% 
+#  filter(!sample_id_Q13356 == 78)
+```
+
 
 
 ## Olink Q-15806
 
-### NPX data
 
 Read the NPX data. Samples are listed in the `SampleID` column
 
+Again, similar to Q-13356, we have two NPX file based on the differnt normalization approach. We use the "intensity based" to keep it similar to Psomagen,
+
 ```{r}
 # Read the files
-dat_NPX3 <- readr::read_delim(file.path(wd$d2024_npx, "Q-15806_Kohli_NPX_2024-07-29.csv"), delim = ";")
-
+#dat_NPX3 <- readr::read_delim(file.path(wd$d2024_npx, "Q-15806_Kohli_NPX_2024-07-29.csv"), delim = ";")
 dat_NPX3 <- readr::read_delim(file.path(wd$d2024_npx, "Re_delivery_Intensity_based/Q-15806_Data Delivery/Q-15806_Kohli_EXTENDED_NPX_2024-10-30.csv"), delim = ";")
 ```
 
@@ -261,28 +239,19 @@ length(b3_id)
 
 There are `r `length(b3_id)` samples assayed by Olink. This includes "Sample Control" as well, an internal control used by Olink. 
 
-Find the number of samples not including the internal control. This time internal control is given as "NA" in the SampleID.
+Find the number of samples not including the internal control.
 
 ```{r}
-b3_noCtrl <- b3_id[!is.na(b3_id)]
+b3_noCtrl <-  b3_id[!grepl("CONTROL_SAMPLE|NEG_CTRL|PLATE_CTRL", b3_id)]
 length(b3_noCtrl)
 ```
 
-We have 88 samples. 
-
-### Clinical data
-
-Two tab of clinical were provided for Olink Q-15806.
-
-The first files details the Olink sampleID and HCI collection id. We read this first, as this is what is currently required
+Lets check if there are equal number of samples in our master sample sheet
 
 ```{r}
-q_158_d <- read_xlsx(meta_file, sheet = 8) %>% 
-  # Edit column names
-  rename(HCI_cID = 'HCI Number',
-         sample_id = 'Sample ID',
-         Tx_stage = 'Pre/Post Tx?')
+df_hci_id %>% filter(Q_15806 == "Y") %>% nrow()
 ```
+
 
 ## Match protein IDs
 
@@ -322,27 +291,11 @@ df_id_pro <- d_all %>% select(OlinkID, Assay) %>% distinct()
 write.csv(df_id_pro, file.path(wd$outCurr, "Olink_assay_table.csv"))
 ```
 
-
 # Objective 2
 
 **Clean up clinical data**
 
-We want to combine all data as one df. To make counting and overlapping easier. The unique IDs to merge across these different platforms will be the HCI ID. For the clinical data with mrn & HCI collection ID, we make them into a data frame. 
-
-
-Enos provided us with the HCI_id and updated sample collection date
-
-```{r}
-df_date <- read_xlsx(file.path(wd$d2024, "clinical_data/Demographics Patients_Proteomics 4-14-25 1.xlsx"),
-sheet = 2)
-dd <- df_date
-df_date <- data.frame(
-  HCI_cID = c(dd$Sample1_HCI_Num, dd$Sample2_HCI_Num, dd$Sample3_HCI_Num),
-  date = c(dd$Sample1_date, dd$`Sample 2 Start date`, dd$`Sample3_Start date`)
-  ) %>% filter(!is.na(HCI_cID))
-```
-
-Matt provided us with an updated cohort information. Lets read it in.
+Matt provided us with an cohort information in 30 May 2025. This contained information defining pre- and post- treated samples
 
 ```{r}
 df_cohort <- read_xlsx(file.path(wd$d2024, "clinical_data/Cohort_grouping_2025_05_30.xlsx")) %>% 
@@ -352,97 +305,341 @@ df_cohort <- read_xlsx(file.path(wd$d2024, "clinical_data/Cohort_grouping_2025_0
          Q_15806 = Project_4)
 ```
 
-## Tally
 
-Lets get a tally of the number of sample in all projects
+## Cohort summary
 
-### Sample IDs
+Enos provided us with an updated clinical data. We stored this as `meta_file`.
 
-In the NPX files we are given the ID as "sample_ID". Lets link the sample ID of the NPX with the sample ID in the clinical data.
+Tab 1 contains cohort A. 
+Tab 2 contains cohort B. 
+Tab 3 contains cohort C. 
 
+### Cohort A
 
-```{r}
-# --- Psomagen cohort ---- #
-# As all sample ID are numbers. We convert it to numeric. Non-number will give NA
-# We stored the Psomagen NPX IDs - b1_noCtrl
-d1.1 <- data.frame(
-  sample_id_psom = as.numeric(b1_noCtrl)
-)
-# Extract the HCI collection ID from clinical files
-d1.2 <- data.frame(
-  HCI_cID = ps_clin.1$`collection_id-hci_id`,
-  sample_id_psom = as.numeric(ps_clin.1$sample_id)
-)
-# Merge the two
-d1 <- left_join(d1.1, d1.2)
-# Santiy check to ensure all NPX data have clinical data, value needs to be 0
-sum(is.na(d1$HCI_cID))
-
-
-# --- Olink Q-13356 cohort ---- #
-# We stored the Q-13356 NPX IDs - b2_noCtrl
-d2.1 <- data.frame(
-  sample_id_Q13356 = as.numeric(b2_noCtrl)
-)
-# Extract the HCI collection ID from clinical files
-# The clinical file also contained a record of a supposed psomagen ID
-d2.2 <- data.frame(
-  HCI_cID = c(q_133_clin.1$`HCI number`, q_133_clin.2$`HCI Number`),
-  sample_id_Q13356 = as.numeric(c(q_133_clin.1$sample_id, q_133_clin.2$sample_id)),
-  sample_id_psom_2 = as.numeric(c(q_133_clin.1$`Sample Id (previous analysis)`, q_133_clin.2$`Sample ID (previous analysis)`))
-)
-# Merge the two
-d2 <- left_join(d2.1, d2.2)
-# Santiy check to ensure all NPX data have clinical data, value needs to be 0
-sum(is.na(d2$HCI_cID))
-```
-
-We noted here that there is one sample missing a clinical ID. We go back to the email from Claire that mentioned the sample "2021-2165" was profiled twice and should have the assigned sample_id : 34 and 78 
+For cohort A, lets get the HCI_cID and collection date
 
 ```{r}
-filter(d2, is.na(HCI_cID))
+df_clin <- read_xlsx(meta_file, sheet = 1)
+
+dd <- df_clin
+df_a <- data.frame(
+  mrn = dd$`MRN (UUHSC)`,
+  HCI_cID = c(dd$Sample1_HCI_Num, dd$Sample2_HCI_Num),
+  date = c(dd$Sample1_date, dd$`Sample 2 Start date`)
+  ) %>% filter(!is.na(HCI_cID)) %>% 
+  mutate(cohort = "A") %>% 
+  filter(HCI_cID %in% df_hci_id$HCI_cID)
 ```
 
-We see sample ID 78 is missing clinical data. So we just exclude sample 78 for now
+### Cohort B
+
+For cohort B, lets get the HCI_cID and collection date. We also want to add the treatment date. 
 
 ```{r}
-d2 <- d2 %>% 
-  filter(!sample_id_Q13356 == 78)
+df_clin <- read_xlsx(meta_file, sheet = 2)
+
+dd <- df_clin
+
+df_b <- data.frame(
+  mrn = dd$`MRN (UUHSC)`,
+  HCI_cID = c(dd$Sample1_HCI_Num, dd$Sample2_HCI_Num, dd$Sample3_HCI_Num),
+  date = c(dd$Sample1_date, dd$`Sample 2 Start date`, dd$`sample3 date`),
+  psa = c(dd$sample1_psa, dd$sample2_psa, dd$sample3_psa),
+  testo = c(dd$sample1_testos, dd$`Sample 2 Testerone`, dd$`Sample 3 Testosterone`), 
+  txt_ori = dd$txt_stat,
+  death_date = c(dd$`Death date`),
+  txt_nhspc_1st_type = dd$`1st_nmhspc_rx`,
+  txt_nhspc_1st_date = dd$`1st_nmhspc_rx_date`,
+  txt_mhspc_1st_type = dd$`1st_mhspc_rx`,
+  txt_mhspc_1st_date = dd$`1st_mhspc_rx_date`,
+  txt_mhspc_2st_type = dd$`2nd_mhspc_rx`,
+  txt_mhspc_2st_date = dd$`2nd_mhspc_rx_date`
+) %>% 
+  filter(!is.na(HCI_cID)) %>% 
+  mutate(
+    cohort = "B",
+    psa = as.numeric(gsub("<", "", psa)),
+    testo = as.numeric(gsub("<", "", testo))
+  ) %>% 
+  filter(HCI_cID %in% df_hci_id$HCI_cID)
 ```
 
-Repeat for Q-15806
+We want to figure out when is the first ADT date that is given. Lets first list all the treatments given and figure out which one is ADT.
 
 ```{r}
-d3 <- q_158_d %>% 
-  select(HCI_cID, sample_id) %>% 
-  mutate(sample_id = as.numeric(sample_id)) %>% 
-  rename(sample_id_Q15806 = sample_id)
+# Create columns indicating if ADT was given and the earliest date of ADT given for each patient
+df_b2 <- df_b %>%
+  mutate(
+    # Identify if each treatment type is ADT
+    nhspc_adt = str_detect(tolower(txt_nhspc_1st_type), "adt"),
+    mhspc1_adt = str_detect(tolower(txt_mhspc_1st_type), "adt"),
+    mhspc2_adt = str_detect(tolower(txt_mhspc_2st_type), "adt"),
+    # Convert all treatment dates to Date type
+    nhspc_adt_date = if_else(nhspc_adt, as.Date(txt_nhspc_1st_date), as.Date(NA)),
+    mhspc1_adt_date = if_else(mhspc1_adt, as.Date(txt_mhspc_1st_date), as.Date(NA)),
+    mhspc2_adt_date = if_else(mhspc2_adt, as.Date(txt_mhspc_2st_date), as.Date(NA))
+  ) %>%
+  rowwise() %>%
+  mutate(
+    # Was ADT given in any of the three?
+    adt_given = any(c(nhspc_adt, mhspc1_adt, mhspc2_adt), na.rm = TRUE),
+    # Find the earliest date of ADT given
+    adt_earliest_date = min(c(nhspc_adt_date, mhspc1_adt_date, mhspc2_adt_date), na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    # If no ADT was given, set adt_earliest_date to NA
+    adt_earliest_date = if_else(adt_given, adt_earliest_date, as.Date(NA))
+  )
+
+df_b2 <- df_b %>%
+  mutate(
+    # Identify if each treatment type is ADT
+    nhspc_adt = str_detect(tolower(txt_nhspc_1st_type), "adt"),
+    mhspc1_adt = str_detect(tolower(txt_mhspc_1st_type), "adt"),
+    mhspc2_adt = str_detect(tolower(txt_mhspc_2st_type), "adt"),
+    # Convert all treatment dates to Date type
+    nhspc_adt_date = if_else(nhspc_adt, as.Date(txt_nhspc_1st_date), as.Date(NA)),
+    mhspc1_adt_date = if_else(mhspc1_adt, as.Date(txt_mhspc_1st_date), as.Date(NA)),
+    mhspc2_adt_date = if_else(mhspc2_adt, as.Date(txt_mhspc_2st_date), as.Date(NA))
+  ) %>%
+  rowwise() %>%
+  mutate(
+    # Was ADT given in any of the three?
+    adt_given = any(c(nhspc_adt, mhspc1_adt, mhspc2_adt), na.rm = TRUE),
+    # Find the earliest and latest date of ADT given
+    adt_earliest_date = min(c(nhspc_adt_date, mhspc1_adt_date, mhspc2_adt_date), na.rm = TRUE),
+    adt_latest_date   = max(c(nhspc_adt_date, mhspc1_adt_date, mhspc2_adt_date), na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    # If no ADT was given, set adt_earliest_date and adt_latest_date to NA
+    adt_earliest_date = if_else(adt_given, adt_earliest_date, as.Date(NA)),
+    adt_latest_date   = if_else(adt_given, adt_latest_date, as.Date(NA)))
 ```
 
-Finally, combine all sample IDs
+Now we want to create a column to indicate if the patient was given ADT within 30 days of the sample collecton date. For samples before the 30 days, label as Pre and after 30 days label as post. 
+
+For some patients (with >90 days since ADT) Bekcy provided us with an updated ADT date as well. We read this updated dates
 
 ```{r}
-# Combine all the sample IDs
-df_meta_f <- df_cohort %>% 
-  left_join(d1) %>% 
-  left_join(d2) %>% 
-  left_join(d3)
-
-write.csv(df_meta_f, file.path(wd$outCurr, "MetaData_Proteomics.csv"))
+df_adt <- read_xlsx(file.path(wd$d2024, "clinical_data/ADT_timeline_HSPC.xlsx"), sheet=1)
 ```
 
-## Dates
-
-Lets also add the date of sample collection
+Based on the HCI_cID, we want to replace the ADT collection date to Becky's date. We replace the adt_earliest_date with the dates provided by Becky.
 
 ```{r}
-
+df_b2 <- df_b2 %>%
+  left_join(df_adt %>% select(HCI_cID, Becky_ADT_date), by = "HCI_cID") %>%
+  mutate(
+    adt_earliest_date = if_else(!is.na(Becky_ADT_date), as.Date(Becky_ADT_date), adt_earliest_date)
+  ) %>%
+  select(-Becky_ADT_date)
 ```
 
+Lets calcualte the time of sample collection to ADT
 
+```{r}
+df_b2 <- df_b2 %>%
+  mutate(
+    # Calculate days from sample collection to ADT
+    days_to_adt_early = as.numeric(difftime(date, adt_earliest_date, units = "days")),
+    days_to_adt_late  = as.numeric(difftime(date, adt_latest_date, units = "days")),
+    # Label as Pre if sample is within 30 days before/after earliest ADT, Post if >30 days after earliest ADT
+    adt_status_early = case_when(
+      is.na(adt_earliest_date) ~ "Pre",                # No ADT date available
+      days_to_adt_early >= -30 & days_to_adt_early <= 30 ~ "Pre",  # Within 30 days before/after earliest ADT
+      days_to_adt_early > 30 ~ "Post",                       # More than 30 days after earliest ADT
+      days_to_adt_early < -30 ~ "Pre",                       # More than 30 days before earliest ADT 
+      TRUE ~ NA_character_),
+    adt_status_late = case_when(
+      is.na(adt_latest_date) ~ "Pre",                # No ADT date available
+      days_to_adt_late >= -30 & days_to_adt_late <= 30 ~ "Pre",  # Within 30 days before/after earliest ADT
+      days_to_adt_late > 30 ~ "Post",                       # More than 30 days after earliest ADT
+      days_to_adt_late < -30 ~ "Pre",                       # More than 30 days before earliest ADT 
+      TRUE ~ NA_character_)
+  )
+```
 
-Update May 29 2025. In the mHSPC cohort, we had sample with post and post2. Ie these samples 
+When we compare if the Pre- or Post- is the same using early or late. 3 patients were different ;
 
+- 2021-1600 
+- 2020-3493 
+- 2021-2049 
+
+For now, we are using the days_to_adt_early to define the ADT status. Additionally, we are now considering the testosterone level as well. 
+
+Anything labeled initially as "Pre" and have a testo value <50 will be considered "Post" 
+
+Anything labeled initially as "Post" and have a testo value >50 will be considered as "Pre"
+
+```{r}
+df_b3 <- df_b2 %>% 
+  mutate(
+    updated_adt_early = case_when(
+      adt_status_early == "Pre" & testo  <= 50 ~ "Post",
+      adt_status_early == "Post" & testo  > 50 ~ "Pre",
+      TRUE ~ adt_status_early
+    )
+  )
+```
+
+Number of samples in pre- or post-
+
+```{r}
+table(df_b3$updated_adt_early)
+```
+
+Lets check how many pre- post- pairs we have
+
+```{r}
+mrn_pre_post <- df_b3 %>%
+  group_by(mrn) %>%
+  summarise(
+    has_pre = as.integer(any(updated_adt_early == "Pre", na.rm = TRUE)),
+    has_post = as.integer(any(updated_adt_early == "Post", na.rm = TRUE))
+  )
+
+# View only those with both Pre and Post
+mrn_pre_post %>%
+  filter(has_pre == 1 & has_post == 1) %>% 
+  dim()
+```
+
+### Cohort C
+
+For cohort C, lets get the HCI_cID and collection date. We also want to add the treatment date. 
+
+```{r}
+df_clin <- read_xlsx(meta_file, sheet = 5)
+
+dd <- df_clin
+
+df_c <- data.frame(
+  mrn = dd$`MRN (UUHSC)`,
+  HCI_cID = c(dd$Sample1_HCI_Num, dd$Sample2_HCI_Num, dd$Sample3_HCI_Num),
+  date = c(dd$Sample1_date, dd$`Sample 2 Start date`, dd$`Sample3_Start date`),
+  psa = c(dd$sample1_psa, dd$sample2_psa, dd$sample3_psa),
+  ldh = c(dd$sample1_ldh, dd$sample2_ldh, dd$sample3_ldh),
+  alk_phos = c(dd$sample1_alk_phos, dd$sample2_alk_phos, dd$sample3_alk_phos),
+  death_date = c(dd$`Death date`),
+  death_status = dd$`Deceased?`,
+  txt_nmcrpc_1st_type = dd$`1st_nmcrpc_rx`,
+  txt_nmcrpc_1st_date = dd$`1st_nmcrpc_rx_date`,
+  txt_mcrpc_1st_type = dd$`1st_mcrpc_rx`,
+  txt_mcrpc_1st_date = dd$`1st_mcrpc_rx_date`,
+  txt_mcrpc_2st_type = dd$`2nd_mcrpc_rx`,
+  txt_mcrpc_2st_date = dd$`2nd_mcrpc_rx_date`
+) %>% 
+  filter(!is.na(HCI_cID)) %>% 
+  mutate(
+    cohort = "C",
+    psa = as.numeric(gsub("<", "", psa)),
+    ldh = as.numeric(gsub("<", "", ldh)),
+    alk_phos = as.numeric(gsub("<", "", alk_phos)),
+  ) %>% 
+  filter(HCI_cID %in% df_hci_id$HCI_cID)
+```
+
+We want to figure out when is the first CRPC treatment is given. Regardless of what CRPC treatment was given
+
+```{r}
+# If any treatment is given, find the earliest and latest treatment date.
+
+# Cohort C: Find earliest and latest treatment date (any treatment)
+df_c2 <- df_c %>%
+  mutate(
+    # Convert all treatment dates to Date type
+    nmcrpc_date = as.Date(txt_nmcrpc_1st_date),
+    mcrpc1_date = as.Date(txt_mcrpc_1st_date),
+    mcrpc2_date = as.Date(txt_mcrpc_2st_date)
+  ) %>%
+  rowwise() %>%
+  mutate(
+    # Find the earliest and latest date of any treatment given
+    any_treatment_earliest_date = min(c(nmcrpc_date, mcrpc1_date, mcrpc2_date), na.rm = TRUE),
+    any_treatment_latest_date   = max(c(nmcrpc_date, mcrpc1_date, mcrpc2_date), na.rm = TRUE),
+    # Was any treatment given? (at least one non-NA date)
+    any_treatment_given = any(!is.na(c(nmcrpc_date, mcrpc1_date, mcrpc2_date)))
+  ) %>%
+  ungroup() %>%
+  mutate(
+    # If no treatment was given, set dates to NA
+    any_treatment_earliest_date = if_else(any_treatment_given, any_treatment_earliest_date, as.Date(NA)),
+    any_treatment_latest_date   = if_else(any_treatment_given, any_treatment_latest_date, as.Date(NA))
+  )
+```
+
+Now we want to create a column to indicate if the patient was given mCRPC treament within 30 days of the sample collection date. For samples wihtin 30 days (before or after the 30 days), label as Pre and after 30 day window label as post. 
+
+Lets calcualte the time of sample collection to treatment
+
+```{r}
+df_c2 <- df_c2 %>%
+  mutate(
+    # Calculate days from sample collection to earliest and latest mCRPC (any) treatment
+    days_to_mcrpc_early = as.numeric(difftime(date, any_treatment_earliest_date, units = "days")),
+    days_to_mcrpc_late  = as.numeric(difftime(date, any_treatment_latest_date, units = "days")),
+    # Label as Pre if sample is within 30 days before/after earliest mCRPC treatment, Post if >30 days after earliest mCRPC treatment
+    mcrpc_status_early = case_when(
+      is.na(any_treatment_earliest_date) ~ "Pre",                # No mCRPC treatment date available
+      days_to_mcrpc_early >= -30 & days_to_mcrpc_early <= 30 ~ "Pre",  # Within 30 days before/after earliest mCRPC treatment
+      days_to_mcrpc_early > 30 ~ "Post",                       # More than 30 days after earliest mCRPC treatment
+      days_to_mcrpc_early < -30 ~ "Pre",                       # More than 30 days before earliest mCRPC treatment 
+      TRUE ~ NA_character_),
+    mcrpc_status_late = case_when(
+      is.na(any_treatment_latest_date) ~ "Pre",                # No mCRPC treatment date available
+      days_to_mcrpc_late >= -30 & days_to_mcrpc_late <= 30 ~ "Pre",  # Within 30 days before/after latest mCRPC treatment
+      days_to_mcrpc_late > 30 ~ "Post",                       # More than 30 days after latest mCRPC treatment
+      days_to_mcrpc_late < -30 ~ "Pre",                       # More than 30 days before latest mCRPC treatment 
+      TRUE ~ NA_character_)
+  )
+```
+
+Number of samples in pre- or post-
+
+```{r}
+table(df_c2$mcrpc_status_early)
+```
+
+Lets check how many pre- post- pairs we have
+
+```{r}
+mrn_pre_post <- df_c2 %>%
+  group_by(mrn) %>%
+  summarise(
+    has_pre = as.integer(any(mcrpc_status_early == "Pre", na.rm = TRUE)),
+    has_post = as.integer(any(mcrpc_status_early == "Post", na.rm = TRUE))
+  )
+
+# View only those with both Pre and Post
+mrn_pre_post %>%
+  filter(has_pre == 1 & has_post == 1) %>% 
+  dim()
+```
+
+# Objective 3
+
+*Viz of data*
+
+Lets summarize the data with some plots
+
+Create a master file to see the treatment status and collection date of all samples
+
+```{r}
+d1 <- df_a %>% 
+  mutate(txt_stat = "Pre",
+         time2txt = 0) 
+d2 <- df_b3 %>% select(mrn, HCI_cID, date, cohort, updated_adt_early, days_to_adt_early) %>% 
+  rename(txt_stat = updated_adt_early,
+         time2txt= days_to_adt_early)
+d3 <- df_c2 %>% select(mrn, HCI_cID, date, cohort, mcrpc_status_early, days_to_mcrpc_early) %>% 
+  rename(txt_stat = mcrpc_status_early,
+         time2txt = days_to_mcrpc_early)
+
+df_meta_f <- rbind(d1,d2,d3) %>% 
+  left_join(df_hci_id %>% select(-mrn, -X))
+```
 
 ## Venn overlap
 
@@ -497,10 +694,6 @@ ggvenn(
 )
 dev.off()
 ```
-
-
-
-
 ## Num samples
 
 ```{r}
@@ -519,86 +712,19 @@ summary_df1 <- summary_df %>%
   mutate(cohort_txt_stat =
            paste(cohort, txt_stat, sep = "_"),
          cohort_txt_stat = factor(cohort_txt_stat, levels=c(
-           "A_Pre", "A_Post", "B_Pre", "B_Post", "C_D_Pre", "C_D_Post"
+           "A_Pre", "A_Post", "B_Pre", "B_Post", "C_Pre", "C_Post"
          ))) %>% 
   mutate(Batch = "01_All_cohort")
-
-
-# Psomagen only
-summary_df <- df_meta_f %>%
-  filter(Psomagen == "Y") %>% 
-  mutate(txt_stat = gsub("[1-2]", "", txt_stat),
-         txt_stat = gsub("post", "Post", txt_stat))
-pr2.1 <- print(paste0("Num of patients in Discovery is ", length(unique(summary_df$mrn))))
-pr2.2 <- print(paste0("Num of samples in Discovery is ", length(unique(summary_df$HCI_cID))))
-
-summary_df2 <- summary_df %>% 
-  group_by(cohort, txt_stat) %>%
-  summarise(count = n(), .groups = 'drop') %>% 
-  # Create a new column that combines cohort and txt_stat
-  mutate(cohort_txt_stat =
-           paste(cohort, txt_stat, sep = "_"),
-         cohort_txt_stat = factor(cohort_txt_stat, levels=c(
-           "A_Pre", "A_Post", "B_Pre", "B_Post", "C_D_Pre", "C_D_Post"
-         ))) %>% 
-  mutate(Batch = "02_Discovery")
-
-
-# Olinks only
-summary_df <- df_meta_f %>%
-  filter(!Psomagen == "Y") %>% 
-  filter(Q_13356 == "Y" | Q_15806 == "Y") %>% 
-  mutate(txt_stat = gsub("[1-2]", "", txt_stat),
-         txt_stat = gsub("post", "Post", txt_stat)) %>% 
-  group_by(cohort, txt_stat)
-
-pr3.1 <- print(paste0("Num of patients in Validation is ", length(unique(summary_df$mrn))))
-pr3.2 <- print(paste0("Num of samples in Validation is ", length(unique(summary_df$HCI_cID))))
-
-summary_df3 <- summary_df %>% 
-  summarise(count = n(), .groups = 'drop') %>% 
-  # Create a new column that combines cohort and txt_stat
-  mutate(cohort_txt_stat =
-           paste(cohort, txt_stat, sep = "_"),
-         cohort_txt_stat = factor(cohort_txt_stat, levels=c(
-           "A_Pre", "A_Post", "B_Pre", "B_Post", "C_D_Pre", "C_D_Post"
-         ))) %>% 
-  mutate(Batch = "03_Validation")
-
-
-# Step 1: Summarize the data (count samples for each cohort and txt_stat combination)
-summary_df <- df_meta_f %>%
-  mutate(txt_stat = gsub("[1-2]", "", txt_stat),
-         txt_stat = gsub("post", "Post", txt_stat)) %>% 
-  filter(txt_stat == "Pre") %>% 
-  group_by(cohort, txt_stat) 
-
-pr4.1 <- print(paste0("Num of patients in All is ", length(unique(summary_df$mrn))))
-pr4.2 <- print(paste0("Num of samples in All is ", length(unique(summary_df$HCI_cID))))
-
-summary_df4 <- summary_df %>% 
-  summarise(count = n(), .groups = 'drop') %>% 
-  # Create a new column that combines cohort and txt_stat
-  mutate(cohort_txt_stat =
-           paste(cohort, txt_stat, sep = "_"),
-         cohort_txt_stat = factor(cohort_txt_stat, levels=c(
-           "A_Pre", "A_Post", "B_Pre", "B_Post", "C_D_Pre", "C_D_Post"
-         ))) %>% 
-  mutate(Batch = "04_All_baseline")
-
-
-
-summary_df_all <- rbind(summary_df1, summary_df2, summary_df3)
 
 # Custom colors: you can choose shades inspired by Tableau colors
 custom_colors <- c(
   "A_Pre" = "#1f77b4", "A_Post" = "#aec7e8",  # Blue shades
   "B_Pre" = "#ff7f0e", "B_Post" = "#ffbb78",  # Orange shades
-  "C_D_Pre" = "#2ca02c", "C_D_Post" = "#98df8a"  # Green shades
+  "C_Pre" = "#2ca02c", "C_Post" = "#98df8a"  # Green shades
 )
 
 # Updated plot
-p1 <- ggplot(summary_df_all, aes(x = 1, y = Batch, size = count, fill = cohort_txt_stat)) +
+p1 <- ggplot(summary_df1, aes(x = cohort_txt_stat, y = Batch, size = count, fill = cohort_txt_stat)) +
   geom_point(shape = 21, color = "black", position=position_dodge(width=0.5)) +  # Create circles with black border
   geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circles
   scale_size_area(max_size = 15) +  # Adjust circle sizes
@@ -609,42 +735,6 @@ p1 <- ggplot(summary_df_all, aes(x = 1, y = Batch, size = count, fill = cohort_t
         panel.grid = element_blank())
 ggsave(p1, file=file.path(wd$outCurr, "Treatment_breakdown.pdf"), height = 5, width = 7)
 p1
-
-
-# Plot without overlaps
-p2 <- ggplot(summary_df_all, 
-             aes(x = c(
-               rep(c(1.2, 0.8, 
-                     2.2, 1.8,
-                     3.2, 2.8),3)
-               ),
-                 y = Batch, 
-                 size = count, fill = cohort_txt_stat)) +
-  geom_point(shape = 21, color = "black") +  # Create circles with black border
-  geom_text(aes(label = count), vjust = 2, size = 5) +  # Add text underneath circles
-  scale_size_area(max_size = 15) +  # Adjust circle sizes
-  scale_fill_manual(values = custom_colors) +  # Set custom colors
-  labs(x = "Cohort", y = "", fill = "Cohort and txt_stat", size = "Sample Count") +  # Label x-axis and legend
-  theme_bw() +  # Clean background
-  theme(legend.position = "right", axis.ticks.y = element_blank(),
-        panel.grid = element_blank(),
-        scale_y_discrete(expand = expansion(add = c(1, 1)))) +
-  annotate("text", x = 1.5, y = 1.2,
-           label = pr1.1) +
-  annotate("text", x = 1.5, y = 1.4,
-           label = pr1.2) +
-  annotate("text", x = 1.5, y = 2.2,
-           label = pr2.1) +
-  annotate("text", x = 1.5, y = 2.4,
-           label = pr2.2) +
-  annotate("text", x = 1.5, y = 3.2,
-           label = pr3.1) +
-  annotate("text", x = 1.5, y = 3.4,
-           label = pr3.2) +
-  NULL
-p2
-
-ggsave(p2, file=file.path(wd$outCurr, "Sample_numbers_discovery_validation.pdf"), height = 5, width = 12)
 ```
 
 ## Longtidudinal 
@@ -659,12 +749,6 @@ Lets plot the distribution of samples. To see how many are longtiduinal samples.
 #   -2C - mrn 2x in cohort C_D
 #   -2D - mrn 1x in cohort B & 1x in cohort C_D
 # Group 3 - mrn that occurs 3x
-#df_meta_f_ori <- df_meta_f 
-df_meta_f <- df_meta_f %>% 
-  mutate(txt_stat = case_when(txt_stat == "post" ~ "Post",
-                              txt_stat == "Pre2" ~ "Pre",
-                              txt_stat == "Post2" ~ "Post",
-                              TRUE ~ txt_stat)) 
 
 df_tally <- df_meta_f 
 
@@ -687,7 +771,7 @@ mrn_counts <- mrn_counts %>% left_join(tot_counts)
 group_1_mrns <- mrn_counts %>% filter(total_observations == 1) %>% pull(mrn)
 group_2_mrns <- mrn_counts %>% filter(total_observations == 2)
 group_2_cohort_B <- group_2_mrns %>% filter(B == 2) %>% pull(mrn)
-group_2_cohort_C <- group_2_mrns %>% filter(C_D == 2) %>% pull(mrn)
+group_2_cohort_C <- group_2_mrns %>% filter(C == 2) %>% pull(mrn)
 group_2_mrns_set2 <- group_2_mrns %>% filter(B == 1 & B == 1) %>% pull(mrn)
 
 # -- Group 2--- 
@@ -793,7 +877,7 @@ data <- data %>%
   group_by(mrn, txt_stat) %>%
   mutate(txt_stat = ifelse(row_number() == 1, txt_stat, paste0(txt_stat, row_number()))) %>%
   ungroup() %>% 
-  mutate(txt_stat = factor(txt_stat, levels=c("Pre", "Pre2", "Post", "Post2")))
+  mutate(txt_stat = factor(txt_stat, levels=c("Pre", "Pre2", "Post", "Post2", "Post3")))
 
 df_pre_post <- data
 df_pre_post_tmp <- df_pre_post %>%   
@@ -826,8 +910,8 @@ data2 <- data2 %>%
 custom_colors <- c(
   "A_Pre" = "#1f77b4", "A_Post" = "#aec7e8",  # Blue shades
   "B_Pre" = "#ff7f0e", "B_Post" = "#ffbb78", "B_Post2" = "#ffbb78", # Orange shades
-  "C_D_Pre" = "#2ca02c", "C_D_Pre2" = "#2ca02c", 
-  "C_D_Post" = "#98df8a",  "C_D_Post2" = "#98df8a" # Green shades
+  "C_Pre" = "#2ca02c", "C_Pre2" = "#2ca02c", 
+  "C_Post" = "#98df8a",  "C_Post2" = "#98df8a", "C_Post3" = "#98df8a" # Green shades
 )
 
 ggplot(data2, aes(x=cohort, y=group, size=count, fill=cohort_txt_stat)) +
@@ -912,7 +996,7 @@ df_new <- df_new %>%
     cohort_txt_stat = factor(cohort_txt_stat, 
                              levels=c("A_Pre", "A_Post",
                                       "B_Pre", "B_Post", "B_Post2",
-                                      "C_D_Pre", "C_D_Pre2", "C_D_Post", "C_D_Post2"
+                                      "C_Pre", "C_Pre2", "C_Post", "C_Post2, C_Post3"
                                       ))
   )
 
@@ -926,10 +1010,10 @@ ggplot(df_new, aes(x=cohort_txt_stat, y=group, size=count, fill=cohort_txt_stat)
   scale_fill_manual(
     values = c("A_Pre" = "lightblue", "A_Pre2" = "lightblue", 
                "B_Pre" = "lightblue", "B_Pre2" = "lightblue", 
-               "C_D_Pre" = "lightblue", "C_D_Pre2" = "lightblue", 
+               "C_Pre" = "lightblue", "C_Pre2" = "lightblue", 
                "A_Post" = "orange", "A_Post2"= "orange",
                "B_Post" = "orange", "B_Post2"= "orange",
-               "C_D_Post" = "orange", "C_D_Post2"= "orange")
+               "C_Post" = "orange", "C_Post2"= "orange", "C_Post"= "orange")
     ) +  # Set fill colors
   theme(legend.position = "right", panel.grid = element_blank()) +
   geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=tmp_width)) +  # Add text underneath circlesNULL
@@ -940,417 +1024,15 @@ ggsave(p2, file=file.path(wd$outCurr, "Treatment_grouping_pattern_all.pdf"), hei
 ```
 
 
-
-
-
-### Discovery
-
-We repeat this for discovery cohort alone
-
-```{r}
-df_tally <- df_meta_f %>% filter(Psomagen == "Y")
-
-df_tally_tmp <- df_tally %>%
-  select(mrn, HCI_cID, cohort) %>% distinct()
-
-mrn_counts <- df_tally_tmp %>%
-  group_by(mrn, cohort) %>%
-  summarise(count = n(), .groups = 'drop') %>%
-  pivot_wider(names_from = cohort, values_from = count, values_fill = 0)
-
-tot_counts <- df_tally %>%
-  group_by(mrn) %>% 
-  summarise(total_observations = n())
-
-mrn_counts <- mrn_counts %>% left_join(tot_counts)
-
-
-
-group_1_mrns <- mrn_counts %>% filter(total_observations == 1) %>% pull(mrn)
-group_2_mrns <- mrn_counts %>% filter(total_observations == 2)
-group_2_cohort_B <- group_2_mrns %>% filter(B == 2) %>% pull(mrn)
-group_2_cohort_C <- group_2_mrns %>% filter(C_D == 2) %>% pull(mrn)
-group_2_mrns_set2 <- group_2_mrns %>% filter(B == 1 & B == 1) %>% pull(mrn)
-
-# -- Group 2--- 
-df_group2 <- df_tally %>%
-  filter(mrn %in% group_2_cohort_B) %>% 
-  select(mrn, HCI_cID, cohort, txt_stat) %>% arrange(mrn, cohort, txt_stat)
-
-
-# Making a function, to avoid repetition
-# Define a function that processes a cohort
-process_cohort <- function(df_tally, cohort_mrns, prefix, start_group) {
-  # Step 1: Filter and arrange
-  df_cohort <- df_tally %>%
-    filter(mrn %in% cohort_mrns) %>%
-    select(mrn, HCI_cID, cohort, txt_stat) %>%
-    arrange(mrn, cohort, txt_stat)
-  
-  # Step 2: Create the pattern for each mrn
-  df_cohort <- df_cohort %>%
-    group_by(mrn) %>%
-    arrange(cohort, txt_stat) %>%
-    mutate(pattern = paste(cohort, txt_stat, collapse = "-")) %>%
-    ungroup()
-  
-  # Step 3: Assign groups based on unique patterns
-  unique_patterns <- df_cohort %>%
-    distinct(pattern) %>%
-    mutate(group = paste0(prefix, LETTERS[start_group + row_number() - 1]))
-  
-  # Step 4: Merge group information back
-  df_cohort <- df_cohort %>%
-    left_join(unique_patterns, by = "pattern")
-  
-  # Return the dataframe and the last group number used
-  df_cohort_tmp <- df_cohort %>% select(mrn, group) %>% distinct()
-  last_group <- start_group + nrow(unique_patterns) - 1
-  
-  list(df_cohort_tmp = df_cohort_tmp, last_group = last_group)
-}
-
-# Process Group 2B (group_2_cohort_B)
-result_B <- process_cohort(df_tally, group_2_cohort_B, "Group 2", 1)
-
-# Process Group 2C starting from the next group after Group 2B
-result_C <- process_cohort(df_tally, group_2_cohort_C, "Group 2", result_B$last_group + 1)
-
-result_CD <- process_cohort(df_tally, group_2_mrns_set2, "Group 2", result_C$last_group + 1)
-
-# Combine the results
-df_group2_combined <- bind_rows(result_B$df_cohort_tmp, result_C$df_cohort_tmp, result_CD$df_cohort_tmp)
-
-
-# ---- Group 3 ---- #
-# Step 1: Get unique combinations of mrn, cohort, and txt_stat
-group_4_mrns <- mrn_counts %>% filter(total_observations == 3) %>% pull(mrn)
-df_group4 <- df_tally %>%
-  filter(mrn %in% group_4_mrns) %>% 
-  select(mrn, HCI_cID, cohort, txt_stat) %>% arrange(mrn, cohort, txt_stat)
-
-
-# data_labeled <- df_group4 %>%
-#   group_by(mrn, txt_stat) %>%
-#   mutate(txt_stat = ifelse(row_number() == 1, txt_stat, paste0(txt_stat, row_number()))) %>%
-#   ungroup()
-
-
-# Step 1: Create a unique pattern by combining cohort and txt_stat for each mrn
-# This creates a pattern for each mrn's cohort-txt_stat combination
-df_group4 <- df_group4 %>%
-  group_by(mrn) %>%
-  arrange(cohort, txt_stat) %>%  # Ensure consistent order
-  mutate(pattern = paste(cohort, txt_stat, collapse = "-")) %>%
-  ungroup()
-
-# Step 2: Assign groups based on unique patterns
-# We create a lookup table where each unique pattern is assigned a group
-unique_patterns <- df_group4 %>%
-  distinct(pattern) %>%
-  mutate(group = paste0("Group 3", LETTERS[row_number()]))
-
-
-# Step 3: Merge the group information back into the original data
-df_group4 <- df_group4 %>%
-  left_join(unique_patterns, by = "pattern")
-df_group4_tmp <- df_group4 %>% select(mrn, group) %>% distinct()
-
-dat_group <- data.frame(
-  mrn = c(group_1_mrns, 
-          df_group2_combined$mrn,
-          df_group4_tmp$mrn),
-  group = c(
-    rep("Group 1", each=length(group_1_mrns)),
-    df_group2_combined$group,
-    df_group4_tmp$group)
-)
-
-data <- df_tally %>% 
-  #select(mrn, HCI_cID, cohort, txt_stat) %>% distinct() %>% 
-  left_join(dat_group)
-
-# Label consequtive pre or post
-data <- data %>%
-  group_by(mrn, txt_stat) %>%
-  mutate(txt_stat = ifelse(row_number() == 1, txt_stat, paste0(txt_stat, row_number()))) %>%
-  ungroup() %>% 
-  mutate(txt_stat = factor(txt_stat, levels=c("Pre", "Pre2", "Post", "Post2")))
-
-df_pre_post <- data
-df_pre_post_tmp <- df_pre_post %>%   
-  dplyr::rename(SampleID = sample_id_psom) %>% 
-  select(cohort, SampleID, txt_stat) %>% 
-  mutate(SampleID = as.character(SampleID)) %>% 
-  distinct()
-
-data2 <- data %>% group_by(group, cohort, txt_stat) %>% 
-  arrange(group) %>% 
-  summarize(count = n()) %>% 
-  mutate(group = factor(group, levels = (unique(group))))
-
-
-ggplot(data2, aes(x=cohort, y=group, size=count, fill=txt_stat)) +
-  geom_point(shape = 21, color = "black", position=position_dodge(width=0.5)) +  
-  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circles
-  theme_bw() +  # Clean background
-  theme(legend.position = "right", panel.grid = element_blank()) +
-  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circlesNULL
-  NULL
-
-# Custom colors
-# Create a new column that combines cohort and txt_stat
-data2 <- data2 %>% 
-  mutate(cohort_txt_stat =paste(cohort, txt_stat, sep = "_"),
-         cohort_txt_stat = factor(cohort_txt_stat, levels=unique(cohort_txt_stat))) 
-
-# Custom colors: you can choose shades inspired by Tableau colors
-custom_colors <- c(
-  "A_Pre" = "#1f77b4", "A_Post" = "#aec7e8",  # Blue shades
-  "B_Pre" = "#ff7f0e", "B_Post" = "#ffbb78", "B_Post2" = "#ffbb78", # Orange shades
-  "C_D_Pre" = "#2ca02c", "C_D_Pre2" = "#2ca02c", 
-  "C_D_Post" = "#98df8a",  "C_D_Post2" = "#98df8a" # Green shades
-)
-
-ggplot(data2, aes(x=cohort, y=group, size=count, fill=cohort_txt_stat)) +
-  geom_point(shape = 21, color = "black", position=position_dodge(width=0.5)) +  
-  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circles
-  theme_bw() +  # Clean background
-  scale_fill_manual(values = custom_colors) +  # Set custom colors 
-  theme(legend.position = "right", panel.grid = element_blank()) +
-  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circlesNULL
-  NULL
-
-p2 <- 
-ggplot(data2, aes(x=cohort, y=group, size=count, fill=txt_stat)) +
-  geom_point(shape = 21, color = "black", position=position_dodge(width=0.5)) +  
-  scale_size_area(max_size = 15) +  # Adjust circle sizes
-  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circles
-  theme_bw() +  # Clean background
-  scale_fill_manual(values = c("Pre" = "lightblue", "Pre2" = "lightblue", 
-                               "Post" = "orange", "Post2"= "orange")) +  # Set fill colors
-  theme(legend.position = "right", panel.grid = element_blank()) +
-  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circlesNULL
-  NULL
-
-
-ggsave(p2, file=file.path(wd$outCurr, "Treatment_grouping_pattern_psomagen.pdf"), height = 5, width = 12)
-
-write.csv(data, file.path(wd$outCurr, "Treatment_grouping_pattern_psomagen.csv"))
-```
-
-
-### Independent
-
-Repeat this for the independent cohort alone
-
-We repeat this for discovery cohort alone
-
-```{r}
-df_tally <- df_meta_f %>% filter(Psomagen == "N")
-
-df_tally_tmp <- df_tally %>%
-  select(mrn, HCI_cID, cohort) %>% distinct()
-
-mrn_counts <- df_tally_tmp %>%
-  group_by(mrn, cohort) %>%
-  summarise(count = n(), .groups = 'drop') %>%
-  pivot_wider(names_from = cohort, values_from = count, values_fill = 0)
-
-tot_counts <- df_tally %>%
-  group_by(mrn) %>% 
-  summarise(total_observations = n())
-
-mrn_counts <- mrn_counts %>% left_join(tot_counts)
-
-
-
-group_1_mrns <- mrn_counts %>% filter(total_observations == 1) %>% pull(mrn)
-group_2_mrns <- mrn_counts %>% filter(total_observations == 2)
-group_2_cohort_B <- group_2_mrns %>% filter(B == 2) %>% pull(mrn)
-group_2_cohort_C <- group_2_mrns %>% filter(C_D == 2) %>% pull(mrn)
-group_2_mrns_set2 <- group_2_mrns %>% filter(B == 1 & B == 1) %>% pull(mrn)
-
-# -- Group 2--- 
-df_group2 <- df_tally %>%
-  filter(mrn %in% group_2_cohort_B) %>% 
-  select(mrn, HCI_cID, cohort, txt_stat) %>% arrange(mrn, cohort, txt_stat)
-
-
-# Making a function, to avoid repetition
-# Define a function that processes a cohort
-process_cohort <- function(df_tally, cohort_mrns, prefix, start_group) {
-  # Step 1: Filter and arrange
-  df_cohort <- df_tally %>%
-    filter(mrn %in% cohort_mrns) %>%
-    select(mrn, HCI_cID, cohort, txt_stat) %>%
-    arrange(mrn, cohort, txt_stat)
-  
-  # Step 2: Create the pattern for each mrn
-  df_cohort <- df_cohort %>%
-    group_by(mrn) %>%
-    arrange(cohort, txt_stat) %>%
-    mutate(pattern = paste(cohort, txt_stat, collapse = "-")) %>%
-    ungroup()
-  
-  # Step 3: Assign groups based on unique patterns
-  unique_patterns <- df_cohort %>%
-    distinct(pattern) %>%
-    mutate(group = paste0(prefix, LETTERS[start_group + row_number() - 1]))
-  
-  # Step 4: Merge group information back
-  df_cohort <- df_cohort %>%
-    left_join(unique_patterns, by = "pattern")
-  
-  # Return the dataframe and the last group number used
-  df_cohort_tmp <- df_cohort %>% select(mrn, group) %>% distinct()
-  last_group <- start_group + nrow(unique_patterns) - 1
-  
-  list(df_cohort_tmp = df_cohort_tmp, last_group = last_group)
-}
-
-# Process Group 2B (group_2_cohort_B)
-result_B <- process_cohort(df_tally, group_2_cohort_B, "Group 2", 1)
-
-# Process Group 2C starting from the next group after Group 2B
-result_C <- process_cohort(df_tally, group_2_cohort_C, "Group 2", result_B$last_group + 1)
-
-result_CD <- process_cohort(df_tally, group_2_mrns_set2, "Group 2", result_C$last_group + 1)
-
-# Combine the results
-df_group2_combined <- bind_rows(result_B$df_cohort_tmp, result_C$df_cohort_tmp, result_CD$df_cohort_tmp)
-
-
-# ---- Group 3 ---- #
-# Step 1: Get unique combinations of mrn, cohort, and txt_stat
-group_4_mrns <- mrn_counts %>% filter(total_observations == 3) %>% pull(mrn)
-df_group4 <- df_tally %>%
-  filter(mrn %in% group_4_mrns) %>% 
-  select(mrn, HCI_cID, cohort, txt_stat) %>% arrange(mrn, cohort, txt_stat)
-
-
-# data_labeled <- df_group4 %>%
-#   group_by(mrn, txt_stat) %>%
-#   mutate(txt_stat = ifelse(row_number() == 1, txt_stat, paste0(txt_stat, row_number()))) %>%
-#   ungroup()
-
-
-# Step 1: Create a unique pattern by combining cohort and txt_stat for each mrn
-# This creates a pattern for each mrn's cohort-txt_stat combination
-df_group4 <- df_group4 %>%
-  group_by(mrn) %>%
-  arrange(cohort, txt_stat) %>%  # Ensure consistent order
-  mutate(pattern = paste(cohort, txt_stat, collapse = "-")) %>%
-  ungroup()
-
-# Step 2: Assign groups based on unique patterns
-# We create a lookup table where each unique pattern is assigned a group
-unique_patterns <- df_group4 %>%
-  distinct(pattern) %>%
-  mutate(group = paste0("Group 3", LETTERS[row_number()]))
-
-
-# Step 3: Merge the group information back into the original data
-df_group4 <- df_group4 %>%
-  left_join(unique_patterns, by = "pattern")
-df_group4_tmp <- df_group4 %>% select(mrn, group) %>% distinct()
-
-dat_group <- data.frame(
-  mrn = c(group_1_mrns, 
-          df_group2_combined$mrn,
-          df_group4_tmp$mrn),
-  group = c(
-    rep("Group 1", each=length(group_1_mrns)),
-    df_group2_combined$group,
-    df_group4_tmp$group)
-)
-
-data <- df_tally %>% 
-  #select(mrn, HCI_cID, cohort, txt_stat) %>% distinct() %>% 
-  left_join(dat_group)
-
-# Label consequtive pre or post
-data <- data %>%
-  group_by(mrn, txt_stat) %>%
-  mutate(txt_stat = ifelse(row_number() == 1, txt_stat, paste0(txt_stat, row_number()))) %>%
-  ungroup() %>% 
-  mutate(txt_stat = factor(txt_stat, levels=c("Pre", "Pre2", "Post", "Post2")))
-
-df_pre_post <- data
-df_pre_post_tmp <- df_pre_post %>%   
-  dplyr::rename(SampleID = sample_id_psom) %>% 
-  select(cohort, SampleID, txt_stat) %>% 
-  mutate(SampleID = as.character(SampleID)) %>% 
-  distinct()
-
-data2 <- data %>% group_by(group, cohort, txt_stat) %>% 
-  arrange(group) %>% 
-  summarize(count = n()) %>% 
-  mutate(group = factor(group, levels = (unique(group))))
-
-
-ggplot(data2, aes(x=cohort, y=group, size=count, fill=txt_stat)) +
-  geom_point(shape = 21, color = "black", position=position_dodge(width=0.5)) +  
-  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circles
-  theme_bw() +  # Clean background
-  theme(legend.position = "right", panel.grid = element_blank()) +
-  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circlesNULL
-  NULL
-
-# Custom colors
-# Create a new column that combines cohort and txt_stat
-data2 <- data2 %>% 
-  mutate(cohort_txt_stat =paste(cohort, txt_stat, sep = "_"),
-         cohort_txt_stat = factor(cohort_txt_stat, levels=unique(cohort_txt_stat))) 
-
-# Custom colors: you can choose shades inspired by Tableau colors
-custom_colors <- c(
-  "A_Pre" = "#1f77b4", "A_Post" = "#aec7e8",  # Blue shades
-  "B_Pre" = "#ff7f0e", "B_Post" = "#ffbb78", "B_Post2" = "#ffbb78", # Orange shades
-  "C_D_Pre" = "#2ca02c", "C_D_Pre2" = "#2ca02c", 
-  "C_D_Post" = "#98df8a",  "C_D_Post2" = "#98df8a" # Green shades
-)
-
-ggplot(data2, aes(x=cohort, y=group, size=count, fill=cohort_txt_stat)) +
-  geom_point(shape = 21, color = "black", position=position_dodge(width=0.5)) +  
-  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circles
-  theme_bw() +  # Clean background
-  scale_fill_manual(values = custom_colors) +  # Set custom colors 
-  theme(legend.position = "right", panel.grid = element_blank()) +
-  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circlesNULL
-  NULL
-
-p2 <- 
-ggplot(data2, aes(x=cohort, y=group, size=count, fill=txt_stat)) +
-  geom_point(shape = 21, color = "black", position=position_dodge(width=0.5)) +  
-  scale_size_area(max_size = 15) +  # Adjust circle sizes
-  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circles
-  theme_bw() +  # Clean background
-  scale_fill_manual(values = c("Pre" = "lightblue", "Pre2" = "lightblue", 
-                               "Post" = "orange", "Post2"= "orange")) +  # Set fill colors
-  theme(legend.position = "right", panel.grid = element_blank()) +
-  geom_text(aes(label = count), vjust = 2, size = 5, position=position_dodge(width=0.5)) +  # Add text underneath circlesNULL
-  NULL
-
-
-ggsave(p2, file=file.path(wd$outCurr, "Treatment_grouping_pattern_indpnt.pdf"), height = 5, width = 12)
-
-write.csv(data, file.path(wd$outCurr, "Treatment_grouping_pattern_indpnt.csv"))
-```
-
-# Objective 3
-
-Lets summarize the data
-
 ```{r}
 # Number of cohort B unique patients
 df_meta_f %>% filter(cohort == "B") %>% pull(mrn) %>% unique() %>% length()
 
 # Number of cohort C unique patients
-df_meta_f %>% filter(cohort == "C_D") %>% pull(mrn) %>% unique() %>% length()
+df_meta_f %>% filter(cohort == "C") %>% pull(mrn) %>% unique() %>% length()
 
 # Number of cohort C samples
-df_meta_f %>% filter(cohort == "C_D") %>% nrow()
+df_meta_f %>% filter(cohort == "C") %>% nrow()
 ```
 
 Make a simple barplot to summarize the data. Two columns per cohort. Number of patients & number of samples. 
@@ -1358,7 +1040,7 @@ Make a simple barplot to summarize the data. Two columns per cohort. Number of p
 ```{r}
 # Calculate overlap between B and C_D cohorts
 overlap_patients <- df_meta_f %>%
-  filter(cohort %in% c("B", "C_D")) %>%
+  filter(cohort %in% c("B", "C")) %>%
   group_by(mrn) %>%
   filter(n_distinct(cohort) > 1) %>%
   pull(mrn) %>%
@@ -1382,7 +1064,7 @@ p_bar <- ggplot(summary_data, aes(x = cohort, y = count, fill = metric)) +
   geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
   # Add overlay for C_D cohort showing overlap (only for patients)
   geom_bar(
-    data = filter(summary_data, cohort == "C_D" & metric == "n_patients"),
+    data = filter(summary_data, cohort == "C" & metric == "n_patients"),
     aes(y = length(overlap_patients), fill = "Overlap with B"),
     stat = "identity",
     position = position_dodge(width = 0.7),
@@ -1428,47 +1110,554 @@ p_bar <- ggplot(summary_data, aes(x = cohort, y = count, fill = metric)) +
 ggsave(p_bar, file=file.path(wd$outCurr, "Patients_number_bar.pdf"), height = 5, width = 7)
 ```
 
-Analyze serial samples
+## Swimmers plot 
 
-```{r}
-# Identify patients with serial samples
-serial_patients <- df_meta_f %>%
-  group_by(mrn, cohort) %>%
-  summarise(n_samples = n(), .groups = 'drop') %>%
-  filter(n_samples > 1) %>%
+Make a timeline for each patient
+
+```{r edited_swimmer, message=FALSE, warning=FALSE}
+# 1. Define the pattern assignment function
+get_patient_pattern <- function(data) {
+  data %>%
+    group_by(mrn) %>%
+    summarise(
+      has_a = any(cohort == "A"),
+      has_b_pre = any(cohort == "B" & str_detect(txt_stat, "^Pre")),
+      has_b_post = any(cohort == "B" & str_detect(txt_stat, "^Post")),
+      n_b_samples = sum(cohort == "B"),
+      has_c_pre = any(cohort == "C" & str_detect(txt_stat, "^Pre")),
+      has_c_post = any(cohort == "C" & str_detect(txt_stat, "^Post")),
+      n_c_samples = sum(cohort == "C"),
+      n_b_post = sum(cohort == "B" & str_detect(txt_stat, "^Post")),
+      n_c_post = sum(cohort == "C" & str_detect(txt_stat, "^Post")),
+      # New: check for specific sample types
+      has_c_post1 = any(cohort == "C" & txt_stat == "Post1"),
+      has_c_post2 = any(cohort == "C" & txt_stat == "Post2"),
+      has_c_pre1  = any(cohort == "C" & txt_stat == "Pre1"),
+      has_c_pre2  = any(cohort == "C" & txt_stat == "Pre2"),
+      has_b_pre1  = any(cohort == "B" & txt_stat == "Pre1"),
+      has_b_pre2  = any(cohort == "B" & txt_stat == "Pre2"),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      is_b_serial = n_b_samples > 1,
+      is_c_serial = n_c_samples > 1,
+      pattern = case_when(
+        has_a & !has_b_pre & !has_b_post & !has_c_pre & !has_c_post ~ "A",
+        has_b_pre & !has_b_post & !has_c_pre & !has_c_post & !is_b_serial ~ "B_Pre_Only",
+        !has_b_pre & has_b_post & !has_c_pre & !has_c_post & !is_b_serial ~ "B_Post_Only",
+        !has_b_pre & !has_b_post & has_c_pre & !has_c_post & !is_c_serial ~ "C_Pre_Only",
+        !has_b_pre & !has_b_post & !has_c_pre & has_c_post & !is_c_serial ~ "C_Post_Only",
+        is_b_serial & has_b_pre & has_b_post & !has_c_pre & !has_c_post ~ "B_Serial_PrePost",
+        is_c_serial & has_c_pre & has_c_post & !has_b_pre & !has_b_post ~ "C_Serial_PrePost",
+        has_b_pre & has_c_pre & !has_b_post & !has_c_post ~ "B_Pre_to_C_Pre",
+        has_b_post & has_c_post & !has_b_pre & !has_c_pre ~ "B_Post_to_C_Post",
+        # New patterns:
+        has_b_post & has_c_pre & !has_b_pre & !has_c_post ~ "B_Post_to_C_Pre",
+        has_c_post1 & has_c_post2 & !has_c_pre & !has_b_pre & !has_b_post & !has_c_pre1 & !has_c_pre2 & !has_b_pre1 & !has_b_pre2 ~ "C_Post1_to_C_Post2",
+        has_c_pre1 & has_c_pre2 & !has_c_post & !has_b_pre & !has_b_post & !has_c_post1 & !has_c_post2 & !has_b_pre1 & !has_b_pre2 ~ "C_Pre1_to_C_Pre2",
+        has_b_pre1 & has_b_pre2 & !has_b_post & !has_c_pre & !has_c_post & !has_c_post1 & !has_c_post2 & !has_c_pre1 & !has_c_pre2 ~ "B_Pre1_to_B_Pre2",
+        (has_b_pre | has_b_post) & (has_c_pre | has_c_post) ~ "Mixed",
+        TRUE ~ "Other"
+      ),
+      total_samples = n_b_samples + n_c_samples
+    )
+}
+
+# 2. Define the pattern order
+pattern_order <- c(
+  "A",
+  "B_Pre_Only", "B_Post_Only",
+  "C_Pre_Only", "C_Post_Only",
+  "B_Serial_PrePost",
+  "C_Serial_PrePost",
+  "B_Pre_to_C_Pre",
+  "B_Post_to_C_Post",
+  "C_Post1_to_C_Post2",
+  "B_Post_to_C_Pre",
+  "C_Pre1_to_C_Pre2",
+  "B_Pre1_to_B_Pre2",
+  "Mixed", "Other"
+)
+
+# 3. Relabel txt_stat as Pre1, Pre2, Post1, etc. by date within each patient/cohort/status
+df_meta_f2 <- df_meta_f %>%
+  group_by(mrn, cohort, txt_stat) %>%
+  arrange(date, .by_group = TRUE) %>%
+  mutate(
+    txt_stat_ordered = paste0(txt_stat, row_number())
+  ) %>%
+  ungroup()
+
+# 4. Assign pattern to each sample
+patient_patterns <- get_patient_pattern(df_meta_f2 %>% mutate(txt_stat = txt_stat_ordered))
+df_meta_f2 <- df_meta_f2 %>%
+  left_join(patient_patterns %>% select(mrn, pattern, total_samples), by = "mrn")
+
+dplyr::filter(df_meta_f2, mrn == "[REDACTED_MRN]") %>% select(mrn, HCI_cID, txt_stat, txt_stat_ordered)
+dplyr::filter(patient_patterns, mrn == "[REDACTED_MRN]") %>% as.data.frame()
+
+# 5. Order patients by pattern and total_samples
+ordered_mrns <- df_meta_f2 %>%
+  distinct(mrn, pattern, total_samples) %>%
+  arrange(
+    factor(pattern, levels = pattern_order),
+    desc(total_samples)
+  ) %>%
   pull(mrn)
 
-# Count serial samples per cohort
-serial_samples <- df_meta_f %>%
-  filter(mrn %in% serial_patients) %>%
-  group_by(cohort) %>%
-  summarise(
-    n_serial_samples = n(),
-    n_serial_patients = n_distinct(mrn)
+# 6. Prepare swimmers_data with correct offsets and positions
+swimmers_data <- df_meta_f2 %>%
+  mutate(
+    base_pos = case_when(
+      cohort == "A" ~ 0,
+      cohort == "B" ~ 1,
+      cohort == "C" ~ 2
+    ),
+    # Extract trailing number from txt_stat_ordered, default to 1 if missing
+    sample_num = as.numeric(str_extract(txt_stat_ordered, "\\d+$")),
+    sample_num = ifelse(is.na(sample_num), 1, sample_num),
+    # Offset for multiple samples of the same type
+    x_offset = (sample_num - 1) * 0.2,
+    # Treatment offset: Pre left, Post right
+    treatment_offset = case_when(
+      grepl("^Pre", txt_stat_ordered) ~ -0.2,
+      grepl("^Post", txt_stat_ordered) ~ 0.2,
+      TRUE ~ 0
+    ),
+    # Final x position, shifted to avoid 1/2 dashed line
+    x_pos = base_pos + treatment_offset + x_offset - 0.05,
+    # y position based on patient order
+    y_pos = match(mrn, ordered_mrns),
+    # For labeling
+    sample_label = txt_stat_ordered
   )
 
-# Create summary data frame for serial samples
-summary_serial <- df_meta_f %>%
+# 7. Rectangle data for cohort boxes
+rect_data <- data.frame(
+  cohort = c("A", "B", "C"),
+  xmin = c(-0.5, 0.5, 1.5),
+  xmax = c(0.5, 1.5, 2.5)
+)
+
+# 8. Swimmers plot with time2txt above each point
+p_swimmers_ordered <- ggplot(swimmers_data, aes(x = x_pos, y = y_pos)) +
+  geom_rect(
+    data = rect_data,
+    inherit.aes = FALSE,
+    aes(xmin = xmin, xmax = xmax, ymin = 0, ymax = max(swimmers_data$y_pos) + 1),
+    fill = "grey95",
+    alpha = 0.5
+  ) +
+  geom_vline(
+    xintercept = c(0, 1, 2),
+    linetype = "dashed",
+    color = "grey50",
+    alpha = 0.5
+  ) +
+  geom_point(
+    aes(color = txt_stat_ordered),
+    size = 3,
+    shape = 16
+  ) +
+  geom_text(
+    aes(label = time2txt),
+    vjust = -1,
+    size = 3
+  ) +
+  geom_line(
+    aes(group = mrn),
+    color = "grey50",
+    alpha = 0.5
+  ) +
+  scale_x_continuous(
+    breaks = 0:2,
+    labels = c("Cohort A", "Cohort B", "Cohort C/D"),
+    limits = c(-0.5, 2.5)
+  ) +
+  scale_color_manual(
+    values = c(
+      "Pre1" = "steelblue", "Pre2" = "steelblue", "Pre3" = "red",
+      "Post1" = "orange", "Post2" = "orange", "Post3" = "orange"
+    )
+    #labels = c("Pre1", "Pre2", "Pre3", "Post1", "Post2", "Post3")
+  ) +
+  labs(
+    x = "",
+    y = "Patient",
+    color = "Sample Type"
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    legend.position = "right"
+  )
+
+print(p_swimmers_ordered)
+
+# 9. Save the plot
+ggsave(
+  p_swimmers_ordered,
+  file = file.path(wd$outCurr, "Sample_collection_timeline_ordered.pdf"),
+  height = max(10, length(unique(swimmers_data$mrn)) * 0.3),
+  width = 8,
+  limitsize = FALSE
+)
+write.csv(swimmers_data, file.path(wd$outCurr, "SwimmersData.csv"))
+
+
+# 11. Zommed section
+p_swimmers_ordered3 <- ggplot(
+  swimmers_data %>% filter(!pattern %in% c("A", "B_Pre_Only", "B_Post_Only",
+                                           "C_Pre_Only", "C_Post_Only")), 
+  aes(x = x_pos, y = y_pos)) +
+  geom_vline(
+    xintercept = c(0, 1, 2),
+    linetype = "dashed",
+    color = "grey50",
+    alpha = 0.5
+  ) +
+  geom_point(
+    aes(color = txt_stat_ordered),
+    size = 3,
+    shape = 16
+  ) +
+  geom_line(
+    aes(group = mrn),
+    color = "grey50",
+    alpha = 0.5
+  ) +
+  geom_text(
+    aes(label = time2txt),
+    vjust = -1,
+    size = 3
+  ) +
+  scale_x_continuous(
+    breaks = 0:2,
+    labels = c("Cohort A", "Cohort B", "Cohort C/D"),
+    limits = c(-0.5, 2.5)
+  ) +
+  scale_color_manual(
+    values = c(
+      "Pre1" = "steelblue", "Pre2" = "steelblue", "Pre3" = "red",
+      "Post1" = "orange", "Post2" = "orange", "Post3" = "orange"
+    )
+    #labels = c("Pre1", "Pre2", "Pre3", "Post1", "Post2", "Post3")
+  ) +
+  labs(
+    x = "",
+    y = "Patient",
+    color = "Sample Type"
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    legend.position = "right"
+  )
+
+ggsave(
+  p_swimmers_ordered3,
+  file = file.path(wd$outCurr, "Sample_collection_timeline_ordered_noTime_Zommed.pdf"),
+  height = 15,
+  width = 8,
+  limitsize = FALSE
+)
+
+# 10. Save the plot without the time2txt text
+p_swimmers_ordered <- ggplot(swimmers_data, aes(x = x_pos, y = y_pos)) +
+  geom_rect(
+    data = rect_data,
+    inherit.aes = FALSE,
+    aes(xmin = xmin, xmax = xmax, ymin = 0, ymax = max(swimmers_data$y_pos) + 1),
+    fill = "grey95",
+    alpha = 0.5
+  ) +
+  geom_vline(
+    xintercept = c(0, 1, 2),
+    linetype = "dashed",
+    color = "grey50",
+    alpha = 0.5
+  ) +
+  geom_point(
+    aes(color = txt_stat_ordered),
+    size = 3,
+    shape = 16
+  ) +
+  geom_line(
+    aes(group = mrn),
+    color = "grey50",
+    alpha = 0.5
+  ) +
+  scale_x_continuous(
+    breaks = 0:2,
+    labels = c("Cohort A", "Cohort B", "Cohort C/D"),
+    limits = c(-0.5, 2.5)
+  ) +
+  scale_color_manual(
+    values = c(
+      "Pre1" = "steelblue", "Pre2" = "steelblue", "Pre3" = "red",
+      "Post1" = "orange", "Post2" = "orange", "Post3" = "orange"
+    )
+    #labels = c("Pre1", "Pre2", "Pre3", "Post1", "Post2", "Post3")
+  ) +
+  labs(
+    x = "",
+    y = "Patient",
+    color = "Sample Type"
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    legend.position = "right"
+  )
+
+print(p_swimmers_ordered)
+
+ggsave(
+  p_swimmers_ordered,
+  file = file.path(wd$outCurr, "Sample_collection_timeline_ordered_noTime.pdf"),
+  height = max(10, length(unique(swimmers_data$mrn)) * 0.3),
+  width = 8,
+  limitsize = FALSE
+)
+```
+
+
+## Clean up 
+
+In some cases, we want to remove samples with 2x Pre or 2x Post. These samples are not helpful for our analysis. 
+
+As there were many Post1 and Post2 in mCRPC. We will retain these.
+
+Lets select the sample to keep
+
+```{r}
+mrn_with_2x <- df_meta_f2 %>% filter(txt_stat_ordered %in% c("Pre2", "Post2")) %>% pull(mrn) %>% unique()
+# mrn to keep (Post1 and Post2 in c)
+mrn_to_keep <- df_meta_f2 %>% filter(pattern %in% c("C_Post1_to_C_Post2")) %>% pull(mrn) %>% unique()
+
+mrn_to_examine <- mrn_with_2x[!mrn_with_2x %in% mrn_to_keep]
+```
+
+For these mrns, retain the sample closest to treatment date. 
+
+```{r}
+df_tmp <- df_meta_f2 %>% filter(mrn %in% mrn_to_examine)
+```
+
+Lets select samples closest to treatment date. If "Pre" select earliest pre- ad "Post" select earliest post-
+
+```{r}
+# For each mrn and txt_stat, identify the sample to keep (closest to treatment date)
+# - For "Pre", keep the sample with the maximum time2txt <= 0 (i.e., closest before treatment)
+# - For "Post", keep the sample with the minimum time2txt >= 0 (i.e., closest after treatment)
+# Then, get the rows to EXCLUDE (i.e., not the closest)
+
+df_tmp_keep <- df_tmp %>%
+  group_by(mrn, txt_stat) %>%
+  mutate(
+    keep_flag = case_when(
+      txt_stat %in% c("Pre", "Pre1", "Pre2", "Pre3") ~ {
+        # If any time2txt <= 0, keep the max of those; else, keep the min overall
+        if (any(time2txt <= 0, na.rm = TRUE)) {
+          time2txt == max(time2txt[time2txt <= 0], na.rm = TRUE)
+        } else {
+          time2txt == min(time2txt, na.rm = TRUE)
+        }
+      },
+      txt_stat %in% c("Post", "Post1", "Post2", "Post3") ~ {
+        # If any time2txt >= 0, keep the min of those; else, keep the max overall
+        if (any(time2txt >= 0, na.rm = TRUE)) {
+          time2txt == min(time2txt[time2txt >= 0], na.rm = TRUE)
+        } else {
+          time2txt == max(time2txt, na.rm = TRUE)
+        }
+      },
+      TRUE ~ TRUE
+    )
+  ) %>%
+  ungroup()
+
+# Rows to EXCLUDE (i.e., not the closest to treatment date)
+df_tmp_exclude <- df_tmp_keep %>%
+  filter(!keep_flag)
+```
+
+Create a a df_meta_f for those we want to retain
+
+```{r}
+df_meta_f3 <- df_meta_f %>% filter(!HCI_cID %in% df_tmp_exclude$HCI_cID)
+```
+
+## Swimmers v2
+
+Recreate the swimmers plot
+
+```{r}
+# 3. Relabel txt_stat as Pre1, Pre2, Post1, etc. by date within each patient/cohort/status
+df_meta_f4 <- df_meta_f3 %>%
+  group_by(mrn, cohort, txt_stat) %>%
+  arrange(date, .by_group = TRUE) %>%
+  mutate(
+    txt_stat_ordered = paste0(txt_stat, row_number())
+  ) %>%
+  ungroup()
+
+# 4. Assign pattern to each sample
+patient_patterns <- get_patient_pattern(df_meta_f4 %>% mutate(txt_stat = txt_stat_ordered))
+df_meta_f4 <- df_meta_f4 %>%
+  left_join(patient_patterns %>% select(mrn, pattern, total_samples), by = "mrn")
+
+# dplyr::filter(df_meta_f4, mrn == "[REDACTED_MRN]") %>% select(mrn, HCI_cID, txt_stat, txt_stat_ordered)
+# dplyr::filter(patient_patterns, mrn == "[REDACTED_MRN]") %>% as.data.frame()
+
+# 5. Order patients by pattern and total_samples
+ordered_mrns <- df_meta_f4 %>%
+  distinct(mrn, pattern, total_samples) %>%
+  arrange(
+    factor(pattern, levels = pattern_order),
+    desc(total_samples)
+  ) %>%
+  pull(mrn)
+
+# 6. Prepare swimmers_data with correct offsets and positions
+swimmers_data <- df_meta_f4 %>%
+  mutate(
+    base_pos = case_when(
+      cohort == "A" ~ 0,
+      cohort == "B" ~ 1,
+      cohort == "C" ~ 2
+    ),
+    # Extract trailing number from txt_stat_ordered, default to 1 if missing
+    sample_num = as.numeric(str_extract(txt_stat_ordered, "\\d+$")),
+    sample_num = ifelse(is.na(sample_num), 1, sample_num),
+    # Offset for multiple samples of the same type
+    x_offset = (sample_num - 1) * 0.2,
+    # Treatment offset: Pre left, Post right
+    treatment_offset = case_when(
+      grepl("^Pre", txt_stat_ordered) ~ -0.2,
+      grepl("^Post", txt_stat_ordered) ~ 0.2,
+      TRUE ~ 0
+    ),
+    # Final x position, shifted to avoid 1/2 dashed line
+    x_pos = base_pos + treatment_offset + x_offset - 0.05,
+    # y position based on patient order
+    y_pos = match(mrn, ordered_mrns),
+    # For labeling
+    sample_label = txt_stat_ordered
+  )
+
+# 7. Rectangle data for cohort boxes
+rect_data <- data.frame(
+  cohort = c("A", "B", "C"),
+  xmin = c(-0.5, 0.5, 1.5),
+  xmax = c(0.5, 1.5, 2.5)
+)
+
+write.csv(swimmers_data, file.path(wd$outCurr, "SwimmersData_cleaned.csv"))
+
+# 11. Zommed section
+p_swimmers_ordered4 <- ggplot(
+  swimmers_data %>% filter(!pattern %in% c("A", "B_Pre_Only", "B_Post_Only",
+                                           "C_Pre_Only", "C_Post_Only")), 
+  aes(x = x_pos, y = y_pos)) +
+  geom_vline(
+    xintercept = c(0, 1, 2),
+    linetype = "dashed",
+    color = "grey50",
+    alpha = 0.5
+  ) +
+  geom_point(
+    aes(color = txt_stat_ordered),
+    size = 3,
+    shape = 16
+  ) +
+  geom_line(
+    aes(group = mrn),
+    color = "grey50",
+    alpha = 0.5
+  ) +
+  geom_text(
+    aes(label = time2txt),
+    vjust = -1,
+    size = 3
+  ) +
+  scale_x_continuous(
+    breaks = 0:2,
+    labels = c("Cohort A", "Cohort B", "Cohort C/D"),
+    limits = c(-0.5, 2.5)
+  ) +
+  scale_color_manual(
+    values = c(
+      "Pre1" = "steelblue", "Pre2" = "steelblue", "Pre3" = "red",
+      "Post1" = "orange", "Post2" = "orange", "Post3" = "orange"
+    )
+    #labels = c("Pre1", "Pre2", "Pre3", "Post1", "Post2", "Post3")
+  ) +
+  labs(
+    x = "",
+    y = "Patient",
+    color = "Sample Type"
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    legend.position = "right"
+  )
+
+ggsave(
+  p_swimmers_ordered4,
+  file = file.path(wd$outCurr, "Sample_collection_timeline_ordered_noTime_Zommed_cleaned.pdf"),
+  height = 15,
+  width = 8,
+  limitsize = FALSE
+)
+```
+
+## Bar plot v2
+
+Make a simple barplot to summarize the data. Two columns per cohort. Number of patients & number of samples. 
+
+```{r}
+# Calculate overlap between B and C_D cohorts
+overlap_patients <- df_meta_f4 %>%
+  filter(cohort %in% c("B", "C")) %>%
+  group_by(mrn) %>%
+  filter(n_distinct(cohort) > 1) %>%
+  pull(mrn) %>%
+  unique()
+
+# Create summary data frame
+summary_data <- df_meta_f4 %>%
   group_by(cohort) %>%
   summarise(
     n_patients = n_distinct(mrn),
     n_samples = n()
   ) %>%
-  left_join(serial_samples, by = "cohort") %>%
-  mutate(n_serial_samples = replace_na(n_serial_samples, 0)) %>%
   pivot_longer(
     cols = c(n_patients, n_samples),
     names_to = "metric",
     values_to = "count"
   )
 
-# Create the barplot with serial samples overlay
-p_serial <- ggplot(summary_serial, aes(x = cohort, y = count, fill = metric)) +
+# Create the barplot
+p_bar <- ggplot(summary_data, aes(x = cohort, y = count, fill = metric)) +
   geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
-  # Add overlay for serial samples
+  # Add overlay for C_D cohort showing overlap (only for patients)
   geom_bar(
-    data = filter(summary_serial, metric == "n_samples"),
-    aes(y = n_serial_samples, fill = "Serial Samples"),
+    data = filter(summary_data, cohort == "C" & metric == "n_patients"),
+    aes(y = length(overlap_patients), fill = "Overlap with B"),
     stat = "identity",
     position = position_dodge(width = 0.7),
     width = 0.6,
@@ -1478,9 +1667,9 @@ p_serial <- ggplot(summary_serial, aes(x = cohort, y = count, fill = metric)) +
     values = c(
       "n_patients" = "#faedcd",
       "n_samples" = "grey60",
-      "Serial Samples" = "darkgreen"
+      "Overlap with B" = "darkred"
     ),
-    labels = c("Number of Patients", "Number of Samples", "Serial Samples")
+    labels = c("Number of Patients", "Number of Samples", "Overlap with B")
   ) +
   labs(
     x = "Cohort",
@@ -1499,518 +1688,60 @@ p_serial <- ggplot(summary_serial, aes(x = cohort, y = count, fill = metric)) +
     vjust = -0.5,
     size = 4
   ) +
-  # Add annotation for serial samples
-  geom_text(
-    data = filter(summary_serial, metric == "n_samples"),
-    aes(y = n_serial_samples, label = paste("Serial:", n_serial_samples)),
-    position = position_dodge(width = 0.7),
+  # Add annotation for overlap
+  annotate(
+    "text",
+    x = "C_D",
+    y = length(overlap_patients),
+    label = paste("Overlap:", length(overlap_patients)),
     vjust = -0.5,
     size = 4,
-    color = "darkgreen"
+    color = "darkred"
   )
 
-# Print summary of serial samples
-cat("Summary of serial samples:\n")
-print(serial_samples)
-
-# Save the plot
-ggsave(p_serial, file=file.path(wd$outCurr, "Serial_samples_breakdown.pdf"), height = 5, width = 7)
+ggsave(p_bar, file=file.path(wd$outCurr, "Patients_number_bar_clean.pdf"), height = 5, width = 7)
 ```
 
-## Swimmers plot 
-
-Make a timeline 
+Lets get the sample numbers
 
 ```{r}
-# Function to determine patient pattern
-get_patient_pattern <- function(data) {
-  data %>%
-    group_by(mrn) %>%
-    summarise(
-      has_a = any(cohort == "A"),  # Simplified A cohort check
-      has_b_pre = any(cohort == "B" & txt_stat == "Pre"),
-      has_b_post = any(cohort == "B" & txt_stat == "Post"),
-      has_b_post2 = any(cohort == "B" & txt_stat == "Post2"),
-      has_c_pre = any(cohort == "C_D" & txt_stat == "Pre"),
-      has_c_post = any(cohort == "C_D" & txt_stat == "Post"),
-      has_c_post2 = any(cohort == "C_D" & txt_stat == "Post2"),
-      n_b_samples = sum(cohort == "B"),
-      n_c_samples = sum(cohort == "C_D"),
-      .groups = "drop"
-    ) %>%
-    mutate(
-      # First identify serial samples based on number of samples
-      is_b_serial = n_b_samples > 1,
-      is_c_serial = n_c_samples > 1,
-      # Then determine the pattern
-      pattern = case_when(
-        # Cohort A (all treated as one group)
-        has_a & !has_b_pre & !has_b_post & !has_c_pre & !has_c_post ~ "A",
-        # Non-serial Cohort B patterns
-        has_b_pre & !has_b_post & !has_c_pre & !has_c_post & !is_b_serial ~ "B_Pre_Only",
-        !has_b_pre & has_b_post & !has_c_pre & !has_c_post & !is_b_serial ~ "B_Post_Only",
-        # Non-serial Cohort C patterns
-        !has_b_pre & !has_b_post & has_c_pre & !has_c_post & !is_c_serial ~ "C_Pre_Only",
-        !has_b_pre & !has_b_post & !has_c_pre & has_c_post & !is_c_serial ~ "C_Post_Only",
-        # Serial patterns - Cohort B
-        is_b_serial & has_b_pre & has_b_post & !has_b_post2 & !has_c_pre & !has_c_post ~ "B_Serial_PrePost",
-        is_b_serial & has_b_pre & has_b_post & has_b_post2 & !has_c_pre & !has_c_post ~ "B_Serial_PrePostPost2",
-        # Serial patterns - Cohort C
-        !has_b_pre & !has_b_post & is_c_serial & has_c_pre & has_c_post & !has_c_post2 ~ "C_Serial_PrePost",
-        !has_b_pre & !has_b_post & is_c_serial & has_c_pre & has_c_post & has_c_post2 ~ "C_Serial_PrePostPost2",
-        # Mixed patterns
-        (has_b_pre | has_b_post) & (has_c_pre | has_c_post) ~ "Mixed",
-        TRUE ~ "Other"
-      ),
-      # Order within pattern by number of samples
-      total_samples = n_b_samples + n_c_samples
-    )
-}
+# Calculate number of Pre and Post samples and patients for Cohort B and C using df_meta_f4
 
-# Get patient patterns
-df_meta_f2 <- df_meta_f %>% mutate(txt_stat = case_when(cohort == "A" & txt_stat == "Post" ~ "Pre",
-                                                        TRUE ~ txt_stat))
+# For Cohort B
+n_pre_b_samples <- df_meta_f4 %>% filter(cohort == "B", txt_stat %in% c("Pre", "Pre1", "Pre2", "Pre3")) %>% pull(HCI_cID) %>% unique() %>% length()
+n_post_b_samples <- df_meta_f4 %>% filter(cohort == "B", txt_stat %in% c("Post", "Post1", "Post2", "Post3")) %>% pull(HCI_cID) %>% unique() %>% length()
+n_pre_b_patients <- df_meta_f4 %>% filter(cohort == "B", txt_stat %in% c("Pre", "Pre1", "Pre2", "Pre3")) %>% pull(mrn) %>% unique() %>% length()
+n_post_b_patients <- df_meta_f4 %>% filter(cohort == "B", txt_stat %in% c("Post", "Post1", "Post2", "Post3")) %>% pull(mrn) %>% unique() %>% length()
 
-# Diagnostic: Check unique txt_stat values
-print("Unique txt_stat values:")
-print(unique(df_meta_f2$txt_stat))
+# For Cohort C
+n_pre_c_samples <- df_meta_f4 %>% filter(cohort == "C", txt_stat %in% c("Pre", "Pre1", "Pre2", "Pre3")) %>% pull(HCI_cID) %>% unique() %>% length()
+n_post_c_samples <- df_meta_f4 %>% filter(cohort == "C", txt_stat %in% c("Post", "Post1", "Post2", "Post3")) %>% pull(HCI_cID) %>% unique() %>% length()
+n_pre_c_patients <- df_meta_f4 %>% filter(cohort == "C", txt_stat %in% c("Pre", "Pre1", "Pre2", "Pre3")) %>% pull(mrn) %>% unique() %>% length()
+n_post_c_patients <- df_meta_f4 %>% filter(cohort == "C", txt_stat %in% c("Post", "Post1", "Post2", "Post3")) %>% pull(mrn) %>% unique() %>% length()
 
-# Diagnostic: Check samples with Post2
-print("Samples with Post2:")
-print(df_meta_f2 %>% filter(txt_stat == "Post2") %>% select(mrn, cohort, txt_stat))
+cat("B cohort:\n")
+cat("  Pre samples:", n_pre_b_samples, "\n")
+cat("  Post samples:", n_post_b_samples, "\n")
+cat("  Pre patients:", n_pre_b_patients, "\n")
+cat("  Post patients:", n_post_b_patients, "\n\n")
 
-patient_patterns <- get_patient_pattern(df_meta_f2)
+cat("C cohort:\n")
+cat("  Pre samples:", n_pre_c_samples, "\n")
+cat("  Post samples:", n_post_c_samples, "\n")
+cat("  Pre patients:", n_pre_c_patients, "\n")
+cat("  Post patients:", n_post_c_patients, "\n")
 
-# Diagnostic: Check patterns with Post2
-print("Patterns with Post2:")
-print(patient_patterns %>% filter(has_b_post2 | has_c_post2))
-
-# Define pattern order
-pattern_order <- c(
-  "A",
-  "B_Pre_Only", "B_Post_Only",
-  "C_Pre_Only", "C_Post_Only",
-  "B_Serial_PrePost", "B_Serial_PrePostPost2",
-  "C_Serial_PrePost", "C_Serial_PrePostPost2",
-  "Mixed", "Other"
-)
-
-# Create ordered factor for mrn
-ordered_mrns <- patient_patterns %>%
-  arrange(
-    factor(pattern, levels = pattern_order),
-    desc(total_samples)
-  ) %>%
-  pull(mrn)
-
-# Print summary of patterns
-pattern_summary <- patient_patterns %>%
-  group_by(pattern) %>%
-  summarise(
-    n_patients = n(),
-    .groups = "drop"
-  ) %>%
-  arrange(factor(pattern, levels = pattern_order))
-
-print("Summary of patient patterns:")
-print(pattern_summary)
-
-# Create swimmers plot with ordered patients
-swimmers_data <- df_meta_f2 %>%
-  # Create a unique identifier for each sample within patient and treatment status
-  group_by(mrn, cohort, txt_stat) %>%
-  mutate(
-    sample_order = row_number(),
-    sample_label = case_when(
-      sample_order == 1 ~ txt_stat,
-      TRUE ~ paste0(txt_stat, sample_order)
-    ),
-    # Add horizontal offset for multiple samples
-    x_offset = (sample_order - 1) * 0.2
-  ) %>%
-  ungroup() %>%
-  # Create x-axis positions for cohorts
-  mutate(
-    # Base position for each cohort
-    base_pos = case_when(
-      cohort == "A" ~ 0,
-      cohort == "B" ~ 1,
-      cohort == "C_D" ~ 2
-    ),
-    # Add treatment status offset (pre to left, post to right)
-    treatment_offset = case_when(
-      txt_stat == "Pre" ~ -0.2,
-      txt_stat == "Pre2" ~ -0.2,
-      txt_stat == "Post" ~ 0.2,
-      txt_stat == "Post2" ~ 0.2,
-      TRUE ~ 0
-    ),
-    # Combine base position, treatment offset, and sample order offset
-    x_pos = base_pos + treatment_offset + x_offset,
-    # Create y-axis positions based on ordered mrns
-    y_pos = match(mrn, ordered_mrns)
-  )
-
-# Create rectangle data for cohort boxes
-rect_data <- data.frame(
-  cohort = c("A", "B", "C_D"),
-  xmin = c(-0.5, 0.5, 1.5),
-  xmax = c(0.5, 1.5, 2.5)
-)
-
-# Create the swimmers plot
-p_swimmers_ordered <- ggplot(swimmers_data, aes(x = x_pos, y = y_pos)) +
-  # Add cohort boxes
-  geom_rect(
-    data = rect_data,
-    inherit.aes = FALSE,
-    aes(xmin = xmin, xmax = xmax, ymin = 0, ymax = max(swimmers_data$y_pos) + 1),
-    fill = "grey95",
-    alpha = 0.5
-  ) +
-  # Add vertical lines for cohort centers
-  geom_vline(
-    xintercept = c(0, 1, 2),
-    linetype = "dashed",
-    color = "grey50",
-    alpha = 0.5
-  ) +
-  # Add points for each sample
-  geom_point(
-    aes(color = txt_stat),
-    size = 3,
-    shape = 16
-  ) +
-  # Add sample labels
-  geom_text(
-    aes(label = sample_label),
-    hjust = -0.5,
-    size = 3
-  ) +
-  # Add connecting lines between samples
-  geom_line(
-    aes(group = mrn),
-    color = "grey50",
-    alpha = 0.5
-  ) +
-  # Customize the plot
-  scale_x_continuous(
-    breaks = 0:2,
-    labels = c("Cohort A", "Cohort B", "Cohort C/D"),
-    limits = c(-0.5, 2.5)
-  ) +
-  scale_color_manual(
-    values = c(
-      "Pre" = "steelblue",
-      "Pre2" = "steelblue",
-      "Post" = "orange",
-      "Post2" = "orange"
-    ),
-    labels = c("Pre-treatment", "Pre-treatment 2", "Post-treatment", "Post-treatment 2")
-  ) +
-  labs(
-    x = "",
-    y = "Patient",
-    color = "Sample Type"
-  ) +
-  theme_bw() +
-  theme(
-    panel.grid.major.y = element_blank(),
-    panel.grid.minor = element_blank(),
-    axis.text.y = element_blank(),
-    axis.ticks.y = element_blank(),
-    legend.position = "right"
-  )
-
-p_swimmers_ordered
-
-# # Save the plot
-# ggsave(
-#   p_swimmers_ordered,
-#   file = file.path(wd$outCurr, "Sample_collection_timeline_ordered.pdf"),
-#   height = max(10, length(unique(swimmers_data$mrn)) * 0.3),
-#   width = 8
-# )
 ```
-## Swimmers plot clustered
-
-```{r}
-# Function to determine patient pattern
-get_patient_pattern <- function(data) {
-  data %>%
-    group_by(mrn) %>%
-    summarise(
-      has_a = any(cohort == "A"),  # Simplified A cohort check
-      has_b_pre = any(cohort == "B" & txt_stat == "Pre"),
-      has_b_post = any(cohort == "B" & txt_stat == "Post"),
-      has_b_post2 = any(cohort == "B" & txt_stat == "Post2"),
-      has_c_pre = any(cohort == "C_D" & txt_stat == "Pre"),
-      has_c_post = any(cohort == "C_D" & txt_stat == "Post"),
-      has_c_post2 = any(cohort == "C_D" & txt_stat == "Post2"),
-      n_b_samples = sum(cohort == "B"),
-      n_c_samples = sum(cohort == "C_D"),
-      .groups = "drop"
-    ) %>%
-    mutate(
-      # First identify serial samples based on number of samples
-      is_b_serial = n_b_samples > 1,
-      is_c_serial = n_c_samples > 1,
-      # Then determine the pattern
-      pattern = case_when(
-        # Cohort A (all treated as one group)
-        has_a & !has_b_pre & !has_b_post & !has_c_pre & !has_c_post ~ "A",
-        # Non-serial Cohort B patterns
-        has_b_pre & !has_b_post & !has_c_pre & !has_c_post & !is_b_serial ~ "B_Pre_Only",
-        !has_b_pre & has_b_post & !has_c_pre & !has_c_post & !is_b_serial ~ "B_Post_Only",
-        # Non-serial Cohort C patterns
-        !has_b_pre & !has_b_post & has_c_pre & !has_c_post & !is_c_serial ~ "C_Pre_Only",
-        !has_b_pre & !has_b_post & !has_c_pre & has_c_post & !is_c_serial ~ "C_Post_Only",
-        # Serial patterns - Cohort B
-        is_b_serial & has_b_pre & has_b_post & !has_b_post2 & !has_c_pre & !has_c_post ~ "B_Serial_PrePost",
-        is_b_serial & has_b_pre & has_b_post & has_b_post2 & !has_c_pre & !has_c_post ~ "B_Serial_PrePostPost2",
-        # Serial patterns - Cohort C
-        !has_b_pre & !has_b_post & is_c_serial & has_c_pre & has_c_post & !has_c_post2 ~ "C_Serial_PrePost",
-        !has_b_pre & !has_b_post & is_c_serial & has_c_pre & has_c_post & has_c_post2 ~ "C_Serial_PrePostPost2",
-        # Mixed patterns
-        (has_b_pre | has_b_post) & (has_c_pre | has_c_post) ~ "Mixed",
-        TRUE ~ "Other"
-      ),
-      # Order within pattern by number of samples
-      total_samples = n_b_samples + n_c_samples
-    )
-}
-
-# Get patient patterns
-df_meta_f2 <- df_meta_f %>% mutate(txt_stat = case_when(cohort == "A" & txt_stat == "Post" ~ "Pre",
-                                                        TRUE ~ txt_stat))
-
-patient_patterns <- get_patient_pattern(df_meta_f2)
-
-# Define pattern order
-pattern_order <- c(
-  "A",
-  "B_Pre_Only", "B_Post_Only",
-  "C_Pre_Only", "C_Post_Only",
-  "B_Serial_PrePost", "B_Serial_PrePostPost2",
-  "C_Serial_PrePost", "C_Serial_PrePostPost2",
-  "Mixed", "Other"
-)
-
-# Create ordered factor for mrn
-ordered_mrns <- patient_patterns %>%
-  arrange(
-    factor(pattern, levels = pattern_order),
-    desc(total_samples)
-  ) %>%
-  pull(mrn)
-
-# Print summary of patterns
-pattern_summary <- patient_patterns %>%
-  group_by(pattern) %>%
-  summarise(
-    n_patients = n(),
-    .groups = "drop"
-  ) %>%
-  arrange(factor(pattern, levels = pattern_order))
-
-print("Summary of patient patterns:")
-print(pattern_summary)
-
-# Create swimmers plot with ordered patients
-swimmers_data <- df_meta_f2 %>%
-  # Create a unique identifier for each sample within patient and treatment status
-  group_by(mrn, cohort, txt_stat) %>%
-  mutate(
-    sample_order = row_number(),
-    sample_label = case_when(
-      sample_order == 1 ~ txt_stat,
-      TRUE ~ paste0(txt_stat, sample_order)
-    ),
-    # Add horizontal offset for multiple samples
-    x_offset = (sample_order - 1) * 0.2
-  ) %>%
-  ungroup() %>%
-  # Add a fake Pre3 row for the first patient with Pre2
-  bind_rows(
-    filter(., cohort == "C_D" & txt_stat == "Pre") %>%
-      slice(1) %>%
-      mutate(
-        txt_stat = "Pre3",
-        sample_label = "Pre3",
-        x_offset = 0.4  # Position it further left
-      )
-  ) %>%
-  # Create x-axis positions for cohorts
-  mutate(
-    # Base position for each cohort
-    base_pos = case_when(
-      cohort == "A" ~ 0,
-      cohort == "B" ~ 1,
-      cohort == "C_D" ~ 2
-    ),
-    # Add treatment status offset (pre to left, post to right)
-    treatment_offset = case_when(
-      txt_stat == "Pre" ~ -0.2,
-      txt_stat == "Pre2" ~ -0.2,
-      txt_stat == "Pre3" ~ -0.2,
-      txt_stat == "Post" ~ 0.2,
-      txt_stat == "Post2" ~ 0.2,
-      TRUE ~ 0
-    ),
-    # Combine base position, treatment offset, and sample order offset
-    x_pos = base_pos + treatment_offset + x_offset,
-    # Create y-axis positions based on ordered mrns
-    y_pos = match(mrn, ordered_mrns)
-  )
-
-# Create rectangle data for cohort boxes
-rect_data <- data.frame(
-  cohort = c("A", "B", "C_D"),
-  xmin = c(-0.5, 0.5, 1.5),
-  xmax = c(0.5, 1.5, 2.5)
-)
-
-# Create the swimmers plot
-p_swimmers_ordered <- ggplot(swimmers_data, aes(x = x_pos, y = y_pos)) +
-  # Add cohort boxes
-  geom_rect(
-    data = rect_data,
-    inherit.aes = FALSE,
-    aes(xmin = xmin, xmax = xmax, ymin = 0, ymax = max(swimmers_data$y_pos) + 1),
-    fill = "grey95",
-    alpha = 0.5
-  ) +
-  # Add vertical lines for cohort centers
-  geom_vline(
-    xintercept = c(0, 1, 2),
-    linetype = "dashed",
-    color = "grey50",
-    alpha = 0.5
-  ) +
-  # Add points for each sample
-  geom_point(
-    aes(color = txt_stat),
-    size = 3,
-    shape = 16
-  ) +
-  # Add sample labels
-  geom_text(
-    aes(label = sample_label),
-    hjust = -0.5,
-    size = 3
-  ) +
-  # Add connecting lines between samples
-  geom_line(
-    aes(group = mrn),
-    color = "grey50",
-    alpha = 0.5
-  ) +
-  # Customize the plot
-  scale_x_continuous(
-    breaks = 0:2,
-    labels = c("Cohort A", "Cohort B", "Cohort C/D"),
-    limits = c(-0.5, 2.5)
-  ) +
-  scale_color_manual(
-    values = c(
-      "Pre" = "steelblue",
-      "Pre2" = "steelblue",
-      "Pre3" = "red",
-      "Post" = "orange",
-      "Post2" = "orange"
-    ),
-    labels = c("Pre-treatment", "Pre-treatment 2", "Pre-treatment 3", "Post-treatment", "Post-treatment 2")
-  ) +
-  labs(
-    x = "",
-    y = "Patient",
-    color = "Sample Type"
-  ) +
-  theme_bw() +
-  theme(
-    panel.grid.major.y = element_blank(),
-    panel.grid.minor = element_blank(),
-    axis.text.y = element_blank(),
-    axis.ticks.y = element_blank(),
-    legend.position = "right"
-  )
-
-p_swimmers_ordered
-
-# # Save the plot
-# ggsave(
-#   p_swimmers_ordered,
-#   file = file.path(wd$outCurr, "Sample_collection_timeline_ordered.pdf"),
-#   height = max(10, length(unique(swimmers_data$mrn)) * 0.3),
-#   width = 8
-# )
-```
-
-# Objective 4
-
-*Adding the dates*
-
-Some samples have multiple collections. So it would be good to add the sample colelction date to the data. 
-
-```{r}
-# First, clean up the dates in dd2
-dd2 <- dd2 %>%
-  # Remove any rows where both HCI_cID and date are NA
-  filter(!(is.na(HCI_cID) & is.na(date))) %>%
-  # Convert dates to Date format
-  mutate(date = as.Date(date))
-
-# Join with df_meta_f2 and create txt_stat2
-df_meta_f2 <- df_meta_f2 %>%
-  # Join with dd2 to get dates
-  left_join(dd2, by = "HCI_cID") %>%
-  # Group by mrn to order samples by date
-  group_by(mrn) %>%
-  # Create txt_stat2 based on date ordering
-  mutate(
-    txt_stat2 = case_when(
-      # For cohort A, keep as is
-      cohort == "A" ~ txt_stat,
-      # For other cohorts, label based on date ordering
-      TRUE ~ case_when(
-        # First sample by date is Pre
-        date == min(date, na.rm = TRUE) ~ "Pre",
-        # Second sample by date is Pre2
-        date == sort(date, na.last = TRUE)[2] ~ "Pre2",
-        # Third sample by date is Post
-        date == sort(date, na.last = TRUE)[3] ~ "Post",
-        # Fourth sample by date is Post2
-        date == sort(date, na.last = TRUE)[4] ~ "Post2",
-        # If no date available, keep original txt_stat
-        is.na(date) ~ txt_stat,
-        # Default case
-        TRUE ~ txt_stat
-      )
-    )
-  ) %>%
-  ungroup()
-
-# Print summary of the changes
-print("Summary of txt_stat vs txt_stat2:")
-print(table(df_meta_f2$txt_stat, df_meta_f2$txt_stat2, useNA = "ifany"))
-
-# Print samples where txt_stat and txt_stat2 differ
-print("Samples where txt_stat and txt_stat2 differ:")
-df_meta_f2 %>%
-  filter(txt_stat != txt_stat2) %>%
-  select(mrn, HCI_cID, cohort, txt_stat, txt_stat2, date) %>%
-  arrange(mrn, date) %>%
-  print(n = Inf)
-```
-
-
-
 # Save objects
 
 ```{r}
+df_a_final <- df_a
+df_b_final <- df_b3
+df_c_final <- df_c2
 save(
   dat_NPX, dat_NPX2, dat_NPX3, 
-  meta_file, df_meta_f, df_id_pro, df_pre_post_ori,
+  meta_file, df_meta_f2, df_meta_f4, df_id_pro,
+  df_a_final, df_b_final, df_c_final,
   file = file.path(wd$outData, "01_Metadata.Rdata"))
 ```
 

@@ -99,6 +99,8 @@ Load the processed metadata file
 load(file.path(wd$outData, "01_Metadata.Rdata"))
 load(file.path(wd$outData, "02_data.Rdata"))
 load(file.path(wd$outData, "04_data.Rdata"))
+
+df_meta_f <- df_meta_f4
 ```
 
 

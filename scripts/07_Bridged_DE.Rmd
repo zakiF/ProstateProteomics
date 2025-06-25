@@ -114,7 +114,7 @@ df_vocab <- read.csv(file.path(wd$data, "DrugBank/drugbank vocabulary.csv"))
 
 # Obj 1: DE
 
-Use the linear model approach. 
+Use the linear model approach. Note we will run DE on Pre- and Post- treated samples
 
 ```{r}
 # -----------------------
@@ -126,18 +126,22 @@ mat_all <- exprMatrix_corrected_sub
 # 2) Create design and contrasts
 # --------------------------------
 # Groups for each of the columns
-df_group <- df_meta_f %>% select(HCI_cID, sample_id_psom, sample_id_Q13356, sample_id_Q15806) %>% 
+df_group <- df_meta_f2 %>% select(HCI_cID, sample_id_psom, sample_id_Q13356, sample_id_Q15806, txt_stat_ordered) %>% 
   mutate(id1 = paste0("Disc_", sample_id_psom),
          id2 = paste0("Proj2_", sample_id_Q13356),
          id3 = paste0("Proj4_", sample_id_Q15806)
-         )
+         ) #%>% 
+  # Select earliest Pre- treatment
+  #filter(txt_stat_ordered %in% c("Pre1"))
 df_group <- data.frame(
   HCI_cID = df_group$HCI_cID,
   sampleID = c(df_group$id1, df_group$id2, df_group$id3)
-) %>% filter(!str_detect(sampleID, 'NA'))
+) %>% 
+  filter(!str_detect(sampleID, 'NA')) %>% 
+  filter(sampleID %in% colnames(mat_all))
 
 # Data frame for design matrix
-df_de_anno <- df_meta_f %>% left_join(df_group) %>% 
+df_de_anno <- df_group %>% left_join(df_meta_f2) %>% 
   filter(sampleID %in% colnames(mat_all)) 
 
 exp_mat_sub <- mat_all[,df_de_anno$sampleID]
@@ -162,7 +166,7 @@ contrast.matrix <- makeContrasts(
 # ------------------------------------------------------------
 # 3) Fit linear model, apply contrasts, and get unfiltered topTable
 # ------------------------------------------------------------
-fit  <- lmFit(mat_all, design)
+fit  <- lmFit(exp_mat_sub, design)
 fit2 <- contrasts.fit(fit, contrast.matrix)
 fit2 <- eBayes(fit2)
 
@@ -186,7 +190,11 @@ limma_df <- results_df %>%
   rename(OlinkID = Gene) %>% 
   left_join(df_id_pro) %>% 
   rename(Adjusted_pval = adj.P.Val,
-         log2FC = logFC)
+         log2FC = logFC) %>% 
+  # For table purpose keep it clean (round the number)
+  mutate(log2FC = round(log2FC, 2),
+         P.Value = as.numeric(sprintf("%.1e", P.Value)),
+         Adjusted_pval = as.numeric(sprintf("%.1e", Adjusted_pval)))
 ```
 
 ## Overlap
@@ -194,6 +202,7 @@ limma_df <- results_df %>%
 Get overlap
 
 ```{r}
+cut_fdr <- 0.2
 # Protein specific to A
 df_cat_a <- limma_df %>%
   #filter(Cat %in% c("c_b_vs_a", "c_cd_vs_a") & Adjusted_pval <= cut_fdr)
@@ -257,6 +266,48 @@ overlap_df_limma <- data.frame(
 ) %>% left_join(df_id_pro)
 
 write.csv(overlap_df_limma, file.path(wd$outCurr, "DE_genes_limma.csv"))
+```
+
+# Obj 2: mHPSC treatment effect
+
+We now want to focus on mHPSC treatment effect
+
+## Proteins associated with PSA
+
+Lets examine 25 + 6 patients with serial samples
+
+```{r}
+df_b_serial <- df_meta_f2 %>% 
+  filter(pattern %in% c("B_Serial_PrePost", "B_Pre_to_C_Pre")) %>% 
+  filter(txt_stat_ordered %in% c("Pre1", "Post1")) %>% 
+  select(mrn, HCI_cID, txt_stat_ordered) 
+dim(df_b_serial)
+length(unique(df_b_serial$mrn))
+```
+
+In these samples, run the PSA values
+
+```{r}
+df_psa_b <- df_b_final %>% select(HCI_cID, psa) %>% mutate(group = "Serial B")
+df_psa_c <- df_c_final %>% select(HCI_cID, psa) %>% mutate(group = "Serial B_C") 
+
+df_tmp <- rbind(df_psa_b, df_psa_c)
+
+df_psa <- df_b_serial %>% left_join(df_tmp) %>% 
+  mutate(txt_stat_ordered = factor(txt_stat_ordered, levels=c("Pre1", "Post1")))
+```
+
+Plot the PSA value
+
+```{r}
+# Create the plot
+ggplot(df_psa, aes(x = txt_stat_ordered, y = psa, group = mrn)) +
+ geom_point(aes(color = txt_stat_ordered)) +
+ geom_line() +
+  #facet_wrap(~group) +
+ theme_bw() +
+ labs(title = "PSA Pre and Post for Each Patient", x = "Treatment Status", y = "PSA") +
+  NULL
 ```
 
 
