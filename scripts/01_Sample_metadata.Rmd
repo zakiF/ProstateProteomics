@@ -349,12 +349,20 @@ df_b <- data.frame(
   txt_ori = dd$txt_stat,
   death_date = c(dd$`Death date`),
   death_status = dd$`Deceased?`,
+  mets_volume = dd$chaarted_volume_at_mhspc,
+  # Info on HSPC treatment
   txt_nhspc_1st_type = dd$`1st_nmhspc_rx`,
   txt_nhspc_1st_date = dd$`1st_nmhspc_rx_date`,
   txt_mhspc_1st_type = dd$`1st_mhspc_rx`,
   txt_mhspc_1st_date = dd$`1st_mhspc_rx_date`,
-  txt_mhspc_2st_type = dd$`2nd_mhspc_rx`,
-  txt_mhspc_2st_date = dd$`2nd_mhspc_rx_date`
+  txt_mhspc_2nd_type = dd$`2nd_mhspc_rx`,
+  txt_mhspc_2nd_date = dd$`2nd_mhspc_rx_date`,
+  # Info on CRPC progression
+  progressed_to_crpc = dd$`Progressed to CRPC`,
+  crpc_biochem_date = dd$biochem_crpc_date,
+  txt_nmcrpc_1st_date = dd$`1st_nmcrpc_rx_date`,
+  txt_mcrpc_1st_date = dd$`1st_mcrpc_rx_date`,
+  txt_mcrpc_2nd_date = dd$`2nd_mcrpc_rx_date`
 ) %>% 
   filter(!is.na(HCI_cID)) %>% 
   mutate(
@@ -365,6 +373,8 @@ df_b <- data.frame(
   filter(HCI_cID %in% df_hci_id$HCI_cID)
 ```
 
+#### ADT treatment
+
 We want to figure out when is the first ADT date that is given. Lets first list all the treatments given and figure out which one is ADT.
 
 ```{r}
@@ -374,11 +384,11 @@ df_b2 <- df_b %>%
     # Identify if each treatment type is ADT
     nhspc_adt = str_detect(tolower(txt_nhspc_1st_type), "adt"),
     mhspc1_adt = str_detect(tolower(txt_mhspc_1st_type), "adt"),
-    mhspc2_adt = str_detect(tolower(txt_mhspc_2st_type), "adt"),
+    mhspc2_adt = str_detect(tolower(txt_mhspc_2nd_type), "adt"),
     # Convert all treatment dates to Date type
     nhspc_adt_date = if_else(nhspc_adt, as.Date(txt_nhspc_1st_date), as.Date(NA)),
     mhspc1_adt_date = if_else(mhspc1_adt, as.Date(txt_mhspc_1st_date), as.Date(NA)),
-    mhspc2_adt_date = if_else(mhspc2_adt, as.Date(txt_mhspc_2st_date), as.Date(NA))
+    mhspc2_adt_date = if_else(mhspc2_adt, as.Date(txt_mhspc_2nd_date), as.Date(NA))
   ) %>%
   rowwise() %>%
   mutate(
@@ -398,11 +408,11 @@ df_b2 <- df_b %>%
     # Identify if each treatment type is ADT
     nhspc_adt = str_detect(tolower(txt_nhspc_1st_type), "adt"),
     mhspc1_adt = str_detect(tolower(txt_mhspc_1st_type), "adt"),
-    mhspc2_adt = str_detect(tolower(txt_mhspc_2st_type), "adt"),
+    mhspc2_adt = str_detect(tolower(txt_mhspc_2nd_type), "adt"),
     # Convert all treatment dates to Date type
     nhspc_adt_date = if_else(nhspc_adt, as.Date(txt_nhspc_1st_date), as.Date(NA)),
     mhspc1_adt_date = if_else(mhspc1_adt, as.Date(txt_mhspc_1st_date), as.Date(NA)),
-    mhspc2_adt_date = if_else(mhspc2_adt, as.Date(txt_mhspc_2st_date), as.Date(NA))
+    mhspc2_adt_date = if_else(mhspc2_adt, as.Date(txt_mhspc_2nd_date), as.Date(NA))
   ) %>%
   rowwise() %>%
   mutate(
@@ -507,6 +517,30 @@ mrn_pre_post %>%
   dim()
 ```
 
+#### CRPC progression
+
+We want to also identify the earliest date of CRPC progression
+
+```{r}
+df_b3 <- df_b3 %>%
+  mutate(
+    # Convert all relevant CRPC treatment date columns to Date type
+    crpc_biochem_date = as.Date(crpc_biochem_date),
+    txt_nmcrpc_1st_date = as.Date(txt_nmcrpc_1st_date),
+    txt_mcrpc_1st_date = as.Date(txt_mcrpc_1st_date),
+    txt_mcrpc_2nd_date = as.Date(txt_mcrpc_2nd_date),
+    # Find the earliest date of CRPC progression
+    crpc_earliest_date = pmin(
+      crpc_biochem_date,
+      txt_nmcrpc_1st_date,
+      txt_mcrpc_1st_date,
+      txt_mcrpc_2nd_date,
+      na.rm = TRUE
+    )
+  )
+```
+
+
 ### Cohort C
 
 For cohort C, lets get the HCI_cID and collection date. We also want to add the treatment date. 
@@ -529,15 +563,15 @@ df_c <- data.frame(
   txt_nmcrpc_1st_date = dd$`1st_nmcrpc_rx_date`,
   txt_mcrpc_1st_type = dd$`1st_mcrpc_rx`,
   txt_mcrpc_1st_date = dd$`1st_mcrpc_rx_date`,
-  txt_mcrpc_2st_type = dd$`2nd_mcrpc_rx`,
-  txt_mcrpc_2st_date = dd$`2nd_mcrpc_rx_date`
+  txt_mcrpc_2nd_type = dd$`2nd_mcrpc_rx`,
+  txt_mcrpc_2nd_date = dd$`2nd_mcrpc_rx_date`
 ) %>% 
   filter(!is.na(HCI_cID)) %>% 
   mutate(
     cohort = "C",
     psa = as.numeric(gsub("<", "", psa)),
     ldh = as.numeric(gsub("<", "", ldh)),
-    alk_phos = as.numeric(gsub("<", "", alk_phos)),
+    alk_phos = as.numeric(gsub("<", "", alk_phos))
   ) %>% 
   filter(HCI_cID %in% df_hci_id$HCI_cID)
 ```
@@ -553,7 +587,7 @@ df_c2 <- df_c %>%
     # Convert all treatment dates to Date type
     nmcrpc_date = as.Date(txt_nmcrpc_1st_date),
     mcrpc1_date = as.Date(txt_mcrpc_1st_date),
-    mcrpc2_date = as.Date(txt_mcrpc_2st_date)
+    mcrpc2_date = as.Date(txt_mcrpc_2nd_date)
   ) %>%
   rowwise() %>%
   mutate(

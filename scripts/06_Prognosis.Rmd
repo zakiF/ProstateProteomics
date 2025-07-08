@@ -1,0 +1,425 @@
+---
+title: "DE analysis"
+date: "2025-06-30"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+    number_sections: false
+    theme: lumen
+---
+
+# Background
+
+We bridged the different batches using limma. Now we want to run DE to find cohort specific proteins.
+
+# Objectives
+
+1. DE analysis
+2. Heatmap viz
+
+
+# Conclusion
+
+We used a cut-off of 0.2 FDR and 1.4 log fold change and identified **overexpresed** stage specific DEPs.  
+
+# Pre-processing 
+
+## Loading packages
+
+```{r, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(readxl)   
+library(readr)
+library(stringr)
+library(ggplot2)
+library(paletteer)
+library(VennDiagram)
+library(ggvenn)
+library(ggbeeswarm)
+# DE
+library(limma)
+# Survival
+library(survival)
+library(ggsurvfit)
+library(survminer)
+# Heatmap
+library(ComplexHeatmap)
+library(circlize)
+```
+
+## Directories
+
+```{r}
+wd <- list()
+wd$main <- here()
+wd$data <- file.path(wd$main, "data")
+wd$manishData <- file.path(wd$data, "raw/data_fromManish")
+wd$d2024 <- file.path(wd$data, "updated_2024")
+wd$d2024_npx <- file.path(wd$d2024, "NPX_data")
+wd$output <- file.path(wd$main, "output")
+wd$script <- file.path(wd$main, "scripts")
+
+wd$outData <- file.path(wd$output, "data")
+wd$outCurr <- file.path(wd$output, "03_Bridge_DE")
+```
+
+
+Create directories
+
+```{r}
+if (!file.exists(wd$outCurr)) {
+  dir.create(wd$outCurr)
+} else {
+  print("Directory already exists")
+}
+```
+
+Load functions
+
+```{r}
+source(file.path(wd$script, "functions.R"))
+```
+
+## Load data
+
+Load the processed metadata file
+
+```{r}
+# TO DO - load the saved R object
+load(file.path(wd$outData, "01_Metadata.Rdata"))
+load(file.path(wd$outData, "02_data.Rdata"))
+```
+
+# Obj 1: xxx
+
+# NOT DONE
+
+# Obj 2: Prognosis
+
+We perform multivariate analysis on the patients. We want to see if the proteins that are over-expressed in the discovery cohort are associated with prognosis. 
+
+Its best if we limit our analysis to the proteins over-expressed in mCRPC
+
+```{r}
+length(cd_prot)
+```
+
+We need to trim down the protein to those that were detected
+
+```{r}
+cd_prot_sub <- cd_prot[cd_prot %in% rownames(exprMatrix_corrected_sub)]  # <------
+# # Manish mentioned CD34, it is currently tested in clicnial trials
+# id1 <- df_id_pro %>% filter(Assay == "CD34") %>% pull(OlinkID)
+# cd_prot_sub <- c(cd_prot_sub, id1)
+# CD34 gave HR to 0.8 - non significant
+```
+
+For these proteins run a cox proportional analysis. 
+
+## Clinical data
+
+Lets re-set the clinical data. Because Enos provided an updated annotation
+
+```{r}
+# 1st file has all the HCI_id
+dd <- read_xlsx(file.path(wd$d2024, "clinical_data/Demographics Patients_Proteomics 4-14-25 1.xlsx"),
+sheet = 2)
+df_clin1 <- data.frame(
+  mrn = dd$`MRN (UUHSC)`,
+  HCI_cID = c(dd$Sample1_HCI_Num, dd$Sample2_HCI_Num, dd$Sample3_HCI_Num),
+  collection_date = c(dd$Sample1_date, dd$`Sample 2 Start date`, dd$`Sample3_Start date`),
+  psa = c(dd$sample1_psa, dd$sample2_psa, dd$sample3_psa),
+  ldh = c(dd$sample1_ldh, dd$sample2_ldh, dd$sample3_ldh),
+  alk_ph = c(dd$sample1_alk_phos, dd$sample2_alk_phos, dd$sample3_alk_phos)
+  ) %>% 
+  mutate(psa = gsub("<", "", psa),
+         psa = as.numeric(psa),
+         ldh = as.numeric(ldh),
+         alk_ph = as.numeric(alk_ph)) %>% 
+  filter(!is.na(HCI_cID))
+
+# 2nd file has the corrected diagnosis dates, biochem date and mcrpc_txt date
+
+#censor_date <- "2025-05-02"
+censor_date <- as.Date('2024-11-14') # November 14, 2024
+dd <- read_xlsx(file.path(wd$d2024, "clinical_data/Proteomic study (Zaki) excel file_2025_05_02.xlsx"),
+sheet = 3)
+df_clin2 <- data.frame(
+  mrn = dd$`MRN (UUHSC)`,
+  biochem_date = dd$biochem_crpc_date,
+  mcrpc_tx_date = dd$`1st_mcrpc_rx_date`,
+  death_date = dd$`Death date`,
+  death = dd$`Deceased?`,
+  diag_date = dd$`Diagnosis date`
+  ) 
+
+df_clin <- df_clin1 %>% left_join(df_clin2)
+
+# Censor the date
+df_clin$death_date[is.na(df_clin$death_date)] <- censor_date
+
+# Calulate OS in months 
+# Time to event is defined as ;
+# As per conversation with Manish, we will take the earliest date between ;
+# biochem or mcrpc_txt_date. If no dates are available take the sample collection
+# Creatre a column to indicate this
+df_clin <- df_clin %>%
+  mutate(
+    # Get the earliest of biochem and mcrpc_tx
+    earliest_tx_date = pmin(biochem_date, mcrpc_tx_date, na.rm = TRUE),
+    
+    # Use collection_date if both are NA
+    final_date = if_else(is.na(earliest_tx_date), collection_date, earliest_tx_date),
+    
+    # Indicator of source
+    date_source = case_when(
+      !is.na(earliest_tx_date) & earliest_tx_date == biochem_date ~ "biochem",
+      !is.na(earliest_tx_date) & earliest_tx_date == mcrpc_tx_date ~ "mcrpc_tx",
+      TRUE ~ "collection"
+    )
+  )
+
+# Calculate OS
+df_clin <- df_clin %>% 
+  mutate(OS = as.numeric(difftime(death_date, final_date, units = "days")),
+         OS = round(OS/30.417, digit=2),
+         death = case_when(death == "No" ~ 0,
+                           death == "Yes" ~ 1))
+```
+
+Merge the clinical information with the proteomics sample IDs
+
+```{r}
+df_meta_tmp <- df_final_ids %>% select(HCI_cID, cohort, final_sample_id) %>% 
+  filter(final_sample_id %in% colnames(exprMatrix_corrected_sub)) # <------
+
+meta_bridge <- df_meta_tmp %>% left_join(df_clin)
+  
+df_tmp <- df_pca %>% select(SampleID, cohort, HCI_cID) %>% distinct() %>% 
+  rename(sample_id = SampleID)
+
+meta_bridge2 <- meta_bridge %>% left_join(df_tmp) %>% 
+  filter(cohort == "C_D") %>% 
+  left_join(select(df_meta_f, HCI_cID, txt_stat)) 
+
+# If we want just pre
+meta_bridge_pre <- meta_bridge2 %>% 
+  filter(txt_stat == "Pre")
+
+# For patients with multiple samples, keep the sample closest before treatment date, per patient.
+dupe_mrn <- meta_bridge_pre %>%
+  count(mrn) %>%
+  filter(n > 1)
+tmp_df <- meta_bridge_pre %>% 
+  filter(mrn %in% dupe_mrn$mrn)
+
+# selecting the earilest collection date
+# meta_bridge_pre <- meta_bridge_pre %>%
+#   group_by(mrn) %>%
+#   slice_min(collection_date, with_ties = FALSE) %>%
+#   ungroup()
+
+# selecting the closest to tx date
+meta_bridge_pre <- meta_bridge_pre %>%
+  mutate(days_diff = abs(as.numeric(difftime(collection_date, final_date, units = "days")))) %>%
+  group_by(mrn) %>%
+  slice_min(days_diff, with_ties = FALSE) %>%
+  ungroup()
+
+# Convert the gene x sample to the long NPX format
+# Convert to long format
+exprMatrix_long <- exprMatrix_corrected_sub %>% # <------
+  as.data.frame() %>%
+  rownames_to_column(var = "OlinkID") %>%  # Preserve row names as a column
+  pivot_longer(cols = -OlinkID, names_to = "SampleID", values_to = "Value") %>% 
+  left_join(df_pca) %>% 
+  rename(NPX = Value)
+```
+
+Since we have serial patients, it would be incorrect to use repeated OS measurement for prognosis (violates the independent assumption of cox regression). An idea that for each protein, take the patient that has the highest expression of that protein (then discard the remaining serial samples). Next we can run the cox regression. This will means that duplicated proteins are not included. 
+
+> Afeter talking to Manish and AC, a more logical approach is to use the baseline (pre-treatment) sample, if there are multiple pre-treatment, use the higest expressing one. 
+
+## Univariate
+
+Run the pre-txt mCRPC samples
+
+```{r, warning=FALSE, message=FALSE}
+# Select the highest expressing protein per- patient
+tmp_npx <- exprMatrix_long 
+results <- analyze_proteins_highest(cd_prot_sub, npx_in=tmp_npx, meta_in=meta_bridge_pre)
+results <- left_join(results, df_id_pro)
+res_bridge_limma_pre <- results
+```
+
+## Multi-variate
+
+We use only the proteins considered significant at the uni-variate level
+
+```{r}
+uni_sig1 <- res_bridge_limma_pre %>% filter(P_Value < 0.05) %>% pull(OlinkID)
+# We run all protein for now - we can filter later
+uni_sig <- res_bridge_limma_pre$OlinkID
+```
+
+To simplify analysis on all proteins, we wrote a function. 
+
+```{r, warning=FALSE, message=FALSE}
+# Run function on multivariate analysis
+results <- analyze_proteins_multi(uni_sig, npx_in=tmp_npx, meta_in=meta_bridge_pre)
+results <- left_join(results, df_id_pro)
+res_bridge_limma_pre_multi <- results
+```
+
+
+### Clean up
+
+Format and save the results. 
+
+```{r}
+cox_p_val <- 0.05
+res_bridge_limma_pre <- res_bridge_limma_pre %>% 
+  mutate(Group = "Uni") %>% 
+  mutate(
+    Lower_Bound = round(Lower_Bound, 2),
+    Upper_Bound = round(Upper_Bound, 2),
+    bin_Lower_Bound = round(bin_Lower_Bound, 2),
+    bin_Upper_Bound = round(bin_Upper_Bound, 2),
+    
+    HR = round(HR, 2),
+    bin_HR = round(HR, 2),
+    
+    Sig_bin = case_when(
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound >=1 ~ "Sig",
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound <=1 & bin_Upper_Bound <=1 ~ "Sig",
+      bin_P_Value <= cox_p_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"),
+    
+    fdr_cont = p.adjust(P_Value, method = "fdr"),
+    
+    Sig_fdr_cont = case_when(
+      P_Value <= cox_p_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"))
+
+write.csv(res_bridge_limma_pre, file.path(wd$outCurr, "HR_values_mCRPC_specific_UNI_variate_limma_pre.csv"))
+
+cox_p_val <- 0.05
+res_bridge_limma_pre_multi <- res_bridge_limma_pre_multi %>% 
+  #filter(OlinkID %in% uni_sig1) %>% 
+  mutate(Group = "Multi") %>% 
+  mutate(
+    Lower_Bound = round(Lower_Bound, 2),
+    Upper_Bound = round(Upper_Bound, 2),
+    bin_Lower_Bound = round(bin_Lower_Bound, 2),
+    bin_Upper_Bound = round(bin_Upper_Bound, 2),
+    
+    HR = round(HR, 2),
+    bin_HR = round(HR, 2),
+    
+    Sig_bin = case_when(
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound >=1 ~ "Sig",
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound <=1 & bin_Upper_Bound <=1 ~ "Sig",
+      bin_P_Value <= cox_p_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"),
+    
+    fdr_cont = p.adjust(P_Value, method = "fdr"),
+    
+    Sig_fdr_cont = case_when(
+      P_Value <= cox_p_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"))
+
+write.csv(res_bridge_limma_pre_multi, file.path(wd$outCurr, "HR_values_mCRPC_specific_MULTI_variate_limma_pre.csv"))
+
+
+```
+
+Combine the uni and multi in one table
+
+```{r}
+uni_renamed <- res_bridge_limma_pre %>%
+  select(OlinkID, Assay, Coefficient, Lower_Bound, Upper_Bound, P_Value, HR) %>%
+  rename(
+    Uni_Coefficient = Coefficient,
+    Uni_Lower = Lower_Bound,
+    Uni_Upper = Upper_Bound,
+    Uni_P = P_Value,
+    Uni_HR = HR
+  ) %>% 
+  mutate(Uni_Significant = case_when(
+      Uni_P <= 0.05  ~ "Yes",
+      TRUE ~ "No"))
+
+multi_renamed <- res_bridge_limma_pre_multi %>%
+  select(OlinkID, Coefficient, Lower_Bound, Upper_Bound, P_Value, HR) %>%
+  rename(
+    Multi_Coefficient = Coefficient,
+    Multi_Lower = Lower_Bound,
+    Multi_Upper = Upper_Bound,
+    Multi_P = P_Value,
+    Multi_HR = HR
+  )   %>% mutate(Multi_Significant = case_when(
+      Multi_P <= 0.05  ~ "Yes",
+      TRUE ~ "No"))
+
+combined <- left_join(uni_renamed, multi_renamed, by = "OlinkID")
+```
+
+## Add drug and CS
+
+
+Overlap with CS data
+
+```{r}
+combined <- combined %>% 
+  mutate(is_CS = case_when(Assay %in% cs$Approved.symbol ~ "Yes", TRUE ~ "No"))
+res_all <- left_join(combined, cs, by = c("Assay" = "Approved.symbol"))
+```
+
+Add if the proteins are available on the Olink FLEX platform
+
+```{r}
+res_all <- res_all %>% 
+  mutate(
+    is_flex = case_when(Assay %in% df_flex$Gene ~ "Yes", TRUE ~ "No")) 
+```
+
+Also indicate if the protein is targetable
+
+```{r}
+df_target_sub <- df_target %>% select(Gene.Name, Drug.IDs) %>% 
+  # Ensure one gene row for each drug
+  group_by(Gene.Name) %>%
+  summarise(
+    DrugBank.ID = str_c(unique(unlist(str_split(Drug.IDs, ","))), collapse = ",")
+  )
+res_all2 <- res_all %>% left_join(df_target_sub, by = c("Assay" = "Gene.Name"))
+```
+
+Replace DrugID with common name
+
+```{r}
+df_vocab_sub <- df_vocab %>% select(DrugBank.ID, Common.name)
+# Replace each DrugBank ID with the corresponding Common name
+res_all2 <- res_all2 %>%
+  # Split the Drug.IDs by semicolon
+  mutate(DrugBank.ID = str_split(DrugBank.ID, "; ")) %>%
+  # Use a custom function to replace IDs with common names
+  mutate(drugname = sapply(DrugBank.ID, function(ids) {
+    # Join the common names of the IDs in the list
+    names <- df_vocab_sub %>% 
+      filter(DrugBank.ID %in% ids) %>%
+      pull(`Common.name`)
+    # Combine the common names into a single string
+    str_c(names, collapse = "; ")
+  })) %>%
+  mutate(DrugBank.ID = as.character(DrugBank.ID))  # Clean up the original Drug.IDs column if desired
+
+write.csv(res_all2, file.path(wd$outCurr, "HR_values_mCRPC_specific_multivariate_limma_all_cell_surface.csv"))
+```
+
+
+

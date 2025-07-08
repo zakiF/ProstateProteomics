@@ -1459,6 +1459,7 @@ patient_patterns <- get_patient_pattern(df_meta_in %>% mutate(txt_stat = txt_sta
 df_meta_in <- df_meta_in %>%
   left_join(patient_patterns %>% select(mrn, pattern, total_samples), by = "mrn")
 
+
 # 5. Order patients by pattern and total_samples
 ordered_mrns <- df_meta_in %>%
   distinct(mrn, pattern, total_samples) %>%
@@ -1674,6 +1675,7 @@ cat("  Post patients:", n_post_c_patients, "\n")
 save(
   exprMatrix_corrected2, exprMatrix_corrected_sub, 
   expr_corrc_allGenes, df_final_ids, df_meta_f5,
+  final_sample_id,
   file = file.path(wd$outData, "02_data.Rdata"))
 ```
 

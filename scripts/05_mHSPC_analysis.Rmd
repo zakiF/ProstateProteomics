@@ -1,0 +1,623 @@
+---
+title: "EmHPSC analysis"
+date: "2025-07-01"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+    number_sections: false
+    theme: lumen
+---
+
+# Background
+
+We bridge the different batches using limma. Now we want to focus the analysis on the mHSPC cohort.
+
+# Objectives
+
+1. Treatment effect on mHSPC cohort
+
+
+
+# Conclusion
+
+
+# Pre-processing 
+
+## Loading packages
+
+```{r, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(readxl)   
+library(readr)
+library(stringr)
+library(ggplot2)
+library(paletteer)
+library(ggvenn)
+library(ggbeeswarm)
+library(ggsignif)
+# DE
+library(limma)
+library(survival)
+library(survminer)
+library(dplyr)
+```
+
+## Directories
+
+```{r}
+wd <- list()
+wd$main <- here()
+wd$data <- file.path(wd$main, "data")
+wd$manishData <- file.path(wd$data, "raw/data_fromManish")
+wd$d2024 <- file.path(wd$data, "updated_2024")
+wd$d2024_npx <- file.path(wd$d2024, "NPX_data")
+wd$output <- file.path(wd$main, "output")
+wd$script <- file.path(wd$main, "scripts")
+
+wd$outData <- file.path(wd$output, "data")
+wd$outCurr <- file.path(wd$output, "05_mHSPC_analysis")
+```
+
+
+Create directories
+
+```{r}
+if (!file.exists(wd$outCurr)) {
+  dir.create(wd$outCurr)
+} else {
+  print("Directory already exists")
+}
+```
+
+Load functions
+
+```{r}
+source(file.path(wd$script, "functions.R"))
+```
+
+## Load data
+
+Load the processed metadata file
+
+```{r}
+# TO DO - load the saved R object
+load(file.path(wd$outData, "01_Metadata.Rdata"))
+load(file.path(wd$outData, "02_data.Rdata"))
+load(file.path(wd$outData, "03_data.Rdata"))
+```
+
+# Obj 1: Txt effect
+
+We first identify the paired samples in the mHSPC cohort.
+
+```{r}
+mrn_pre_post <- df_meta_f5 %>%
+  filter(cohort == "B") %>%
+  group_by(mrn) %>%
+  summarise(
+    has_pre = as.integer(any(txt_stat == "Pre", na.rm = TRUE)),
+    has_post = as.integer(any(txt_stat == "Post", na.rm = TRUE))
+  )
+
+# View only those with both Pre and Post
+paired_mrn <- mrn_pre_post %>%
+  filter(has_pre == 1 & has_post == 1)
+dim(paired_mrn)
+```
+
+We have 25 paired samples. Lets get the median time between pre and post.
+
+```{r}
+med_time <- df_meta_f5 %>%
+  filter(mrn %in% paired_mrn$mrn) %>%
+  group_by(mrn, txt_stat) %>%
+  summarise(median_time = median(time2txt, na.rm = TRUE)) %>%
+  pivot_wider(names_from = txt_stat, values_from = median_time) %>%
+  mutate(diff = Post - Pre) %>%
+  arrange(desc(diff))
+to_exclude <- med_time %>% filter(diff >200) %>% pull(mrn) %>% unique()
+```
+
+Exclude samples with a median time between pre and post of more than 200 days.
+
+```{r}
+df_b_paired<- df_meta_f5 %>%
+  filter(mrn %in% paired_mrn$mrn) %>%
+  filter(!mrn %in% to_exclude)
+```
+
+Now lets run limma to identify differentially expressed genes between pre and post in these samples
+
+```{r}
+# Generate the expression matrix
+mat_in <- exprMatrix_corrected_sub 
+# We also want to limit the proteins to proteins that were specific in mHSPC cohort
+b_stage_pro <- overlap_df_limma %>% 
+  filter(Category %in% c("A and B", "B", "B and CD")) %>% 
+  pull(OlinkID)
+
+exp_mat_sub <- mat_in[,df_b_paired$final_sample_id]
+exp_mat_sub <- exp_mat_sub[b_stage_pro,]
+
+identical(colnames(exp_mat_sub), df_b_paired$final_sample_id)
+
+# Create design matrix (no intercept, just Pre/Post)
+design <- model.matrix(~0 + txt_stat, data=df_b_paired)
+colnames(design) <- c("Pre", "Post")
+
+# Patient/blocking factor
+block <- df_b_paired$mrn
+
+# Estimate correlation between pairs
+corfit <- duplicateCorrelation(exp_mat_sub, design, block=block)
+
+# Fit the model with blocking
+fit <- lmFit(exp_mat_sub, design, block=block, correlation=corfit$consensus)
+
+# Create contrast matrix
+contrast.matrix <- makeContrasts(Post - Pre, levels=design)
+
+# Run limma
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+
+# Get top differentially expressed genes
+limma_b_pair <- topTable(fit2, number = Inf, sort.by = "none") %>% 
+  tibble::rownames_to_column(var = "Gene") %>% 
+  rename(OlinkID = Gene) %>% 
+  left_join(df_id_pro) %>% 
+  rename(Adjusted_pval = adj.P.Val,
+         log2FC = logFC) %>% 
+  # For table purpose keep it clean (round the number)
+  mutate(log2FC = round(log2FC, 2),
+         P.Value = as.numeric(sprintf("%.1e", P.Value)),
+         Adjusted_pval = as.numeric(sprintf("%.1e", Adjusted_pval)))
+
+# Check numner of significant proteins
+limma_b_pair_sig <- limma_b_pair %>%
+  filter(
+    Adjusted_pval <= cut_fdr,
+    log2FC > abs(cut_logFC)
+  )
+dim(limma_b_pair_sig)
+# Save the results
+save(limma_b_pair, file = file.path(wd$outCurr, "limma_b_pair.Rdata"))
+```
+
+Draw a violin plot of these significant proteins
+
+```{r}
+# Prepare long-format NPX data for plotting
+df_npx_long <- exp_mat_sub %>%
+  as.data.frame() %>% 
+  tibble::rownames_to_column(var = "OlinkID") %>% 
+  pivot_longer(cols = -OlinkID, names_to = "final_sample_id", values_to = "NPX")
+
+# Filter for b_stage_pro proteins
+sig_olink_ids <- limma_b_pair_sig
+
+# Arrange limma_b_pair_sig by descending log2FC and create a factor for Assay with desired order
+limma_b_pair_sig <- limma_b_pair_sig %>%
+  arrange(desc(log2FC)) %>%
+  mutate(
+    Assay = factor(Assay, levels = unique(Assay)),
+    OlinkID = factor(OlinkID, levels = OlinkID) # OlinkID in descending logFC order
+  )
+
+# Merge and filter for plotting, and add logFC/adjp for annotation
+df_plot <- df_npx_long %>% 
+  left_join(df_id_pro, by = "OlinkID") %>% 
+  dplyr::filter(OlinkID %in% sig_olink_ids$OlinkID) %>% 
+  left_join(df_final_ids %>% select(final_sample_id, cohort, txt_stat), by = "final_sample_id") %>% 
+  filter(final_sample_id %in% colnames(exp_mat_sub)) %>%
+  left_join(limma_b_pair_sig %>% select(OlinkID, log2FC, Adjusted_pval), by = "OlinkID") %>%
+  mutate(
+    # For facetting, order by OlinkID factor (descending logFC)
+    OlinkID = factor(OlinkID, levels = limma_b_pair_sig$OlinkID),
+    # For facetting, use Assay as label, but add logFC and adjp to label
+    facet_label = paste0(
+      Assay, "\nlogFC=", log2FC, "\nadjP=", formatC(Adjusted_pval, format="e", digits=1)
+    )
+  )
+
+# Ensure txt_stat is a factor with Pre first, then Post
+df_plot$txt_stat <- factor(df_plot$txt_stat, levels = c("Pre", "Post"))
+
+# Show the plot
+max_y <- max(df_plot$NPX, na.rm = TRUE)
+min_y <- min(df_plot$NPX, na.rm = TRUE)
+
+p_viol_gene <- 
+  df_plot %>%
+  ggplot(aes(x = txt_stat, y = NPX, fill = txt_stat)) +
+  geom_quasirandom(dodge.width=0.9, colour="grey30", alpha=0.5) +
+  geom_violin(alpha = 0.5, scale = "width", position = position_dodge(width = 0.9)) +
+  geom_boxplot(outlier.alpha = 0,  width = 0.2, coef=0,
+               position = position_dodge(width = 0.9)) +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank"),
+        axis.text.x = element_text(angle = 0)) +
+  scale_y_continuous(limits=c(min_y, max_y+3)) +
+  facet_wrap(~facet_label, ncol=6, scales = "free_y") +
+  NULL
+p_viol_gene
+
+```
+
+Lets plot the PSA as well of pre- and post-treatment. We noted there was one outlier, so lets log10 the PSA value
+
+```{r}
+# df_b_final - contain duplicated 2x pre samples / 2x post samples
+df_plot2 <- df_b_final %>%
+  filter(HCI_cID %in% df_meta_f5$HCI_cID) %>% 
+  filter(mrn %in% df_b_paired$mrn) %>%
+  rename(txt_stat = updated_adt_early) %>% 
+  mutate(txt_stat = factor(txt_stat, levels = c("Pre", "Post")),
+         logPSA = log10(psa)) 
+  
+# Create the plot with boxplot for txt_stat group
+ggplot(df_plot2, aes(x = txt_stat, y = logPSA, group = mrn)) +
+  geom_boxplot(aes(group = txt_stat, fill = txt_stat), outlier.alpha = 0, width = 0.3, coef = 0, position = position_dodge(width = 0.9), alpha = 0.5) +
+  geom_line(aes(group = mrn), color = "grey40", alpha = 0.7, position = position_dodge(width = 0.0)) +
+  geom_point(aes(color = txt_stat), size = 2) +
+  theme_bw() +
+  labs(title = "PSA Pre and Post for Each Patient", x = "Treatment Status", y = "log10(PSA)") +
+  theme(legend.position = "none") +
+  NULL
+
+# --- New: Violin/box/quasirandom plot for PSA (Pre/Post) --- #
+
+max_psa <- max(df_plot2$logPSA, na.rm = TRUE)
+min_psa <- min(df_plot2$logPSA, na.rm = TRUE)
+
+p_viol_psa <-
+  df_plot2 %>%
+  ggplot(aes(x = txt_stat, y = logPSA, fill = txt_stat)) +
+  geom_quasirandom(dodge.width=0.9, colour="grey30", alpha=0.5) +
+  geom_violin(alpha = 0.5, scale = "width", position = position_dodge(width = 0.9)) +
+  geom_boxplot(outlier.alpha = 0, width = 0.2, coef=0,
+               position = position_dodge(width = 0.9)) +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank"),
+        axis.text.x = element_text(angle = 0)) +
+  scale_y_continuous(limits=c(min_psa, max_psa+0.5)) +
+  labs(title = "PSA Pre and Post (Violin)", x = "Treatment Status", y = "log10(PSA)") +
+  NULL
+p_viol_psa
+
+```
+
+# Obj 2: Progression
+
+## Time to CRPC
+
+Lets examine if the protein levels is associated with the treatment progression. 
+
+First lets define the time to CRPC. We define the time to CRPC as the earliest date of either the time of 
+
+- CRPC biochemical progression (crpc_biochem_date)
+- nmCRPC treatment date (txt_nmcrpc_1st_date)
+- mCRPC treatment date (txt_mcrpc_1st_date)
+- mCRPC treatment date (txt_mcrpc_2nd_date)
+
+to the time of ADT treatment (adt_earliest_date). Lets calculate the time to event.
+
+For this analysis, we want to use all samples that is at baseline, not samples that was treated with ADT. Also we added censoring date for patients that did not progress to CRPC.
+
+```{r}
+ast_followup_date <- "2025-07-01"
+df_tmp1 <- df_meta_f5 %>% 
+  select(HCI_cID, txt_stat_ordered)
+
+df_tmp2 <- df_final_ids %>% 
+  select(HCI_cID, final_sample_id)
+
+df_tmp <- left_join(df_tmp1, df_tmp2)
+
+df_b_cox <- df_b_final %>% 
+  left_join(df_tmp, by = "HCI_cID") %>% 
+  filter(txt_stat_ordered == "Pre1") %>% 
+  filter(HCI_cID %in% df_meta_f6$HCI_cID) %>% 
+  select(mrn, HCI_cID, progressed_to_crpc, adt_earliest_date, crpc_earliest_date, final_sample_id, psa) %>% 
+  rename(SampleID = final_sample_id) %>% 
+  mutate(sample_id = SampleID) %>% 
+  arrange(adt_earliest_date) %>% 
+  mutate(
+    # If patient progressed, use crpc_earliest_date; otherwise, censor at ast_followup_date
+    event_date = dplyr::case_when(
+      progressed_to_crpc == "y" & !is.na(crpc_earliest_date) ~ crpc_earliest_date,
+      TRUE ~ as.Date(ast_followup_date)
+    ),
+    time_to_crpc = as.numeric(difftime(event_date, adt_earliest_date, units = "days")),
+    progressed_to_crpc = dplyr::case_when(
+      progressed_to_crpc == "y" ~ 1L,
+      is.na(progressed_to_crpc) | progressed_to_crpc != "y" ~ 0L
+    )
+  )
+```
+
+Now we have the clinical data for the patients that are at baseline. Lets get the protein expression data.
+
+```{r}
+meta_in <- df_b_cox %>% 
+  rename(OS = time_to_crpc,
+         death = progressed_to_crpc)
+prot_ids <- limma_b_pair_sig %>% pull(OlinkID) %>% as.character()
+# Define the expression matrix
+mat_in <- exprMatrix_corrected_sub 
+# Subset to the 9 proteins and the samples that are at baseline
+mat_in_sub <- mat_in[prot_ids, df_b_cox$SampleID]
+
+# Convert the gene x sample to the long NPX format
+# Convert to long format
+exprMatrix_long <- mat_in_sub %>% 
+  as.data.frame() %>%
+  rownames_to_column(var = "OlinkID") %>%  # Preserve row names as a column
+  pivot_longer(cols = -OlinkID, names_to = "SampleID", values_to = "Value") %>% 
+  rename(NPX = Value)
+```
+
+
+```{r}
+tmp_npx <- exprMatrix_long 
+results <- analyze_proteins_highest(prot_ids, npx_in=tmp_npx, meta_in=meta_in)
+```
+
+Lets run the cox regression on psa value alone. 
+
+```{r}
+clin_var <- c("psa")
+results <- cox_extract(clin_var, meta_in)
+```
+
+Looking at the results it seems that there is no significant proteins that can be considered prognostic. 
+
+## Delta NPX
+
+Lets try an approach where we take the change in protein expression, then associate with CRPC progression. But now we need to limit to the 23 patients that we have pre- and post- measurement.
+
+```{r}
+# Calculate change in protein expression (delta NPX) for each patient and protein
+# Assuming df_npx_long has columns: SampleID, PatientID, Timepoint (e.g., "Pre", "Post"), OlinkID, NPX
+
+# First, pivot to wide format to get Pre and Post NPX side by side
+df_npx_in <- df_npx_long %>% 
+  filter(final_sample_id %in% df_b_paired$final_sample_id) %>% 
+  left_join(df_id_pro, by = "OlinkID") %>% 
+  dplyr::filter(OlinkID %in% limma_b_pair_sig$OlinkID) %>% 
+  left_join(df_final_ids %>% select(mrn, final_sample_id, cohort, txt_stat), by = "final_sample_id") 
+
+df_npx_wide <- df_npx_in %>%
+  pivot_wider(
+    id_cols = c(mrn, OlinkID),
+    names_from = txt_stat,
+    values_from = NPX
+  )
+
+# Calculate delta NPX (Post - Pre)
+df_npx_wide <- df_npx_wide %>%
+  mutate(delta_NPX = Post - Pre) 
+
+# Merge with clinical data to get time to CRPC and event status
+# meta_in: Patient-level clinical data with columns: PatientID, OS (time), death (event)
+df_delta <- df_npx_wide %>%
+  left_join(meta_in %>% select(mrn, OS, death)) %>%
+  filter(!is.na(delta_NPX), !is.na(OS), !is.na(death))
+
+# # Run Cox model for each protein
+# cox_results <- df_delta %>%
+#   group_by(OlinkID) %>%
+#   do({
+#     fit <- coxph(Surv(OS, death) ~ delta_NPX, data = .)
+#     tidy_fit <- broom::tidy(fit)
+#     tidy_fit
+#   }) %>%
+#   ungroup()
+# 
+# # Show results
+# cox_results
+
+
+# Alternate result table
+result_df <- df_delta %>%
+  group_by(OlinkID) %>%
+  do({
+    fit <- tryCatch(coxph(Surv(OS, death) ~ delta_NPX, data = .), error = function(e) NULL)
+    if (is.null(fit)) {
+      # Return NA row if model failed
+      data.frame(
+        OlinkID = unique(.$OlinkID),
+        Coefficient = NA_real_,
+        Lower_Bound = NA_real_,
+        Upper_Bound = NA_real_,
+        P_Value = NA_real_,
+        HR = NA_real_
+      )
+    } else {
+      coef_summary <- summary(fit)$coefficients
+      confint_summary <- summary(fit)$conf.int
+      data.frame(
+        OlinkID = unique(.$OlinkID),
+        Coefficient = coef_summary[,"coef"],
+        Lower_Bound = confint_summary[,"lower .95"],
+        Upper_Bound = confint_summary[,"upper .95"],
+        P_Value = coef_summary[,"Pr(>|z|)"],
+        HR = confint_summary[,"exp(coef)"]
+      )
+    }
+  }) %>%
+  ungroup() %>% 
+  left_join(df_id_pro)
+
+
+```
+
+Lets run the cox regression on the change of PSA
+
+```{r}
+clin_var <- c("psa")
+results <- cox_extract(clin_var, meta_in)
+```
+
+## KM plot
+
+> We only have 25 patietns. So it seems like it does not make sense to do the KM. Error values are too large. 
+
+Now lets generate a KM plot stratifying the protein expression to high and low (based on median),
+
+```{r,eval=FALSE}
+protein_list <- unique(df_delta$OlinkID)
+km_plots <- list()
+
+for (prot in protein_list) {
+  df_sub <- df_delta %>% filter(OlinkID == prot)
+  
+  # Stratify by median delta_NPX
+  median_val <- median(df_sub$delta_NPX, na.rm = TRUE)
+  df_sub <- df_sub %>%
+    mutate(
+      delta_bin = ifelse(delta_NPX > median_val, "high", "low"),
+      delta_bin = factor(delta_bin, levels = c("low", "high"))
+    )
+  
+  # Create survival object
+  surv_object <- Surv(time = df_sub$OS, event = df_sub$death)
+  
+  # Fit KM curve
+  fit <- survfit(surv_object ~ delta_bin, data = df_sub)
+  
+  # Plot
+  p <- ggsurvplot(
+    fit, data = df_sub, pval = TRUE, risk.table = TRUE,
+    conf.int = TRUE, palette = c("#7F7F7F", "#e41a1c"),
+    title = paste("KM plot for", prot)
+  )
+  
+  km_plots[[prot]] <- p
+  # Optionally, save to file:
+  # ggsave(filename = paste0("KM_", prot, ".pdf"), plot = p$plot)
+}
+
+# To display a plot, for example the first one:
+print(km_plots[[1]]$plot)
+```
+
+# Obj 3: Metastasis load
+
+Lets look at the protein expression based on the metastatic load
+
+Generate boxplot to show the expression of mHSPC-specific proteins based on metastatic load
+
+```{r}
+# Info on mets - df_b_final$mets_volume
+# b_stage_pro - proteins overexpressed in group B
+
+# Prepare long-format NPX data for plotting
+df_npx_long <- exp_mat_sub %>%
+  as.data.frame() %>% 
+  tibble::rownames_to_column(var = "OlinkID") %>% 
+  pivot_longer(cols = -OlinkID, names_to = "final_sample_id", values_to = "NPX")
+
+# Filter for b_stage_pro proteins
+sig_olink_ids <- b_stage_pro
+
+# Merge and filter for plotting
+df_plot <- df_npx_long %>% 
+  left_join(df_id_pro, by = "OlinkID") %>% 
+  dplyr::filter(OlinkID %in% b_stage_pro) %>% 
+  left_join(df_final_ids %>% select(HCI_cID, final_sample_id, cohort, txt_stat), by = "final_sample_id") %>% 
+  filter(final_sample_id %in% colnames(exp_mat_sub)) %>% 
+  left_join(df_b_final %>% select(HCI_cID, mets_volume))
+
+# Ensure txt_stat is a factor with Pre first, then Post
+df_plot$txt_stat <- factor(df_plot$txt_stat, levels = c("Pre", "Post"))
+
+# Show the plot
+max_y <- max(df_plot$NPX, na.rm = TRUE)
+min_y <- min(df_plot$NPX, na.rm = TRUE)
+
+p_viol_gene <- 
+  df_plot %>%
+  ggplot(aes(x = mets_volume, y = NPX, fill = mets_volume)) +
+  #geom_quasirandom(dodge.width=0.9, colour="grey30", alpha=0.5) +
+  #geom_violin(alpha = 0.5, scale = "width", position = position_dodge(width = 0.9)) +
+  geom_boxplot(#outlier.alpha = 0,  width = 0.2, coef=0,
+               position = position_dodge(width = 0.9)) +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank"),
+        axis.text.x = element_text(angle = 0)) +
+  scale_y_continuous(limits=c(min_y, max_y+3)) +
+  geom_signif(
+    comparisons = list(c("High", "Low")),
+    map_signif_level = FALSE,
+    test = "t.test") +
+  NULL
+p_viol_gene
+# ... existing code ...
+```
+
+If we limit to the 9 genes
+
+
+```{r}
+# Prepare long-format NPX data for plotting
+df_npx_long <- exp_mat_sub %>%
+  as.data.frame() %>% 
+  tibble::rownames_to_column(var = "OlinkID") %>% 
+  pivot_longer(cols = -OlinkID, names_to = "final_sample_id", values_to = "NPX")
+
+# Filter for b_stage_pro proteins
+sig_olink_ids <- limma_b_pair_sig
+
+# Merge and filter for plotting
+df_plot <- df_npx_long %>% 
+  left_join(df_id_pro, by = "OlinkID") %>% 
+  dplyr::filter(OlinkID %in% sig_olink_ids$OlinkID) %>% 
+  left_join(df_final_ids %>% select(final_sample_id, HCI_cID, cohort, txt_stat), by = "final_sample_id") %>% 
+  filter(final_sample_id %in% colnames(exp_mat_sub)) %>%
+  mutate(
+    # For facetting, order by OlinkID factor
+    OlinkID = factor(OlinkID, levels = unique(OlinkID))
+  ) %>% 
+  left_join(df_b_final %>% select(HCI_cID, mets_volume))
+
+# Ensure txt_stat is a factor with Pre first, then Post
+df_plot$txt_stat <- factor(df_plot$txt_stat, levels = c("Pre", "Post"))
+
+# Show the plot
+max_y <- max(df_plot$NPX, na.rm = TRUE)
+min_y <- min(df_plot$NPX, na.rm = TRUE)
+
+p_viol_gene <- 
+  df_plot %>%
+  ggplot(aes(x = mets_volume, y = NPX, fill = mets_volume)) +
+  geom_quasirandom(dodge.width=0.9, colour="grey30", alpha=0.5) +
+  geom_violin(alpha = 0.5, scale = "width", position = position_dodge(width = 0.9)) +
+  geom_boxplot(outlier.alpha = 0,  width = 0.2, coef=0,
+               position = position_dodge(width = 0.9)) +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank"),
+        axis.text.x = element_text(angle = 0)) +
+  scale_y_continuous(limits=c(min_y, max_y+3)) +
+  geom_signif(
+    comparisons = list(c("High", "Low")),
+    map_signif_level = FALSE,
+    test = "t.test") +
+  facet_wrap(~OlinkID) +
+  NULL
+p_viol_gene
+```
+
+
