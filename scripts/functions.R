@@ -1,3 +1,5 @@
+censor_date <- as.Date("2025-07-01")
+
 theme_custom <- 
   theme_bw() +
   theme(panel.grid = element_blank())
@@ -1053,8 +1055,8 @@ analyze_proteins_multi <- function(cd_prot, npx_in, meta_in) {
       )
     
     # Fit Cox regression models with additional covariates
-    model1 <- coxph(Surv(OS, death) ~ NPX + psa + ldh + alk_ph, data = filtered_data)
-    model2 <- coxph(Surv(OS, death) ~ npx_bin + psa + ldh + alk_ph, data = filtered_data)
+    model1 <- coxph(Surv(OS, death) ~ NPX + psa + ldh + alk_phos, data = filtered_data)
+    model2 <- coxph(Surv(OS, death) ~ npx_bin + psa + ldh + alk_phos, data = filtered_data)
     
     # Extract results for model1 (continuous NPX)
     coef_summary1 <- summary(model1)$coefficients["NPX", ]

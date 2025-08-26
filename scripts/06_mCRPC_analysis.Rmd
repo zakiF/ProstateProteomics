@@ -1,0 +1,443 @@
+---
+title: "mCRPSC analysis"
+date: "2025-07-08"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+    number_sections: false
+    theme: lumen
+---
+
+# Background
+
+We bridge the different batches using limma. Now we want to focus the analysis on the mCRPC cohort.
+
+# Objectives
+
+1. Prognostic
+2. Risk score
+3. Nomogram
+4. AUC
+
+# Conclusion
+
+
+# Pre-processing 
+
+## Loading packages
+
+```{r, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(readxl)   
+library(readr)
+library(stringr)
+library(ggplot2)
+library(paletteer)
+library(VennDiagram)
+library(ggvenn)
+library(ggbeeswarm)
+# DE
+library(limma)
+# Survival
+library(survival)
+library(ggsurvfit)
+library(survminer)
+```
+
+## Directories
+
+```{r}
+wd <- list()
+wd$main <- here()
+wd$data <- file.path(wd$main, "data")
+wd$manishData <- file.path(wd$data, "raw/data_fromManish")
+wd$d2024 <- file.path(wd$data, "updated_2024")
+wd$d2024_npx <- file.path(wd$d2024, "NPX_data")
+wd$output <- file.path(wd$main, "output")
+wd$script <- file.path(wd$main, "scripts")
+
+wd$outData <- file.path(wd$output, "data")
+wd$outCurr <- file.path(wd$output, "06_mCRPC_analysis")
+```
+
+
+Create directories
+
+```{r}
+if (!file.exists(wd$outCurr)) {
+  dir.create(wd$outCurr)
+} else {
+  print("Directory already exists")
+}
+```
+
+Load functions
+
+```{r}
+source(file.path(wd$script, "functions.R"))
+```
+
+## Load data
+
+Load the processed metadata file
+
+```{r}
+# TO DO - load the saved R object
+load(file.path(wd$outData, "01_Metadata.Rdata"))
+load(file.path(wd$outData, "02_data.Rdata"))
+load(file.path(wd$outData, "03_data.Rdata"))
+
+# Print censor date
+censor_date
+```
+
+## Load other files
+
+List of cell surface markers, Olink flex panel...etc
+
+```{r}
+# List of cell surface markers
+cs <- read.delim(file.path(wd$outData, "CS_human.txt"))
+
+# Olink FLEX proteins
+df_flex <- read.csv(file.path(wd$data, "Olink Flex - 2025-04-08.csv"), sep = ";")
+```
+
+We also have genes that are druggable from DrugBank https://go.drugbank.com/releases/latest#protein-identifiers
+
+```{r}
+# Downloaded the file from DrugBank
+df_target <- read.csv(file.path(wd$data, "DrugBank/drugbank_all_target_polypeptide_ids.csv/all.csv"))
+df_vocab <- read.csv(file.path(wd$data, "DrugBank/drugbank vocabulary.csv"))
+```
+
+Set cut-offs
+
+```{r}
+cox_p_val <- 0.05
+cox_fdr_val <- 0.2
+```
+
+
+# Obj 1: Prognosis
+
+## Time to event
+
+Lets examine if the protein levels is associated with overall survival.
+
+First lets define the time to event of interest. We define the OS time as ;
+
+- collection date to time to death
+
+```{r}
+# Calulate OS in months
+meta_c <- df_c_final %>%
+  mutate(
+    death_status = ifelse(death_status == "Yes", "y", "n"),
+    event_date = dplyr::case_when(
+      !is.na(death_date) ~ death_date,
+      TRUE ~ as.Date(censor_date)
+    )
+  )
+
+meta_c <- meta_c %>% 
+  mutate(OS = as.numeric(difftime(event_date, date, units = "days")),
+         OS = round(OS/30.417, digit=2),
+         death = case_when(death_status == "n" ~ 0,
+                           death_status == "y" ~ 1)) %>% 
+  select(HCI_cID, OS, death, psa, ldh, alk_phos)
+```
+
+### Univariate
+
+We first perform uni-variate analysis on the patients. We want to see if the mCRPC over-expressed proteins are associated with survival.
+
+```{r}
+#  limit the proteins to proteins that were specific in mCRPC only
+c_stage_pro <- overlap_df_limma %>% 
+  #filter(Category %in% c("A and B", "B", "B and CD", "CD")) %>% 
+  filter(Category %in% c("B and CD", "CD")) %>% 
+  pull(OlinkID)
+length(c_stage_pro)
+```
+
+Secondly, for prognostic, we want to select just the pre- treatment patients in cohort C
+
+```{r}
+meta_pre <- df_meta_f5 %>% 
+  filter(txt_stat_ordered == "Pre1" & cohort == "C")
+```
+
+Subset the expression matrix to just these samples
+
+```{r}
+# Generate the expression matrix
+mat_in <- exprMatrix_corrected_sub 
+meta_pre2 <- meta_pre %>% filter(final_sample_id %in% meta_pre$final_sample_id)
+mat_in <- mat_in[,meta_pre2$final_sample_id]
+# Prepare long-format NPX to accomodate the function
+df_npx_long <- mat_in %>%
+  as.data.frame() %>% 
+  tibble::rownames_to_column(var = "OlinkID") %>% 
+  pivot_longer(cols = -OlinkID, names_to = "final_sample_id", values_to = "NPX") 
+```
+
+Lets run uni-variate cox model. 
+
+```{r}
+# Select the highest expressing protein per- patient
+meta_in <- meta_pre2 %>% left_join(meta_c) %>% rename(sample_id = final_sample_id)
+tmp_npx <- df_npx_long %>% rename(SampleID = final_sample_id)
+results <- analyze_proteins_highest(c_stage_pro, npx_in=tmp_npx, meta_in=meta_in)
+results <- left_join(results, df_id_pro)
+res_pre_uni <- results
+```
+
+Format and save the results. 
+
+```{r}
+res_pre_uni <- res_pre_uni %>% 
+  mutate(
+    Lower_Bound = round(Lower_Bound, 2),
+    Upper_Bound = round(Upper_Bound, 2),
+    bin_Lower_Bound = round(bin_Lower_Bound, 2),
+    bin_Upper_Bound = round(bin_Upper_Bound, 2),
+    
+    HR = round(HR, 2),
+    bin_HR = round(HR, 2),
+    
+    Sig_bin = case_when(
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound >=1 ~ "Sig",
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound <=1 & bin_Upper_Bound <=1 ~ "Sig",
+      bin_P_Value <= cox_p_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"),
+    
+    fdr_cont = p.adjust(P_Value, method = "fdr"),
+    
+    Sig_fdr_cont = case_when(
+      fdr_cont <= cox_fdr_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"))
+
+write.csv(res_pre_uni, file.path(wd$outCurr, "HR_values_mCRPC_specific_uni_pre.csv"))
+```
+
+Check number of proteins significant at univariate, baed on FDR and Pvalue
+
+```{r}
+res_pre_uni %>% 
+  filter(P_Value <= cox_p_val) %>% 
+  nrow()
+
+res_pre_uni %>% 
+  filter(Sig_fdr_cont == "Sig") %>% 
+  nrow()
+```
+
+
+### Volcano plot
+
+Lets try to plot the HRs as volcano plots
+
+```{r}
+df_plot <- res_pre_uni %>%
+  mutate(log2HR = log2(HR),
+         negLogFDR = -log10(fdr_cont),
+         Sig = fdr_cont < 0.2)
+
+ggplot(df_plot, aes(x = log2HR, y = negLogFDR, color = Sig)) +
+  geom_point(alpha = 0.6) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_color_manual(values = c("grey", "red")) +
+  labs(x = "log2(Hazard Ratio)", y = "-log10(FDR)", color = "Significant") +
+  scale_x_continuous(
+  limits = c(-0.5, 1.5),
+  breaks = c(-0.5, 0, 0.5, 1, 1.5),
+  labels = c("-0.5", "0", "0.5", "1", "1.5")
+) +
+  theme_bw() +
+  theme_custom
+```
+
+
+### Multivariate
+
+We next run multivariate analysis on proteins that were significant at univariate level. we account for psa, ldh and alk phos.
+
+```{r}
+uni_sig <- res_pre_uni %>% filter(P_Value < 0.05) %>% pull(OlinkID)
+# If we want to run all proteins
+uni_sig <- res_pre_uni$OlinkID
+```
+
+To simplify analysis on all proteins, we wrote a function. 
+
+```{r, warning=FALSE, message=FALSE}
+# Run function on multivariate analysis
+results <- analyze_proteins_multi(uni_sig, npx_in=tmp_npx, meta_in=meta_in)
+results <- left_join(results, df_id_pro)
+res_pre_multi <- results
+```
+
+Format and save the results. 
+
+```{r}
+res_pre_multi <- res_pre_multi %>% 
+  mutate(
+    Lower_Bound = round(Lower_Bound, 2),
+    Upper_Bound = round(Upper_Bound, 2),
+    bin_Lower_Bound = round(bin_Lower_Bound, 2),
+    bin_Upper_Bound = round(bin_Upper_Bound, 2),
+    
+    HR = round(HR, 2),
+    bin_HR = round(HR, 2),
+    
+    Sig_bin = case_when(
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound >=1 ~ "Sig",
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound <=1 & bin_Upper_Bound <=1 ~ "Sig",
+      bin_P_Value <= cox_p_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"),
+    
+    fdr_cont = p.adjust(P_Value, method = "fdr"),
+    
+    Sig_fdr_cont = case_when(
+      fdr_cont <= cox_fdr_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"))
+
+write.csv(res_pre_multi, file.path(wd$outCurr, "HR_values_mCRPC_specific_multi_pre.csv"))
+```
+
+### Combined results
+
+Combine the uni and multi in one table
+
+```{r}
+uni_renamed <- res_pre_uni %>%
+  select(OlinkID, Assay, Coefficient, Lower_Bound, Upper_Bound, P_Value, HR, fdr_cont) %>%
+  rename(
+    Uni_Coefficient = Coefficient,
+    Uni_Lower = Lower_Bound,
+    Uni_Upper = Upper_Bound,
+    Uni_Pval = P_Value,
+    Uni_FDR = fdr_cont,
+    Uni_HR = HR
+  ) %>% 
+  mutate(Uni_Sig = case_when(
+      Uni_FDR <= cox_fdr_val  ~ "Yes",
+      TRUE ~ "No"))
+
+multi_renamed <- res_pre_multi %>%
+  select(OlinkID, Coefficient, Lower_Bound, Upper_Bound, P_Value, HR, fdr_cont) %>%
+  rename(
+    Multi_Coefficient = Coefficient,
+    Multi_Lower = Lower_Bound,
+    Multi_Upper = Upper_Bound,
+    Multi_Pval = P_Value,
+    Multi_FDR = fdr_cont,
+    Multi_HR = HR
+  ) %>% 
+  mutate(Multi_Sig = case_when(
+      Multi_FDR <= cox_fdr_val  ~ "Yes",
+      TRUE ~ "No"))
+
+combined <- left_join(uni_renamed, multi_renamed, by = "OlinkID")
+```
+
+### Add drug and CS
+
+Overlap with CS data
+
+```{r}
+combined <- combined %>% 
+  mutate(is_CS = case_when(Assay %in% cs$Approved.symbol ~ "Yes", TRUE ~ "No"))
+res_all <- left_join(combined, cs, by = c("Assay" = "Approved.symbol"))
+```
+
+Add if the proteins are available on the Olink FLEX platform
+
+```{r}
+res_all <- res_all %>% 
+  mutate(
+    is_flex = case_when(Assay %in% df_flex$Gene ~ "Yes", TRUE ~ "No")) 
+```
+
+Also indicate if the protein is targetable
+
+```{r}
+df_target_sub <- df_target %>% select(Gene.Name, Drug.IDs) %>% 
+  # Ensure one gene row for each drug
+  group_by(Gene.Name) %>%
+  summarise(
+    DrugBank.ID = str_c(unique(unlist(str_split(Drug.IDs, ","))), collapse = ",")
+  )
+res_all2 <- res_all %>% left_join(df_target_sub, by = c("Assay" = "Gene.Name"))
+```
+
+Replace DrugID with common name
+
+```{r}
+df_vocab_sub <- df_vocab %>% select(DrugBank.ID, Common.name)
+# Replace each DrugBank ID with the corresponding Common name
+res_all2 <- res_all2 %>%
+  # Split the Drug.IDs by semicolon
+  mutate(DrugBank.ID = str_split(DrugBank.ID, "; ")) %>%
+  # Use a custom function to replace IDs with common names
+  mutate(drugname = sapply(DrugBank.ID, function(ids) {
+    # Join the common names of the IDs in the list
+    names <- df_vocab_sub %>% 
+      filter(DrugBank.ID %in% ids) %>%
+      pull(`Common.name`)
+    # Combine the common names into a single string
+    str_c(names, collapse = "; ")
+  })) %>%
+  mutate(DrugBank.ID = as.character(DrugBank.ID))  # Clean up the original Drug.IDs column if desired
+
+write.csv(res_all2, file.path(wd$outCurr, "HR_values_mCRPC_specific_multivariate_cell_surface.csv"))
+```
+
+### Volcano plot v2
+
+Lets plot the data again, this time add shape to the proteins with drug target
+
+```{r}
+df_plot <- res_all2 %>%
+  select(Uni_HR, Uni_FDR, DrugBank.ID) %>% 
+  mutate(log2HR = log2(Uni_HR),
+         negLogFDR = -log10(Uni_FDR),
+         Sig = Uni_FDR < 0.2,
+         Shape = case_when(
+           Sig & !is.na(DrugBank.ID) ~ "DrugTarget",
+           TRUE ~ "Other"
+  ))
+
+
+
+ggplot(df_plot, aes(x = log2HR, y = negLogFDR, color = Sig, shape = Shape)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_color_manual(values = c("FALSE" = "grey", "TRUE" = "red")) +
+  scale_shape_manual(values = c("Other" = 16, "DrugTarget" = 17)) +  # 16 = circle, 17 = triangle
+  labs(
+    x = "log2(Hazard Ratio)",
+    y = "-log10(FDR)",
+    color = "Significant",
+    shape = "Drug Target"
+  ) +
+    scale_x_continuous(
+  limits = c(-0.5, 1.5),
+  breaks = c(-0.5, 0, 0.5, 1, 1.5),
+  labels = c("-0.5", "0", "0.5", "1", "1.5")
+) +
+  theme_bw() +
+  theme_custom
+
+```
+
+
+
+# Obj 2: Risk score
+
+

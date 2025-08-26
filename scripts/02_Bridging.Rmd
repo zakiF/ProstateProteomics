@@ -1643,6 +1643,39 @@ Lets get the sample numbers
 
 ```{r}
 df_meta_in <- df_meta_f5
+
+# Calculate total number of samples and patients for all cohorts (regardless of cohort)
+n_total_samples <- df_meta_in %>% pull(HCI_cID) %>% unique() %>% length()
+n_total_patients <- df_meta_in %>% pull(mrn) %>% unique() %>% length()
+
+
+# Calculate total number of samples and patients for Cohorts A, B, and C (regardless of treatment)
+n_a_samples <- df_meta_in %>% filter(cohort == "A") %>% pull(HCI_cID) %>% unique() %>% length()
+n_a_patients <- df_meta_in %>% filter(cohort == "A") %>% pull(mrn) %>% unique() %>% length()
+
+n_b_samples <- df_meta_in %>% filter(cohort == "B") %>% pull(HCI_cID) %>% unique() %>% length()
+n_b_patients <- df_meta_in %>% filter(cohort == "B") %>% pull(mrn) %>% unique() %>% length()
+
+n_c_samples <- df_meta_in %>% filter(cohort == "C") %>% pull(HCI_cID) %>% unique() %>% length()
+n_c_patients <- df_meta_in %>% filter(cohort == "C") %>% pull(mrn) %>% unique() %>% length()
+
+cat("All cohorts:\n")
+cat("  Total samples:", n_total_samples, "\n")
+cat("  Total patients:", n_total_patients, "\n\n")
+
+cat("Cohort A:\n")
+cat("  Total samples:", n_a_samples, "\n")
+cat("  Total patients:", n_a_patients, "\n\n")
+
+cat("Cohort B:\n")
+cat("  Total samples:", n_b_samples, "\n")
+cat("  Total patients:", n_b_patients, "\n\n")
+
+cat("Cohort C:\n")
+cat("  Total samples:", n_c_samples, "\n")
+cat("  Total patients:", n_c_patients, "\n\n")
+
+
 # For Cohort B
 n_pre_b_samples <- df_meta_in %>% filter(cohort == "B", txt_stat %in% c("Pre", "Pre1", "Pre2", "Pre3")) %>% pull(HCI_cID) %>% unique() %>% length()
 n_post_b_samples <- df_meta_in %>% filter(cohort == "B", txt_stat %in% c("Post", "Post1", "Post2", "Post3")) %>% pull(HCI_cID) %>% unique() %>% length()
@@ -1655,13 +1688,14 @@ n_post_c_samples <- df_meta_in %>% filter(cohort == "C", txt_stat %in% c("Post",
 n_pre_c_patients <- df_meta_in %>% filter(cohort == "C", txt_stat %in% c("Pre", "Pre1", "Pre2", "Pre3")) %>% pull(mrn) %>% unique() %>% length()
 n_post_c_patients <- df_meta_in %>% filter(cohort == "C", txt_stat %in% c("Post", "Post1", "Post2", "Post3")) %>% pull(mrn) %>% unique() %>% length()
 
-cat("B cohort:\n")
+
+cat("B cohort (by treatment):\n")
 cat("  Pre samples:", n_pre_b_samples, "\n")
 cat("  Post samples:", n_post_b_samples, "\n")
 cat("  Pre patients:", n_pre_b_patients, "\n")
 cat("  Post patients:", n_post_b_patients, "\n\n")
 
-cat("C cohort:\n")
+cat("C cohort (by treatment):\n")
 cat("  Pre samples:", n_pre_c_samples, "\n")
 cat("  Post samples:", n_post_c_samples, "\n")
 cat("  Pre patients:", n_pre_c_patients, "\n")
@@ -1675,7 +1709,6 @@ cat("  Post patients:", n_post_c_patients, "\n")
 save(
   exprMatrix_corrected2, exprMatrix_corrected_sub, 
   expr_corrc_allGenes, df_final_ids, df_meta_f5,
-  final_sample_id,
   file = file.path(wd$outData, "02_data.Rdata"))
 ```
 

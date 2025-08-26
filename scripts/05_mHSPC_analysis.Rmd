@@ -1,5 +1,5 @@
 ---
-title: "EmHPSC analysis"
+title: "mHPSC analysis"
 date: "2025-07-01"
 output: 
   html_document:
@@ -18,7 +18,8 @@ We bridge the different batches using limma. Now we want to focus the analysis o
 # Objectives
 
 1. Treatment effect on mHSPC cohort
-
+2. Proteins associated with progression
+3. Association with metastatic load
 
 
 # Conclusion
@@ -39,6 +40,7 @@ library(paletteer)
 library(ggvenn)
 library(ggbeeswarm)
 library(ggsignif)
+library(patchwork)
 # DE
 library(limma)
 library(survival)
@@ -84,10 +86,12 @@ source(file.path(wd$script, "functions.R"))
 Load the processed metadata file
 
 ```{r}
-# TO DO - load the saved R object
 load(file.path(wd$outData, "01_Metadata.Rdata"))
 load(file.path(wd$outData, "02_data.Rdata"))
 load(file.path(wd$outData, "03_data.Rdata"))
+
+# Print censor date
+censor_date
 ```
 
 # Obj 1: Txt effect
@@ -120,6 +124,7 @@ med_time <- df_meta_f5 %>%
   mutate(diff = Post - Pre) %>%
   arrange(desc(diff))
 to_exclude <- med_time %>% filter(diff >200) %>% pull(mrn) %>% unique()
+med_time2 <- med_time %>% filter(!mrn %in% to_exclude)
 ```
 
 Exclude samples with a median time between pre and post of more than 200 days.
@@ -129,6 +134,81 @@ df_b_paired<- df_meta_f5 %>%
   filter(mrn %in% paired_mrn$mrn) %>%
   filter(!mrn %in% to_exclude)
 ```
+
+## PSA
+
+Lets plot the PSA as well of pre- and post-treatment. We noted there was one outlier, so lets log10 the PSA value
+
+```{r}
+# df_b_final - contain duplicated 2x pre samples / 2x post samples
+df_plot2 <- df_b_final %>%
+  filter(HCI_cID %in% df_meta_f5$HCI_cID) %>% 
+  filter(mrn %in% df_b_paired$mrn) %>%
+  rename(txt_stat = updated_adt_early) %>% 
+  mutate(txt_stat = factor(txt_stat, levels = c("Pre", "Post")),
+         logPSA = log10(psa)) 
+  
+# Create the plot with boxplot for txt_stat group
+p_box_psa <-
+ggplot(df_plot2, aes(x = txt_stat, y = logPSA, group = mrn)) +
+  geom_boxplot(aes(group = txt_stat, fill = txt_stat), outlier.alpha = 0, width = 0.3, coef = 0, position = position_dodge(width = 0.9), alpha = 0.5) +
+  geom_line(aes(group = mrn), color = "grey40", alpha = 0.7, position = position_dodge(width = 0.0)) +
+  geom_point(aes(color = txt_stat), size = 2) +
+  theme_bw() +
+  labs(title = "PSA Pre and Post for Each Patient", x = "Treatment Status", y = "log10(PSA)") +
+  theme(legend.position = "none") +
+  scale_fill_manual(values=c("#ff7f0e", "gold4")) +
+  scale_colour_manual(values=c("#ff7f0e", "gold4")) +
+  theme_custom +
+  NULL
+p_box_psa
+
+psa_df <- df_plot2 %>%
+  dplyr::select(mrn, txt_stat, psa) %>% 
+  group_by(mrn, txt_stat) %>%
+  pivot_wider(names_from = txt_stat, values_from = psa) %>%
+  mutate(diff = Post - Pre) %>%
+  arrange(desc(diff))
+
+psa_up <- psa_df %>% filter(diff > 0)
+
+# --- New: Violin/box/quasirandom plot for PSA (Pre/Post) --- #
+
+max_psa <- max(df_plot2$logPSA, na.rm = TRUE)
+min_psa <- min(df_plot2$logPSA, na.rm = TRUE)
+
+p_viol_psa <-
+  df_plot2 %>%
+  ggplot(aes(x = txt_stat, y = logPSA, fill = txt_stat)) +
+  geom_quasirandom(dodge.width=0.9, colour="grey30", alpha=0.5) +
+  geom_violin(alpha = 0.5, scale = "width", position = position_dodge(width = 0.9)) +
+  geom_boxplot(outlier.alpha = 0, width = 0.2, coef=0,
+               position = position_dodge(width = 0.9)) +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank"),
+        axis.text.x = element_text(angle = 0)) +
+  scale_y_continuous(limits=c(min_psa, max_psa+0.5)) +
+  labs(title = "PSA Pre and Post (Violin)", x = "Treatment Status", y = "log10(PSA)") +
+  scale_fill_manual(values=c("#ff7f0e", "gold4")) +
+  theme_custom +
+  NULL
+p_viol_psa
+
+ggsave(p_box_psa, file=file.path(wd$outCurr, "PSA_boxplot.pdf"), height = 5, width = 5)
+ggsave(p_viol_psa, file=file.path(wd$outCurr, "PSA_violin.pdf"), height = 5, width = 5)
+```
+Record those with decreased PSA
+
+```{r}
+df_b_paired2 <- df_b_paired %>% 
+  filter(!mrn %in% psa_up$mrn)
+```
+
+
+
+## Proteomics
 
 Now lets run limma to identify differentially expressed genes between pre and post in these samples
 
@@ -140,17 +220,17 @@ b_stage_pro <- overlap_df_limma %>%
   filter(Category %in% c("A and B", "B", "B and CD")) %>% 
   pull(OlinkID)
 
-exp_mat_sub <- mat_in[,df_b_paired$final_sample_id]
+exp_mat_sub <- mat_in[,df_b_paired2$final_sample_id]
 exp_mat_sub <- exp_mat_sub[b_stage_pro,]
 
-identical(colnames(exp_mat_sub), df_b_paired$final_sample_id)
+identical(colnames(exp_mat_sub), df_b_paired2$final_sample_id)
 
 # Create design matrix (no intercept, just Pre/Post)
-design <- model.matrix(~0 + txt_stat, data=df_b_paired)
+design <- model.matrix(~0 + txt_stat, data=df_b_paired2)
 colnames(design) <- c("Pre", "Post")
 
 # Patient/blocking factor
-block <- df_b_paired$mrn
+block <- df_b_paired2$mrn
 
 # Estimate correlation between pairs
 corfit <- duplicateCorrelation(exp_mat_sub, design, block=block)
@@ -222,7 +302,10 @@ df_plot <- df_npx_long %>%
     facet_label = paste0(
       Assay, "\nlogFC=", log2FC, "\nadjP=", formatC(Adjusted_pval, format="e", digits=1)
     )
-  )
+  ) %>% arrange((OlinkID))
+fc_lvl <- unique(df_plot$facet_label)
+df_plot <- df_plot %>% 
+  mutate(facet_label = factor(df_plot$facet_label, levels=fc_lvl))
 
 # Ensure txt_stat is a factor with Pre first, then Post
 df_plot$txt_stat <- factor(df_plot$txt_stat, levels = c("Pre", "Post"))
@@ -243,63 +326,31 @@ p_viol_gene <-
         panel.grid.major = element_line(linetype = "blank"), 
         panel.grid.minor = element_line(linetype = "blank"),
         axis.text.x = element_text(angle = 0)) +
-  scale_y_continuous(limits=c(min_y, max_y+3)) +
-  facet_wrap(~facet_label, ncol=6, scales = "free_y") +
+  #scale_y_continuous(limits=c(min_y, max_y+3)) +
+  facet_wrap(~facet_label, ncol=nrow(limma_b_pair_sig)/2, scales = "free_y") +
+  scale_fill_manual(values=c("#ff7f0e", "gold4")) +
   NULL
 p_viol_gene
-
+ggsave(p_viol_gene, file=file.path(wd$outCurr, "PrePost_violin.pdf"), height = 6, width = 10)
 ```
 
-Lets plot the PSA as well of pre- and post-treatment. We noted there was one outlier, so lets log10 the PSA value
+## Correlation
+
+We correlate PSA with KLK3
+
+> TO DO
 
 ```{r}
-# df_b_final - contain duplicated 2x pre samples / 2x post samples
-df_plot2 <- df_b_final %>%
-  filter(HCI_cID %in% df_meta_f5$HCI_cID) %>% 
-  filter(mrn %in% df_b_paired$mrn) %>%
-  rename(txt_stat = updated_adt_early) %>% 
-  mutate(txt_stat = factor(txt_stat, levels = c("Pre", "Post")),
-         logPSA = log10(psa)) 
-  
-# Create the plot with boxplot for txt_stat group
-ggplot(df_plot2, aes(x = txt_stat, y = logPSA, group = mrn)) +
-  geom_boxplot(aes(group = txt_stat, fill = txt_stat), outlier.alpha = 0, width = 0.3, coef = 0, position = position_dodge(width = 0.9), alpha = 0.5) +
-  geom_line(aes(group = mrn), color = "grey40", alpha = 0.7, position = position_dodge(width = 0.0)) +
-  geom_point(aes(color = txt_stat), size = 2) +
-  theme_bw() +
-  labs(title = "PSA Pre and Post for Each Patient", x = "Treatment Status", y = "log10(PSA)") +
-  theme(legend.position = "none") +
-  NULL
-
-# --- New: Violin/box/quasirandom plot for PSA (Pre/Post) --- #
-
-max_psa <- max(df_plot2$logPSA, na.rm = TRUE)
-min_psa <- min(df_plot2$logPSA, na.rm = TRUE)
-
-p_viol_psa <-
-  df_plot2 %>%
-  ggplot(aes(x = txt_stat, y = logPSA, fill = txt_stat)) +
-  geom_quasirandom(dodge.width=0.9, colour="grey30", alpha=0.5) +
-  geom_violin(alpha = 0.5, scale = "width", position = position_dodge(width = 0.9)) +
-  geom_boxplot(outlier.alpha = 0, width = 0.2, coef=0,
-               position = position_dodge(width = 0.9)) +
-  theme_bw() +
-  theme(legend.position = "none",
-        panel.grid.major = element_line(linetype = "blank"), 
-        panel.grid.minor = element_line(linetype = "blank"),
-        axis.text.x = element_text(angle = 0)) +
-  scale_y_continuous(limits=c(min_psa, max_psa+0.5)) +
-  labs(title = "PSA Pre and Post (Violin)", x = "Treatment Status", y = "log10(PSA)") +
-  NULL
-p_viol_psa
 
 ```
+
+
 
 # Obj 2: Progression
 
 ## Time to CRPC
 
-Lets examine if the protein levels is associated with the treatment progression. 
+Lets examine if the protein levels is associated with the disease progression. 
 
 First lets define the time to CRPC. We define the time to CRPC as the earliest date of either the time of 
 
@@ -310,10 +361,11 @@ First lets define the time to CRPC. We define the time to CRPC as the earliest d
 
 to the time of ADT treatment (adt_earliest_date). Lets calculate the time to event.
 
+## Baseline
+
 For this analysis, we want to use all samples that is at baseline, not samples that was treated with ADT. Also we added censoring date for patients that did not progress to CRPC.
 
 ```{r}
-ast_followup_date <- "2025-07-01"
 df_tmp1 <- df_meta_f5 %>% 
   select(HCI_cID, txt_stat_ordered)
 
@@ -325,16 +377,16 @@ df_tmp <- left_join(df_tmp1, df_tmp2)
 df_b_cox <- df_b_final %>% 
   left_join(df_tmp, by = "HCI_cID") %>% 
   filter(txt_stat_ordered == "Pre1") %>% 
-  filter(HCI_cID %in% df_meta_f6$HCI_cID) %>% 
+  filter(HCI_cID %in% df_meta_f5$HCI_cID) %>% 
   select(mrn, HCI_cID, progressed_to_crpc, adt_earliest_date, crpc_earliest_date, final_sample_id, psa) %>% 
   rename(SampleID = final_sample_id) %>% 
   mutate(sample_id = SampleID) %>% 
   arrange(adt_earliest_date) %>% 
   mutate(
-    # If patient progressed, use crpc_earliest_date; otherwise, censor at ast_followup_date
+    # If patient progressed, use crpc_earliest_date; otherwise, censor at censor_date
     event_date = dplyr::case_when(
       progressed_to_crpc == "y" & !is.na(crpc_earliest_date) ~ crpc_earliest_date,
-      TRUE ~ as.Date(ast_followup_date)
+      TRUE ~ as.Date(censor_date)
     ),
     time_to_crpc = as.numeric(difftime(event_date, adt_earliest_date, units = "days")),
     progressed_to_crpc = dplyr::case_when(
@@ -344,41 +396,330 @@ df_b_cox <- df_b_final %>%
   )
 ```
 
-Now we have the clinical data for the patients that are at baseline. Lets get the protein expression data.
+Save the file so we can discuss with Manish
 
 ```{r}
-meta_in <- df_b_cox %>% 
+df_b_cox <- df_b_cox %>% arrange(desc(time_to_crpc))
+write.csv(df_b_cox, file.path(wd$outCurr, "mHSPC_clin_info.csv"))
+```
+
+## Analysis Strategy: Full vs 5-year Censored Follow-up
+
+We'll run the progression analysis using two approaches:
+1. **Full follow-up**: Uses all available follow-up data
+2. **5-year censored**: Administrative censoring at 5 years for clinical relevance
+
+```{r}
+df_b_cox <- df_b_cox %>% 
+  filter(!is.na(adt_earliest_date))
+# Create two datasets for comparison
+# 1. Full follow-up (all data)
+df_b_cox_full <- df_b_cox
+
+# 2. 5-year administrative censoring
+df_b_cox_5yr <- df_b_cox %>%
+    mutate(
+      # First check if original time > 1825, then cap and censor
+      censored_at_5yr = time_to_crpc > 1825,
+      time_to_crpc = pmin(time_to_crpc, 1825, na.rm = TRUE),
+      progressed_to_crpc = ifelse(censored_at_5yr, 0, progressed_to_crpc)
+    )
+
+# Print summary of both datasets
+cat("=== Full Follow-up Dataset ===\n")
+cat("Time to CRPC summary:\n")
+print(summary(df_b_cox_full$time_to_crpc))
+cat("Progression events:", sum(df_b_cox_full$progressed_to_crpc, na.rm = TRUE), "\n")
+
+cat("\n=== 5-Year Censored Dataset ===\n") 
+cat("Time to CRPC summary:\n")
+print(summary(df_b_cox_5yr$time_to_crpc))
+cat("Progression events:", sum(df_b_cox_5yr$progressed_to_crpc, na.rm = TRUE), "\n")
+```
+Get the median time of progression in the patients that progressed
+
+```{r}
+df_b_cox %>% filter(progressed_to_crpc==1) %>% pull(time_to_crpc) %>% summary()
+```
+
+
+
+Now we'll run the protein progression analysis on both datasets.
+
+### Full Follow-up Analysis
+
+```{r}
+# Prepare data for full follow-up analysis
+meta_in_full <- df_b_cox_full %>% 
   rename(OS = time_to_crpc,
          death = progressed_to_crpc)
+
 prot_ids <- limma_b_pair_sig %>% pull(OlinkID) %>% as.character()
 # Define the expression matrix
 mat_in <- exprMatrix_corrected_sub 
-# Subset to the 9 proteins and the samples that are at baseline
-mat_in_sub <- mat_in[prot_ids, df_b_cox$SampleID]
+# Subset to the x proteins and the samples that are at baseline
+mat_in_sub_full <- mat_in[prot_ids, df_b_cox_full$SampleID]
 
-# Convert the gene x sample to the long NPX format
 # Convert to long format
-exprMatrix_long <- mat_in_sub %>% 
+exprMatrix_long_full <- mat_in_sub_full %>% 
   as.data.frame() %>%
-  rownames_to_column(var = "OlinkID") %>%  # Preserve row names as a column
+  rownames_to_column(var = "OlinkID") %>%  
   pivot_longer(cols = -OlinkID, names_to = "SampleID", values_to = "Value") %>% 
   rename(NPX = Value)
+
+# Run analysis
+tmp_npx_full <- exprMatrix_long_full 
+results_base_full <- analyze_proteins_highest(prot_ids, npx_in=tmp_npx_full, meta_in=meta_in_full) %>% 
+  left_join(df_id_pro) %>% 
+  arrange(desc(HR)) %>% 
+  mutate(P_Value_FDR = p.adjust(P_Value, method = "fdr")
+write.csv(results_base_full, file.path(wd$outCurr, "HR_values_mHSPC_univariate_pre_full.csv"))
 ```
 
+### 5-Year Censored Analysis
 
 ```{r}
-tmp_npx <- exprMatrix_long 
-results <- analyze_proteins_highest(prot_ids, npx_in=tmp_npx, meta_in=meta_in)
+# Prepare data for 5-year censored analysis
+meta_in_5yr <- df_b_cox_5yr %>% 
+  rename(OS = time_to_crpc,
+         death = progressed_to_crpc) 
+
+# Subset to the x proteins and the samples that are at baseline
+mat_in_sub_5yr <- mat_in[prot_ids, df_b_cox_5yr$SampleID]
+
+# Convert to long format
+exprMatrix_long_5yr <- mat_in_sub_5yr %>% 
+  as.data.frame() %>%
+  rownames_to_column(var = "OlinkID") %>%  
+  pivot_longer(cols = -OlinkID, names_to = "SampleID", values_to = "Value") %>% 
+  rename(NPX = Value)
+
+# Run analysis
+tmp_npx_5yr <- exprMatrix_long_5yr 
+results_base_5yr <- analyze_proteins_highest(prot_ids, npx_in=tmp_npx_5yr, meta_in=meta_in_5yr) %>% 
+  left_join(df_id_pro) %>% 
+  arrange(desc(HR)) %>% 
+  mutate(P_Value_FDR = p.adjust(P_Value, method = "fdr"))
+write.csv(results_base_5yr, file.path(wd$outCurr, "HR_values_mHSPC_univariate_pre_5yr.csv"))
 ```
 
-Lets run the cox regression on psa value alone. 
+### Comparison of Results
 
 ```{r}
+# Compare the results between full and 5-year analyses
+comparison_results <- results_base_full %>%
+  select(OlinkID, Assay, HR_full = HR, P_Value_full = P_Value) %>%
+  left_join(
+    results_base_5yr %>% select(OlinkID, HR_5yr = HR, P_Value_5yr = P_Value),
+    by = "OlinkID"
+  ) %>%
+  mutate(
+    HR_diff = HR_5yr - HR_full,
+    P_diff = P_Value_5yr - P_Value_full
+  ) %>%
+  arrange(desc(abs(HR_diff)))
+
+# Print top differences
+cat("=== Top proteins with largest HR differences (5yr vs full) ===\n")
+print(head(comparison_results, 10))
+
+write.csv(comparison_results, file.path(wd$outCurr, "HR_comparison_full_vs_5yr.csv"))
+```
+
+### Forest Plots: Full vs 5-Year Censored Analysis
+
+Now let's create forest plots comparing both approaches with PSA.
+
+```{r}
+# PSA analysis for both datasets
 clin_var <- c("psa")
-results <- cox_extract(clin_var, meta_in)
+results_psa_full <- cox_extract(clin_var, meta_in_full)
+res1_full <- results_psa_full$psa
+
+results_psa_5yr <- cox_extract(clin_var, meta_in_5yr)
+res1_5yr <- results_psa_5yr$psa
 ```
 
-Looking at the results it seems that there is no significant proteins that can be considered prognostic. 
+#### Full Follow-up Forest Plot
+
+```{r}
+# Prepare data for full follow-up forest plot
+res_all_full <- data.frame(
+  OlinkID = c(res1_full$OlinkID, results_base_full$OlinkID),
+  Lower_Bound = c(res1_full$Lower_Bound, results_base_full$Lower_Bound),
+  Upper_Bound = c(res1_full$Upper_Bound, results_base_full$Upper_Bound),
+  HR = c(res1_full$HR, results_base_full$HR),
+  P_Value = c(res1_full$P_Value, results_base_full$P_Value)
+) %>% 
+  left_join(df_id_pro) %>% 
+  mutate(Assay = case_when(is.na(Assay) & OlinkID == "psa" ~ "PSA",
+                           TRUE ~ Assay))
+
+df_full <- res_all_full %>%
+  mutate(
+    Assay = factor(Assay, levels=rev(Assay)),
+    HR_CI = sprintf("%.2f [%.2f, %.2f]", HR, Lower_Bound, Upper_Bound),
+    P_Text = ifelse(P_Value < 0.001, formatC(P_Value, format = "e", digits = 2), sprintf("%.3f", P_Value)),
+    P_Color = ifelse(P_Value < 0.05, "red", "black")
+  )
+
+# Forest Plot for Full Follow-up
+p1_full <- ggplot(df_full, aes(x = HR, y = Assay)) +
+  geom_errorbarh(aes(xmin = Lower_Bound, xmax = Upper_Bound), height = 0.3, color = "grey50") +
+  geom_point(color = "black", size = 3, alpha=1) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  theme_minimal(base_size = 14) +
+  scale_x_continuous(limits=c(0,max(df_full$Upper_Bound, na.rm = TRUE))) +
+  labs(x = "Hazard Ratio", y = NULL, title = "Full Follow-up Analysis") +
+  theme(
+    axis.text.y = element_text(face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+p2_full <- ggplot(df_full, aes(y = Assay)) +
+  geom_text(aes(x = 1, label = HR_CI), hjust = 0, size = 4) +
+  geom_text(aes(x = 2, label = P_Text), hjust = 0, size = 4, show.legend = FALSE) +
+  scale_color_identity() +
+  scale_x_continuous(limits = c(0.95, 2.9), breaks = NULL) +
+  theme_void(base_size = 14) +
+  theme(
+    axis.text.y = element_blank(),
+    plot.margin = margin(5.5, 20, 5.5, 5.5)
+  )
+
+final_plot_full <- p1_full + p2_full + plot_layout(widths = c(2, 1))
+final_plot_full
+ggsave(filename=file.path(wd$outCurr, "Top_x_HRs_full.pdf"), device="pdf", width=11, height=8)
+```
+
+#### 5-Year Censored Forest Plot
+
+```{r}
+# Prepare data for 5-year censored forest plot
+res_all_5yr <- data.frame(
+  OlinkID = c(res1_5yr$OlinkID, results_base_5yr$OlinkID),
+  Lower_Bound = c(res1_5yr$Lower_Bound, results_base_5yr$Lower_Bound),
+  Upper_Bound = c(res1_5yr$Upper_Bound, results_base_5yr$Upper_Bound),
+  HR = c(res1_5yr$HR, results_base_5yr$HR),
+  P_Value = c(res1_5yr$P_Value, results_base_5yr$P_Value)
+) %>% 
+  left_join(df_id_pro) %>% 
+  mutate(Assay = case_when(is.na(Assay) & OlinkID == "psa" ~ "PSA",
+                           TRUE ~ Assay))
+
+df_5yr <- res_all_5yr %>%
+  mutate(
+    Assay = factor(Assay, levels=rev(Assay)),
+    HR_CI = sprintf("%.2f [%.2f, %.2f]", HR, Lower_Bound, Upper_Bound),
+    P_Text = ifelse(P_Value < 0.001, formatC(P_Value, format = "e", digits = 2), sprintf("%.3f", P_Value)),
+    P_Color = ifelse(P_Value < 0.05, "red", "black")
+  )
+
+# Forest Plot for 5-Year Censored
+p1_5yr <- ggplot(df_5yr, aes(x = HR, y = Assay)) +
+  geom_errorbarh(aes(xmin = Lower_Bound, xmax = Upper_Bound), height = 0.3, color = "grey50") +
+  geom_point(color = "black", size = 3, alpha=1) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  theme_minimal(base_size = 14) +
+  scale_x_continuous(limits=c(0,max(df_5yr$Upper_Bound, na.rm = TRUE))) +
+  labs(x = "Hazard Ratio", y = NULL, title = "5-Year Censored Analysis") +
+  theme(
+    axis.text.y = element_text(face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+p2_5yr <- ggplot(df_5yr, aes(y = Assay)) +
+  geom_text(aes(x = 1, label = HR_CI), hjust = 0, size = 4) +
+  geom_text(aes(x = 2, label = P_Text), hjust = 0, size = 4, show.legend = FALSE) +
+  scale_color_identity() +
+  scale_x_continuous(limits = c(0.95, 2.9), breaks = NULL) +
+  theme_void(base_size = 14) +
+  theme(
+    axis.text.y = element_blank(),
+    plot.margin = margin(5.5, 20, 5.5, 5.5)
+  )
+
+final_plot_5yr <- p1_5yr + p2_5yr + plot_layout(widths = c(2, 1))
+final_plot_5yr
+ggsave(filename=file.path(wd$outCurr, "Top_x_HRs_5yr.pdf"), device="pdf", width=11, height=8)
+```
+
+
+### Baseline KM stats
+
+Using all the baseline sample, we check how many patients prgressed to mCRPC
+
+```{r}
+table(meta_in$death)
+```
+
+
+Get now the summary of the progression timeline
+
+```{r}
+summary(meta_in$OS)
+```
+
+Now lets generate a KM plot stratifying the protein expression to high and low (based on median),
+
+```{r,eval=FALSE}
+protein_list <- unique(results_base$OlinkID)
+km_plots <- list()
+
+# Merge with clinical data to get time to CRPC and event status
+df_base <- tmp_npx %>%
+  left_join(meta_in %>% select(mrn, OS, death, SampleID)) %>%
+  filter(!is.na(NPX), !is.na(OS), !is.na(death)) %>% 
+  left_join(df_id_pro)# %>% 
+  # Remove outlier of patients with too long of a follow up
+  #filter(OS <= 2000)
+
+
+for (prot in protein_list) {
+  df_sub <- df_base %>% filter(OlinkID == prot)
+  assay_name <- df_sub$Assay
+  
+  # Stratify by median NPX
+  median_val <- median(df_sub$NPX, na.rm = TRUE)
+  df_sub <- df_sub %>%
+    mutate(
+      NPX_bin = ifelse(NPX > median_val, "high", "low"),
+      NPX_bin = factor(NPX_bin, levels = c("low", "high"))
+    )
+  
+  # Create survival object
+  surv_object <- Surv(time = df_sub$OS, event = df_sub$death)
+  
+  # Fit KM curve
+  fit <- survfit(surv_object ~ NPX_bin, data = df_sub)
+  
+  # Plot
+  p <- ggsurvplot(
+    fit, data = df_sub, pval = TRUE, risk.table = TRUE,
+    conf.int = TRUE, palette = c("#7F7F7F", "#e41a1c"),
+    title = paste("KM plot for", prot, " (", assay_name, ")")
+  )
+  
+  km_plots[[prot]] <- p
+  # Optionally, save to file:
+  # ggsave(filename = paste0("KM_", prot, ".pdf"), plot = p$plot)
+}
+
+# To display a plot, for example the first one:
+print(km_plots[[1]]$plot)
+```
+
+Save significant plot
+
+```{r}
+pdf(file.path(wd$outCurr, "KM_progression.pdf"), width=7, height = 6)
+km_plots[8] 
+km_plots[9] 
+dev.off()
+```
+
 
 ## Delta NPX
 
@@ -390,7 +731,7 @@ Lets try an approach where we take the change in protein expression, then associ
 
 # First, pivot to wide format to get Pre and Post NPX side by side
 df_npx_in <- df_npx_long %>% 
-  filter(final_sample_id %in% df_b_paired$final_sample_id) %>% 
+  filter(final_sample_id %in% df_b_paired2$final_sample_id) %>% 
   left_join(df_id_pro, by = "OlinkID") %>% 
   dplyr::filter(OlinkID %in% limma_b_pair_sig$OlinkID) %>% 
   left_join(df_final_ids %>% select(mrn, final_sample_id, cohort, txt_stat), by = "final_sample_id") 
@@ -455,9 +796,10 @@ result_df <- df_delta %>%
     }
   }) %>%
   ungroup() %>% 
-  left_join(df_id_pro)
+  left_join(df_id_pro) %>% 
+  arrange(desc(HR))
 
-
+write.csv(result_df, file.path(wd$outCurr, "HR_values_mHSPC_univariate_delta.csv"))
 ```
 
 Lets run the cox regression on the change of PSA
@@ -465,6 +807,7 @@ Lets run the cox regression on the change of PSA
 ```{r}
 clin_var <- c("psa")
 results <- cox_extract(clin_var, meta_in)
+
 ```
 
 ## KM plot
@@ -510,9 +853,754 @@ for (prot in protein_list) {
 print(km_plots[[1]]$plot)
 ```
 
+
 # Obj 3: Metastasis load
 
-Lets look at the protein expression based on the metastatic load
+## Survival analysis by metastatic load
+
+We'll examine how metastatic load affects progression to CRPC using both full follow-up and 5-year censored approaches.
+
+### Full Follow-up Analysis
+
+```{r}
+# Prepare survival data with metastatic load information (full follow-up)
+df_survival_mets_full <- df_b_cox_full %>%
+  left_join(df_b_final %>% select(HCI_cID, mets_volume), by = "HCI_cID") %>%
+  filter(!is.na(mets_volume)) %>%
+  mutate(
+    mets_volume = factor(mets_volume, levels = c("Low", "High"))
+  )
+
+# Check sample sizes
+cat("=== Full Follow-up: Sample sizes by metastatic load ===\n")
+print(table(df_survival_mets_full$mets_volume))
+```
+
+```{r}
+# Create survival object and fit KM curve (full follow-up)
+surv_object_full <- Surv(time = df_survival_mets_full$time_to_crpc, event = df_survival_mets_full$progressed_to_crpc)
+fit_mets_full <- survfit(surv_object_full ~ mets_volume, data = df_survival_mets_full)
+
+# Generate KM plot (full follow-up)
+km_plot_mets_full <- ggsurvplot(
+  fit_mets_full, 
+  data = df_survival_mets_full, 
+  pval = TRUE, 
+  risk.table = TRUE,
+  conf.int = TRUE, 
+  palette = c("#2E8B57", "#DC143C"),  # SeaGreen for Low, Crimson for High
+  title = "Kaplan-Meier: Time to CRPC by Metastatic Load (Full Follow-up)",
+  xlab = "Time to CRPC (days)",
+  ylab = "Progression-free survival probability",
+  legend.title = "Metastatic Load",
+  legend.labs = c("Low", "High"),
+  risk.table.height = 0.3
+)
+
+km_plot_mets_full$plot
+pdf(file = file.path(wd$outCurr, "KM_metastatic_load_full.pdf"), width = 12, height = 10)
+km_plot_mets_full
+dev.off()
+```
+
+```{r}
+# Cox proportional hazards model (full follow-up)
+cox_mets_full <- coxph(Surv(time_to_crpc, progressed_to_crpc) ~ mets_volume, data = df_survival_mets_full)
+summary(cox_mets_full)
+# Get confidence intervals
+ci_mets <- exp(confint(cox_mets_full))
+print(ci_mets)
+
+cox_summary_full <- summary(cox_mets_full)
+hr_mets_full <- exp(coef(cox_mets_full))
+ci_mets_full <- exp(confint(cox_mets_full))
+p_mets_full <- cox_summary_full$coefficients[,"Pr(>|z|)"]
+
+cat("=== Full Follow-up Results ===\n")
+cat("Hazard Ratio (High vs Low metastatic load):", round(hr_mets_full, 2), "\n")
+cat("95% CI:", round(ci_mets_full[1], 2), "-", round(ci_mets_full[2], 2), "\n")
+cat("P-value:", formatC(p_mets_full, format = "e", digits = 3), "\n")
+```
+
+### 5-Year Censored Analysis
+
+```{r}
+# Prepare survival data with metastatic load information (5-year censored)
+df_survival_mets_5yr <- df_b_cox_5yr %>%
+  left_join(df_b_final %>% select(HCI_cID, mets_volume), by = "HCI_cID") %>%
+  filter(!is.na(mets_volume)) %>%
+  mutate(
+    mets_volume = factor(mets_volume, levels = c("Low", "High"))
+  )
+
+# Check sample sizes
+cat("=== 5-Year Censored: Sample sizes by metastatic load ===\n")
+print(table(df_survival_mets_5yr$mets_volume))
+```
+
+```{r}
+# Create survival object and fit KM curve (5-year censored)
+surv_object_5yr <- Surv(time = df_survival_mets_5yr$time_to_crpc, event = df_survival_mets_5yr$progressed_to_crpc)
+fit_mets_5yr <- survfit(surv_object_5yr ~ mets_volume, data = df_survival_mets_5yr)
+
+# Generate KM plot (5-year censored)
+km_plot_mets_5yr <- ggsurvplot(
+  fit_mets_5yr, 
+  data = df_survival_mets_5yr, 
+  pval = TRUE, 
+  risk.table = TRUE,
+  conf.int = TRUE, 
+  palette = c("#2E8B57", "#DC143C"),
+  title = "Kaplan-Meier: Time to CRPC by Metastatic Load (5-Year Censored)",
+  xlab = "Time to CRPC (days)",
+  ylab = "Progression-free survival probability",
+  legend.title = "Metastatic Load",
+  legend.labs = c("Low", "High"),
+  risk.table.height = 0.3
+)
+
+km_plot_mets_5yr$plot
+
+
+km_plot_mets_full$plot
+pdf(file = file.path(wd$outCurr, "KM_metastatic_load_5yr.pdf"), width = 12, height = 10)
+km_plot_mets_5yr
+dev.off()
+```
+
+```{r}
+# Cox proportional hazards model (5-year censored)
+cox_mets_5yr <- coxph(Surv(time_to_crpc, progressed_to_crpc) ~ mets_volume, data = df_survival_mets_5yr)
+summary(cox_mets_5yr)
+
+cox_summary_5yr <- summary(cox_mets_5yr)
+hr_mets_5yr <- exp(coef(cox_mets_5yr))
+ci_mets_5yr <- exp(confint(cox_mets_5yr))
+p_mets_5yr <- cox_summary_5yr$coefficients[,"Pr(>|z|)"]
+
+cat("=== 5-Year Censored Results ===\n")
+cat("Hazard Ratio (High vs Low metastatic load):", round(hr_mets_5yr, 2), "\n")
+cat("95% CI:", round(ci_mets_5yr[1], 2), "-", round(ci_mets_5yr[2], 2), "\n")
+cat("P-value:", formatC(p_mets_5yr, format = "e", digits = 3), "\n")
+```
+
+### Comparison of Metastatic Load Results
+
+```{r}
+# Compare results between full and 5-year analyses
+mets_comparison <- data.frame(
+  Analysis = c("Full Follow-up", "5-Year Censored"),
+  HR = c(round(hr_mets_full, 2), round(hr_mets_5yr, 2)),
+  CI_Lower = c(round(ci_mets_full[1], 2), round(ci_mets_5yr[1], 2)),
+  CI_Upper = c(round(ci_mets_full[2], 2), round(ci_mets_5yr[2], 2)),
+  P_Value = c(formatC(p_mets_full, format = "e", digits = 3), 
+              formatC(p_mets_5yr, format = "e", digits = 3))
+)
+
+cat("=== Comparison: Metastatic Load Analysis ===\n")
+print(mets_comparison)
+
+write.csv(mets_comparison, file.path(wd$outCurr, "metastatic_load_comparison.csv"))
+```
+
+## Combined prognostic analysis: Metastatic load + Protein expression
+
+Let's examine if combining metastatic load with protein expression improves prognostic accuracy using both full follow-up and 5-year censored approaches.
+
+### Full Follow-up Combined Analysis
+
+```{r}
+# Use all 10 proteins from the treatment response analysis
+top_proteins_full <- limma_b_pair_sig %>% pull(OlinkID)
+
+if(length(top_proteins_full) > 0) {
+  # Create combined analysis for each top protein (full follow-up)
+  combined_results_full <- list()
+  
+  for(prot in top_proteins_full) {
+    # Get protein expression data
+    prot_data <- exprMatrix_long_full %>%
+      filter(OlinkID == prot) %>%
+      select(SampleID, NPX) %>%
+      rename(protein_expr = NPX)
+    
+    # Merge with survival and metastatic load data
+    combined_data <- df_survival_mets_full %>%
+      left_join(prot_data, by = c("SampleID")) %>%
+      filter(!is.na(protein_expr)) %>%
+      mutate(
+        # Dichotomize protein expression at median
+        protein_high = ifelse(protein_expr > median(protein_expr, na.rm = TRUE), "High", "Low"),
+        protein_high = factor(protein_high, levels = c("Low", "High")),
+        # Create combined risk groups
+        risk_group = case_when(
+          mets_volume == "Low" & protein_high == "Low" ~ "Low-Low",
+          mets_volume == "Low" & protein_high == "High" ~ "Low-High", 
+          mets_volume == "High" & protein_high == "Low" ~ "High-Low",
+          mets_volume == "High" & protein_high == "High" ~ "High-High"
+        ),
+        risk_group = factor(risk_group, levels = c("Low-Low", "Low-High", "High-Low", "High-High"))
+      )
+    
+    # Cox models
+    cox_combined <- coxph(Surv(time_to_crpc, progressed_to_crpc) ~ mets_volume + protein_high, 
+                         data = combined_data)
+    cox_interaction <- coxph(Surv(time_to_crpc, progressed_to_crpc) ~ mets_volume * protein_high, 
+                           data = combined_data)
+    
+    # Store results
+    protein_name <- df_id_pro %>% filter(OlinkID == prot) %>% pull(Assay)
+    combined_results_full[[prot]] <- list(
+      protein = prot,
+      protein_name = protein_name,
+      data = combined_data,
+      cox_combined = cox_combined,
+      cox_interaction = cox_interaction
+    )
+    
+    # Print summary
+    # cat("\n=== Full Follow-up Combined Analysis for", protein_name, "===\n")
+    # cat("Model with metastatic load + protein expression:\n")
+    # print(summary(cox_combined))
+    # 
+    # cat("\nModel with interaction:\n") 
+    # print(summary(cox_interaction))
+  }
+}
+```
+
+### 5-Year Censored Combined Analysis
+
+```{r}
+# Use all 10 proteins from the treatment response analysis
+top_proteins_5yr <- limma_b_pair_sig %>% pull(OlinkID)
+
+if(length(top_proteins_5yr) > 0) {
+  # Create combined analysis for each top protein (5-year censored)
+  combined_results_5yr <- list()
+  
+  for(prot in top_proteins_5yr) {
+    # Get protein expression data
+    prot_data <- exprMatrix_long_5yr %>%
+      filter(OlinkID == prot) %>%
+      select(SampleID, NPX) %>%
+      rename(protein_expr = NPX)
+    
+    # Merge with survival and metastatic load data
+    combined_data <- df_survival_mets_5yr %>%
+      left_join(prot_data, by = c("SampleID")) %>%
+      filter(!is.na(protein_expr)) %>%
+      mutate(
+        # Dichotomize protein expression at median
+        protein_high = ifelse(protein_expr > median(protein_expr, na.rm = TRUE), "High", "Low"),
+        protein_high = factor(protein_high, levels = c("Low", "High")),
+        # Create combined risk groups
+        risk_group = case_when(
+          mets_volume == "Low" & protein_high == "Low" ~ "Low-Low",
+          mets_volume == "Low" & protein_high == "High" ~ "Low-High", 
+          mets_volume == "High" & protein_high == "Low" ~ "High-Low",
+          mets_volume == "High" & protein_high == "High" ~ "High-High"
+        ),
+        risk_group = factor(risk_group, levels = c("Low-Low", "Low-High", "High-Low", "High-High"))
+      )
+    
+    # Cox models
+    cox_combined <- coxph(Surv(time_to_crpc, progressed_to_crpc) ~ mets_volume + protein_high, 
+                         data = combined_data)
+    cox_interaction <- coxph(Surv(time_to_crpc, progressed_to_crpc) ~ mets_volume * protein_high, 
+                           data = combined_data)
+    
+    # Store results
+    protein_name <- df_id_pro %>% filter(OlinkID == prot) %>% pull(Assay)
+    combined_results_5yr[[prot]] <- list(
+      protein = prot,
+      protein_name = protein_name,
+      data = combined_data,
+      cox_combined = cox_combined,
+      cox_interaction = cox_interaction
+    )
+    
+    # # Print summary
+    # cat("\n=== 5-Year Censored Combined Analysis for", protein_name, "===\n")
+    # cat("Model with metastatic load + protein expression:\n")
+    # print(summary(cox_combined))
+    # 
+    # cat("\nModel with interaction:\n") 
+    # print(summary(cox_interaction))
+  }
+}
+```
+
+### Forest Plots: Metastatic Load Controlled Analysis
+
+Now let's create forest plots showing the hazard ratios for proteins while controlling for metastatic load.
+
+```{r}
+# Extract results from combined models (full follow-up)
+if(length(combined_results_full) > 0) {
+  
+  # Extract protein HRs from additive models (controlling for metastatic load)
+  protein_hrs_full <- map_dfr(combined_results_full, function(result) {
+    cox_summary <- summary(result$cox_combined)  # Using additive model (not interaction)
+    
+    # Extract protein coefficient (protein effect adjusted for metastatic load)
+    protein_coef <- cox_summary$coefficients["protein_highHigh", , drop = FALSE]
+    protein_confint <- cox_summary$conf.int["protein_highHigh", , drop = FALSE]
+    
+    data.frame(
+      OlinkID = result$protein,
+      protein_name = result$protein_name,
+      HR = protein_confint[,"exp(coef)"],
+      Lower_Bound = protein_confint[,"lower .95"],
+      Upper_Bound = protein_confint[,"upper .95"],
+      P_Value = protein_coef[,"Pr(>|z|)"],
+      stringsAsFactors = FALSE
+    )
+  }, .id = "model") %>%
+    arrange(desc(HR)) %>%
+    mutate(P_Value_FDR = p.adjust(P_Value, method = "fdr"))
+  
+  # Create forest plot for full follow-up (metastatic load controlled)
+  df_forest_full <- protein_hrs_full %>%
+    mutate(
+      protein_name = factor(protein_name, levels = rev(protein_name)),
+      HR_CI = sprintf("%.2f [%.2f, %.2f]", HR, Lower_Bound, Upper_Bound),
+      P_Text = ifelse(P_Value_FDR < 0.001, formatC(P_Value_FDR, format = "e", digits = 2), sprintf("%.3f", P_Value_FDR)),
+      P_Color = ifelse(P_Value_FDR < 0.05, "red", "black")
+    )
+  
+  # Forest Plot
+  p1_forest_full <- ggplot(df_forest_full, aes(x = HR, y = protein_name)) +
+    geom_errorbarh(aes(xmin = Lower_Bound, xmax = Upper_Bound), height = 0.3, color = "grey50") +
+    geom_point(color = "black", size = 3, alpha = 1) +
+    geom_vline(xintercept = 1, linetype = "dashed") +
+    theme_minimal(base_size = 12) +
+    scale_x_continuous(limits = c(0, max(df_forest_full$Upper_Bound, na.rm = TRUE) * 1.1)) +
+    labs(x = "Hazard Ratio (Protein High vs Low)", y = NULL, 
+         title = "Protein HRs Controlling for Metastatic Load (Full Follow-up)") +
+    theme(
+      axis.text.y = element_text(face = "bold"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+  
+  # Table with HR and P-values
+  p2_forest_full <- ggplot(df_forest_full, aes(y = protein_name)) +
+    geom_text(aes(x = 1, label = HR_CI), hjust = 0, size = 3.5) +
+    geom_text(aes(x = 2, label = P_Text), hjust = 0, size = 3.5) +
+    scale_x_continuous(limits = c(0.95, 2.9), breaks = NULL) +
+    theme_void(base_size = 12) +
+    theme(
+      axis.text.y = element_blank(),
+      plot.margin = margin(5.5, 20, 5.5, 5.5)
+    )
+  
+  # Combine plots
+  forest_plot_full <- p1_forest_full + p2_forest_full + plot_layout(widths = c(2, 1))
+  print(forest_plot_full)
+  
+  ggsave(filename = file.path(wd$outCurr, "Forest_plot_metastatic_controlled_full.pdf"), 
+         plot = forest_plot_full, width = 12, height = 8)
+  
+  # Save results
+  write.csv(protein_hrs_full, file.path(wd$outCurr, "Protein_HRs_metastatic_controlled_full.csv"), row.names = FALSE)
+}
+```
+
+```{r}
+# Extract results from combined models (5-year censored)
+if(length(combined_results_5yr) > 0) {
+  
+  # Extract protein HRs from additive models (controlling for metastatic load)
+  protein_hrs_5yr <- map_dfr(combined_results_5yr, function(result) {
+    cox_summary <- summary(result$cox_combined)  # Using additive model (not interaction)
+    
+    # Extract protein coefficient (protein effect adjusted for metastatic load)
+    protein_coef <- cox_summary$coefficients["protein_highHigh", , drop = FALSE]
+    protein_confint <- cox_summary$conf.int["protein_highHigh", , drop = FALSE]
+    
+    data.frame(
+      OlinkID = result$protein,
+      protein_name = result$protein_name,
+      HR = protein_confint[,"exp(coef)"],
+      Lower_Bound = protein_confint[,"lower .95"],
+      Upper_Bound = protein_confint[,"upper .95"],
+      P_Value = protein_coef[,"Pr(>|z|)"],
+      stringsAsFactors = FALSE
+    )
+  }, .id = "model") %>%
+    arrange(desc(HR)) %>%
+    mutate(P_Value_FDR = p.adjust(P_Value, method = "fdr"))
+  
+  # Create forest plot for 5-year censored (metastatic load controlled)
+  df_forest_5yr <- protein_hrs_5yr %>%
+    mutate(
+      protein_name = factor(protein_name, levels = rev(protein_name)),
+      HR_CI = sprintf("%.2f [%.2f, %.2f]", HR, Lower_Bound, Upper_Bound),
+      P_Text = ifelse(P_Value_FDR < 0.001, formatC(P_Value_FDR, format = "e", digits = 2), sprintf("%.3f", P_Value_FDR)),
+      P_Color = ifelse(P_Value_FDR < 0.05, "red", "black")
+    )
+  
+  # Forest Plot
+  p1_forest_5yr <- ggplot(df_forest_5yr, aes(x = HR, y = protein_name)) +
+    geom_errorbarh(aes(xmin = Lower_Bound, xmax = Upper_Bound), height = 0.3, color = "grey50") +
+    geom_point(color = "black", size = 3, alpha = 1) +
+    geom_vline(xintercept = 1, linetype = "dashed") +
+    theme_minimal(base_size = 12) +
+    scale_x_continuous(limits = c(0, max(df_forest_5yr$Upper_Bound, na.rm = TRUE) * 1.1)) +
+    labs(x = "Hazard Ratio (Protein High vs Low)", y = NULL, 
+         title = "Protein HRs Controlling for Metastatic Load (5-Year Censored)") +
+    theme(
+      axis.text.y = element_text(face = "bold"),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+  
+  # Table with HR and P-values
+  p2_forest_5yr <- ggplot(df_forest_5yr, aes(y = protein_name)) +
+    geom_text(aes(x = 1, label = HR_CI), hjust = 0, size = 3.5) +
+    geom_text(aes(x = 2, label = P_Text), hjust = 0, size = 3.5) +
+    scale_x_continuous(limits = c(0.95, 2.9), breaks = NULL) +
+    theme_void(base_size = 12) +
+    theme(
+      axis.text.y = element_blank(),
+      plot.margin = margin(5.5, 20, 5.5, 5.5)
+    )
+  
+  # Combine plots
+  forest_plot_5yr <- p1_forest_5yr + p2_forest_5yr + plot_layout(widths = c(2, 1))
+  print(forest_plot_5yr)
+  
+  ggsave(filename = file.path(wd$outCurr, "Forest_plot_metastatic_controlled_5yr.pdf"), 
+         plot = forest_plot_5yr, width = 12, height = 8)
+  
+  # Save results
+  write.csv(protein_hrs_5yr, file.path(wd$outCurr, "Protein_HRs_metastatic_controlled_5yr.csv"), row.names = FALSE)
+}
+```
+
+```{r}
+# Comparison of metastatic load controlled results
+if(exists("protein_hrs_full") && exists("protein_hrs_5yr")) {
+  
+  # Compare metastatic load controlled results
+  comparison_metastatic_controlled <- protein_hrs_full %>%
+    select(OlinkID, protein_name, HR_full = HR, P_Value_full = P_Value, P_FDR_full = P_Value_FDR) %>%
+    left_join(
+      protein_hrs_5yr %>% select(OlinkID, HR_5yr = HR, P_Value_5yr = P_Value, P_FDR_5yr = P_Value_FDR),
+      by = "OlinkID"
+    ) %>%
+    mutate(
+      HR_diff = HR_5yr - HR_full,
+      P_diff = P_Value_5yr - P_Value_full,
+      P_FDR_diff = P_FDR_5yr - P_FDR_full
+    ) %>%
+    arrange(desc(abs(HR_diff)))
+  
+  cat("=== Comparison: Metastatic Load Controlled Analysis ===\n")
+  cat("Top proteins with largest HR differences (5yr vs full):\n")
+  print(head(comparison_metastatic_controlled, 10))
+  
+  write.csv(comparison_metastatic_controlled, 
+            file.path(wd$outCurr, "Metastatic_controlled_comparison.csv"), 
+            row.names = FALSE)
+}
+```
+
+```{r}
+# Combined Forest Plot: Univariate vs Metastatic-Controlled
+if(exists("results_base_5yr") && exists("protein_hrs_5yr")) {
+  
+  # Combine univariate and metastatic-controlled results for all 10 proteins
+  combined_forest_data <- results_base_5yr %>%
+    select(OlinkID, Assay, 
+           HR_univariate = HR, 
+           Lower_univariate = Lower_Bound, 
+           Upper_univariate = Upper_Bound, 
+           P_univariate = P_Value_FDR) %>%
+    left_join(
+      protein_hrs_5yr %>% select(OlinkID, 
+                                HR_controlled = HR,
+                                Lower_controlled = Lower_Bound,
+                                Upper_controlled = Upper_Bound,
+                                P_controlled = P_Value_FDR),
+      by = "OlinkID"
+    ) %>%
+    # Reshape to long format for plotting
+    pivot_longer(
+      cols = c(HR_univariate, HR_controlled),
+      names_to = "Analysis",
+      names_prefix = "HR_",
+      values_to = "HR"
+    ) %>%
+    # Add corresponding CI bounds and p-values
+    mutate(
+      Lower_Bound = ifelse(Analysis == "univariate", Lower_univariate, Lower_controlled),
+      Upper_Bound = ifelse(Analysis == "univariate", Upper_univariate, Upper_controlled),
+      P_Value = ifelse(Analysis == "univariate", P_univariate, P_controlled),
+      
+      # Format for display
+      Analysis = factor(Analysis, levels = c("univariate", "controlled"), 
+                       labels = c("Univariate", "Metastatic-Controlled")),
+      
+      # Format HR and p-value text
+      HR_CI = sprintf("%.2f [%.2f, %.2f]", HR, Lower_Bound, Upper_Bound),
+      P_Text = ifelse(P_Value < 0.001, formatC(P_Value, format = "e", digits = 2), sprintf("%.3f", P_Value)),
+      P_Color = ifelse(P_Value < 0.05, "red", "black")
+    ) %>%
+    # Order by univariate HR for consistent plotting
+    arrange(Assay, Analysis)
+  
+  # Create ordering based on univariate HR (descending)
+  protein_order <- results_base_5yr %>%
+    arrange(desc(HR)) %>%
+    pull(Assay)
+  
+  # Apply ordering to combined data
+  combined_forest_data <- combined_forest_data %>%
+    mutate(
+      Assay = factor(Assay, levels = protein_order),
+      # Create numeric position for y-axis (2 positions per protein)
+      protein_num = as.numeric(factor(Assay, levels = rev(protein_order))),
+      y_position = protein_num * 2 + ifelse(Analysis == "Univariate", 0.25, -0.25)
+    ) %>%
+    arrange(desc(Assay), Analysis)
+  
+  # Create data for protein labels (only show once per protein)
+  protein_labels <- combined_forest_data %>%
+    filter(Analysis == "Univariate") %>%
+    mutate(y_label = y_position - 1)  # Center between the two analysis points (shift down)
+  
+  # Create data for separation lines
+  separation_lines <- data.frame(
+    x_start = rep(0, length(protein_order)-1),
+    x_end = rep(max(combined_forest_data$Upper_Bound, na.rm = TRUE) * 1.1, length(protein_order)-1),
+    y_sep = seq(2.5, length(protein_order)*2 - 0.5, by = 2)
+  )
+  
+  # Create forest plot
+  p1_combined <- ggplot(combined_forest_data, aes(x = HR, y = y_position, color = Analysis)) +
+    # Add separation lines between proteins
+    geom_segment(data = separation_lines, 
+                aes(x = x_start, xend = x_end, y = y_sep, yend = y_sep),
+                color = "grey80", linetype = "dashed", alpha = 0.5, inherit.aes = FALSE) +
+    # Add error bars and points
+    geom_errorbarh(aes(xmin = Lower_Bound, xmax = Upper_Bound), 
+                   height = 0.2, alpha = 0.8) +
+    geom_point(size = 3, alpha = 0.9) +
+    geom_vline(xintercept = 1, linetype = "dashed", color = "black") +
+    # Add protein labels on the left
+    geom_text(data = protein_labels, 
+              aes(x = 0, y = y_label, label = Assay), 
+              hjust = 1, vjust = 0.5, size = 3.5, color = "black", 
+              inherit.aes = FALSE) +
+    theme_minimal(base_size = 11) +
+    scale_color_manual(values = c("Univariate" = "#2E86AB", "Metastatic-Controlled" = "#A23B72")) +
+    scale_x_continuous(limits = c(0, max(combined_forest_data$Upper_Bound, na.rm = TRUE) * 1.1),
+                       expand = expansion(mult = c(0.25, 0.05))) +
+    scale_y_continuous(breaks = protein_labels$y_label, 
+                       labels = rep("", length(protein_labels$y_label))) +
+    labs(x = "Hazard Ratio", y = NULL, 
+         title = "Protein Hazard Ratios: Univariate vs Metastatic Load-Controlled",
+         color = "Analysis") +
+    theme(
+      axis.text.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      legend.position = "top",
+      plot.margin = margin(5.5, 5.5, 5.5, 40)
+    )
+  
+  # Create table with HR and P-values
+  p2_combined <- ggplot(combined_forest_data, aes(y = y_position)) +
+    geom_text(aes(x = 1, label = HR_CI, color = Analysis), hjust = 0, size = 3) +
+    geom_text(aes(x = 2.8, label = P_Text, color = ifelse(P_Value < 0.05, Analysis, "black")), 
+              hjust = 0, size = 3, show.legend = FALSE) +
+    scale_color_manual(values = c("Univariate" = "#2E86AB", "Metastatic-Controlled" = "#A23B72", "black" = "black"),
+                       guide = "none") +
+    scale_x_continuous(limits = c(0.95, 4), breaks = NULL) +
+    scale_y_continuous(limits = range(combined_forest_data$y_position)) +
+    theme_void(base_size = 11) +
+    theme(
+      axis.text.y = element_blank(),
+      plot.margin = margin(5.5, 20, 5.5, 5.5)
+    )
+  
+  # Combine plots
+  final_combined_plot <- p1_combined + p2_combined + plot_layout(widths = c(2.5, 1))
+  
+  print(final_combined_plot)
+  
+  # Save plot
+  ggsave(filename = file.path(wd$outCurr, "Forest_plot_univariate_vs_controlled.pdf"), 
+         plot = final_combined_plot, width = 14, height = 10)
+  
+  # Save data
+  write.csv(combined_forest_data, file.path(wd$outCurr, "Combined_forest_data.csv"), row.names = FALSE)
+  
+  cat("=== Combined Forest Plot Created ===\n")
+  cat("Shows all 10 proteins with both univariate and metastatic-controlled HRs\n")
+}
+```
+
+### Combined Risk Group Kaplan-Meier Plots
+
+```{r}
+pal.km <- c("#2E8B57","#2E8B58", "#DC143C", "#DC143D")
+#pal.km <- c("#228B22", "#98DF8A", "#a02c2c", "#df8a8a")
+
+# KM plots for combined risk groups (full follow-up) - ALL PROTEINS IN ONE PDF
+if(length(top_proteins_full) > 0 && length(combined_results_full) > 0) {
+  
+  # Open PDF device for all plots
+  pdf(file = file.path(wd$outCurr, "KM_combined_all_proteins_full.pdf"), width = 12, height = 10)
+  
+  # Loop through all proteins
+  for(protein_id in names(combined_results_full)) {
+    
+    top_result_full <- combined_results_full[[protein_id]]
+    top_protein_name_full <- top_result_full$protein_name
+    
+    # KM plot for 4-group risk stratification (full follow-up)
+    surv_obj_combined_full <- Surv(time = top_result_full$data$time_to_crpc, 
+                                  event = top_result_full$data$progressed_to_crpc)
+    
+    fit_combined_full <- survfit(surv_obj_combined_full ~ risk_group, data = top_result_full$data)
+    
+    km_plot_combined_full <- ggsurvplot(
+      fit_combined_full,
+      data = top_result_full$data,
+      pval = TRUE,
+      risk.table = TRUE,
+      conf.int = FALSE,
+      palette = pal.km,
+      linetype = c("solid", "dashed", "solid", "dashed"),
+      title = paste0("KM Plot: Combined Risk Groups (Full Follow-up)\n(", top_protein_name_full, " + Metastatic Load)"),
+      xlab = "Time to CRPC (days)",
+      ylab = "Progression-free survival probability",
+      legend.title = "Risk Group",
+      legend.labs = c("Mets:Low, Protein:Low", "Mets:Low, Protein:High", 
+                     "Mets:High, Protein:Low", "Mets:High, Protein:High"),
+      risk.table.height = 0.4
+    )
+    
+    cat("Generating KM plot for", top_protein_name_full, "\n")
+    
+    # Print plot to PDF (this preserves risk table)
+    print(km_plot_combined_full)
+  }
+  
+  # Close PDF device
+  dev.off()
+}
+
+# KM plots for combined risk groups (5-year censored) - ALL PROTEINS IN ONE PDF
+if(length(top_proteins_5yr) > 0 && length(combined_results_5yr) > 0) {
+  
+  # Open PDF device for all plots
+  pdf(file = file.path(wd$outCurr, "KM_combined_all_proteins_5yr.pdf"), width = 12, height = 10)
+  
+  # Loop through all proteins
+  for(protein_id in names(combined_results_5yr)) {
+    
+    top_result_5yr <- combined_results_5yr[[protein_id]]
+    top_protein_name_5yr <- top_result_5yr$protein_name
+    
+    # KM plot for 4-group risk stratification (5-year censored)
+    surv_obj_combined_5yr <- Surv(time = top_result_5yr$data$time_to_crpc, 
+                                 event = top_result_5yr$data$progressed_to_crpc)
+    
+    fit_combined_5yr <- survfit(surv_obj_combined_5yr ~ risk_group, data = top_result_5yr$data)
+    
+    km_plot_combined_5yr <- ggsurvplot(
+      fit_combined_5yr,
+      data = top_result_5yr$data,
+      pval = TRUE,
+      risk.table = TRUE,
+      conf.int = FALSE,
+      palette = pal.km,
+      linetype = c("solid", "dashed", "solid", "dashed"),
+      title = paste0("KM Plot: Combined Risk Groups (5-Year Censored)\n(", top_protein_name_5yr, " + Metastatic Load)"),
+      xlab = "Time to CRPC (days)",
+      ylab = "Progression-free survival probability",
+      legend.title = "Risk Group",
+      legend.labs = c("Mets:Low, Protein:Low", "Mets:Low, Protein:High", 
+                     "Mets:High, Protein:Low", "Mets:High, Protein:High"),
+      risk.table.height = 0.4
+    )
+    
+    cat("Generating 5-year KM plot for", top_protein_name_5yr, "\n")
+    
+    # Print plot to PDF (this preserves risk table)
+    print(km_plot_combined_5yr)
+  }
+  
+  # Close PDF device
+  dev.off()
+}
+```
+## Baseline mets expression
+
+We look at the protein expression in the 58 samples at baseline
+
+```{r}
+# Subset to the x proteins and the samples that are at baseline
+mat_in_58 <- mat_in[prot_ids, df_b_cox$SampleID]
+
+# Prepare long-format NPX data for plotting
+df_npx_long <- mat_in_58 %>%
+  as.data.frame() %>% 
+  tibble::rownames_to_column(var = "OlinkID") %>% 
+  pivot_longer(cols = -OlinkID, names_to = "final_sample_id", values_to = "NPX")
+
+# Filter for b_stage_pro proteins
+sig_olink_ids <- b_stage_pro
+
+# Merge and filter for plotting
+df_plot <- df_npx_long %>% 
+  left_join(df_id_pro, by = "OlinkID") %>% 
+  dplyr::filter(OlinkID %in% b_stage_pro) %>% 
+  left_join(df_final_ids %>% select(HCI_cID, final_sample_id, cohort, txt_stat), by = "final_sample_id") %>% 
+  filter(final_sample_id %in% colnames(exp_mat_sub)) %>% 
+  left_join(df_b_final %>% select(HCI_cID, mets_volume))
+
+# Ensure txt_stat is a factor with Pre first, then Post
+df_plot$txt_stat <- factor(df_plot$txt_stat, levels = c("Pre", "Post"))
+
+# Show the plot
+max_y <- max(df_plot$NPX, na.rm = TRUE)
+min_y <- min(df_plot$NPX, na.rm = TRUE)
+
+p_viol_gene <- 
+  df_plot %>%
+  filter(Assay == "TOP1") %>% 
+  ggplot(aes(x = mets_volume, y = NPX, fill = mets_volume)) +
+  #geom_quasirandom(dodge.width=0.9, colour="grey30", alpha=0.5) +
+  #geom_violin(alpha = 0.5, scale = "width", position = position_dodge(width = 0.9)) +
+  geom_boxplot(#outlier.alpha = 0,  width = 0.2, coef=0,
+               position = position_dodge(width = 0.9)) +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank"),
+        axis.text.x = element_text(angle = 0)) +
+  scale_y_continuous(limits=c(min_y, max_y+3)) +
+  geom_signif(
+    comparisons = list(c("High", "Low")),
+    map_signif_level = FALSE,
+    test = "t.test") +
+  NULL
+p_viol_gene
+```
+
+
+
+
+
+## Protein expression by metastatic load
+
+Now let's look at the protein expression based on the metastatic load
 
 Generate boxplot to show the expression of mHSPC-specific proteins based on metastatic load
 
@@ -566,8 +1654,7 @@ p_viol_gene
 # ... existing code ...
 ```
 
-If we limit to the 9 genes
-
+If we limit to the 10 genes
 
 ```{r}
 # Prepare long-format NPX data for plotting
@@ -600,6 +1687,7 @@ min_y <- min(df_plot$NPX, na.rm = TRUE)
 
 p_viol_gene <- 
   df_plot %>%
+  #filter(Assay == "TOP1") %>% 
   ggplot(aes(x = mets_volume, y = NPX, fill = mets_volume)) +
   geom_quasirandom(dodge.width=0.9, colour="grey30", alpha=0.5) +
   geom_violin(alpha = 0.5, scale = "width", position = position_dodge(width = 0.9)) +
@@ -611,13 +1699,17 @@ p_viol_gene <-
         panel.grid.minor = element_line(linetype = "blank"),
         axis.text.x = element_text(angle = 0)) +
   scale_y_continuous(limits=c(min_y, max_y+3)) +
-  geom_signif(
-    comparisons = list(c("High", "Low")),
-    map_signif_level = FALSE,
-    test = "t.test") +
-  facet_wrap(~OlinkID) +
+  # geom_signif(
+  #   comparisons = list(c("High", "Low")),
+  #   map_signif_level = FALSE,
+  #   test = "t.test") +
+  facet_wrap(~Assay, ncol=10) +
+  scale_fill_manual(values=c("#ff7f0e", "gold4")) +
   NULL
 p_viol_gene
 ```
+
+
+# Save
 
 

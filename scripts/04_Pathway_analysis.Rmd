@@ -175,7 +175,7 @@ Repeat for the other group of genes (high in A not in B)
 ```{r}
 genes_of_interest <- overlap_df_limma %>% 
   filter(
-    Category %in% c("B and CD", "B")) %>% 
+    Category %in% c("A and B", "B and CD", "B")) %>% 
   pull(Assay) %>% unique()
 
 
@@ -279,7 +279,195 @@ ggsave(p_all, file=file.path(wd$outCurr, "enrichedPathway_highC_highB.pdf"), hei
 
 
 
+## Cohort specific
 
+We repeat the above, but we will use just the cohort specific proteins
+
+### mCRPC
+
+Lets extract the upregulated genes in mCRPC specifically
+
+```{r}
+genes_of_interest <- overlap_df_limma %>% 
+  filter(
+    Category %in% c("CD")) %>% 
+  pull(Assay) %>% unique()
+
+```
+
+We need a background set for pathway enrichment. So we use all the gene ids
+
+```{r}
+background_genes <- df_id_pro %>% pull(Assay) %>% unique()
+```
+
+Run the pathway analysis
+
+```{r}
+# Convert genes of interest to Entrez IDs
+foreground_entrez <- bitr(genes_of_interest, 
+                          fromType = "SYMBOL", 
+                          toType = "ENTREZID", 
+                          OrgDb = org.Hs.eg.db)
+
+# Convert background genes to Entrez IDs
+background_entrez <- bitr(background_genes, 
+                          fromType = "SYMBOL", 
+                          toType = "ENTREZID", 
+                          OrgDb = org.Hs.eg.db)
+
+# Remove any duplicates or NA values
+foreground_entrez <- unique(na.omit(foreground_entrez))
+background_entrez <- unique(na.omit(background_entrez))
+
+# Retrieve Hallmark gene sets for Homo sapiens
+msig_hallmark <- msigdbr(species = "Homo sapiens", category = "H")
+
+# Prepare TERM2GENE as a data frame
+msig_term2gene <- msig_hallmark[, c("gs_name", "entrez_gene")]
+
+
+# Perform over-representation analysis with the correct TERM2GENE
+enrich_results <- enricher(gene = foreground_entrez$ENTREZID,
+                           TERM2GENE = msig_term2gene,
+                           #universe = background_entrez$ENTREZID,
+                           pAdjustMethod = "BH",
+                           pvalueCutoff = 0.05,
+                           qvalueCutoff = 0.2)
+
+#barplot(enrich_results, showCategory = 10, title = "Top Enriched Hallmark Pathways")
+
+enrich_up <- enrich_results
+```
+
+Lets generate a custom plot
+
+```{r}
+# Custom plot
+top_x <- enrich_up@result %>% 
+  #filter(p.adjust <0.2) %>% 
+  mutate(logP = -log10(p.adjust)) %>% 
+  arrange(desc(logP)) %>% 
+  mutate(ID = factor(ID, levels=rev(ID))) %>% 
+  slice_max(logP, n=10, with_ties = FALSE) 
+
+p_c <-
+  ggplot(top_x,
+       aes(x = logP, y=ID)) +
+  geom_bar(stat = "identity", fill = "#2CA02C") +  # Bars with color
+  geom_vline(xintercept = -log10(0.2), linetype="dashed") +
+  theme_custom +
+  NULL
+
+#ggsave(file=file.path(wd$outCurr, "enrichedPathway.pdf"), height = 3, width = 5)
+```
+
+Repeat for the other group of genes (high in A not in B)
+
+```{r}
+genes_of_interest <- overlap_df_limma %>% 
+  filter(
+    Category %in% c("B")) %>% 
+  pull(Assay) %>% unique()
+
+
+# Convert genes of interest to Entrez IDs
+foreground_entrez <- bitr(genes_of_interest, 
+                          fromType = "SYMBOL", 
+                          toType = "ENTREZID", 
+                          OrgDb = org.Hs.eg.db)
+
+# Remove any duplicates or NA values
+foreground_entrez <- unique(na.omit(foreground_entrez))
+background_entrez <- unique(na.omit(background_entrez))
+
+# Retrieve Hallmark gene sets for Homo sapiens
+msig_hallmark <- msigdbr(species = "Homo sapiens", category = "H")
+
+# Prepare TERM2GENE as a data frame
+msig_term2gene <- msig_hallmark[, c("gs_name", "entrez_gene")]
+
+
+# Perform over-representation analysis with the correct TERM2GENE
+enrich_results <- enricher(gene = foreground_entrez$ENTREZID,
+                           TERM2GENE = msig_term2gene,
+                           #universe = background_entrez$ENTREZID,
+                           pAdjustMethod = "BH",
+                           pvalueCutoff = 0.05,
+                           qvalueCutoff = 0.2)
+
+enrich_up_b <- enrich_results
+
+# Custom plot
+top_x_b <- enrich_up_b@result %>% 
+  #filter(p.adjust <0.2) %>% 
+  mutate(logP = -log10(p.adjust)) %>% 
+  arrange(desc(logP)) %>% 
+  mutate(ID = factor(ID, levels=rev(ID))) %>% 
+  slice_max(logP, n=10) 
+
+p_b <-
+  ggplot(top_x_b,
+       aes(x = logP, y=ID)) +
+  geom_bar(stat = "identity", fill = "#FFBB78") +  # Bars with color
+  geom_vline(xintercept = -log10(0.2), linetype="dashed") +
+  theme_custom +
+  NULL
+
+```
+
+
+Plot the two in one plot
+
+```{r}
+t1 <- top_x %>% filter(p.adjust <= 0.2) %>% mutate(class = "mCRPC") %>% dplyr::select(logP, ID, class) %>% 
+  mutate(
+ID = gsub("_", " ", ID),
+ID = gsub("HALLMARK", "", ID),
+ID = str_to_lower(ID),
+ID = str_to_title(ID))
+t2 <- top_x_b %>% filter(p.adjust <= 0.2) %>% mutate(class = "mHSPC") %>% dplyr::select(logP, ID, class) %>% 
+    mutate(
+ID = gsub("_", " ", ID),
+ID = gsub("HALLMARK", "", ID),
+ID = str_to_lower(ID),
+ID = str_to_title(ID))
+
+# Get the full set of IDs to ensure spacing consistency
+combined_IDs <- unique(c(t1$ID, t2$ID))
+
+# Convert `ID` to a factor with all possible levels
+t1$ID <- factor(t1$ID, levels = rev(combined_IDs))
+t2$ID <- factor(t2$ID, levels = rev(combined_IDs))
+
+# Get the maximum logP value across both datasets
+max_logP <- max(c(t1$logP, t2$logP))
+
+# Ensure both plots have the same x-axis scale
+p1 <- ggplot(t1, aes(x = logP, y = ID)) +
+  geom_bar(stat = "identity", fill = "#2CA02C") +
+  geom_vline(xintercept = -log10(0.2), linetype = "dashed") +
+  facet_wrap(~class) +
+  xlim(0, max_logP) +  # Force both plots to have the same x-axis range
+  theme_custom +
+  NULL
+
+p2 <- ggplot(t2, aes(x = logP, y = ID)) +
+  geom_bar(stat = "identity", fill = "#FFBB78") +
+  geom_vline(xintercept = -log10(0.2), linetype = "dashed") +
+  facet_wrap(~class) +
+  xlim(0, max_logP) +  # Same x-axis limit
+  theme_custom +
+  NULL
+
+p1 <- p1 + coord_fixed(ratio = 0.2)  # Adjust ratio as needed
+p2 <- p2 + coord_fixed(ratio = 0.2)
+
+p_all2 <- grid.arrange(p1, p2, ncol = 1)
+
+
+ggsave(p_all2, file=file.path(wd$outCurr, "enrichedPathway_highC_highB_unique.pdf"), height = 6, width = 7)
+```
 
 
 
