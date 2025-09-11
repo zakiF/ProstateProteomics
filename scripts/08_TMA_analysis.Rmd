@@ -1,0 +1,763 @@
+---
+title: "TMA analysis"
+date: "2025-09-10"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+    number_sections: false
+    theme: lumen
+---
+
+# Background
+
+
+# Objectives
+
+
+# Conclusion
+
+
+# Pre-processing 
+
+## Loading packages
+
+```{r, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(readxl)   
+library(readr)
+library(stringr)
+library(ggplot2)
+
+# Install additional packages if needed
+if(!require(effsize, quietly = TRUE)) {
+  cat("Note: Installing effsize package for effect size calculations...\n")
+  install.packages("effsize")
+  library(effsize)
+}
+
+if(!require(gridExtra, quietly = TRUE)) {
+  cat("Note: Installing gridExtra package for plot arrangements...\n")
+  install.packages("gridExtra")
+  library(gridExtra)
+}
+
+if(!require(ggsignif, quietly = TRUE)) {
+  cat("Note: Installing ggsignif package for significance annotations...\n")
+  install.packages("ggsignif")
+  library(ggsignif)
+}
+
+```
+
+## Directories
+
+```{r}
+wd <- list()
+wd$main <- here()
+wd$data <- file.path(wd$main, "data")
+wd$tma <- file.path(wd$data, "mayo_image")
+wd$output <- file.path(wd$main, "output")
+wd$script <- file.path(wd$main, "scripts")
+
+wd$outData <- file.path(wd$output, "data")
+wd$outCurr <- file.path(wd$output, "08_TMA_analysis")
+```
+
+
+Create directories
+
+```{r}
+if (!file.exists(wd$outCurr)) {
+  dir.create(wd$outCurr)
+} else {
+  print("Directory already exists")
+}
+```
+
+Load functions
+
+```{r}
+source(file.path(wd$script, "functions.R"))
+```
+
+
+# Obj 1: Reformat TMA
+
+We reformat the TMA data.
+
+```{r}
+dat_tma <- read_xlsx(file.path(wd$tma, "CD138 CD276 GDF15 TROP2.xlsx"))
+
+# Examine the structure of the data
+cat("=== TMA Data Structure ===\n")
+cat("Dimensions:", nrow(dat_tma), "rows x", ncol(dat_tma), "columns\n")
+cat("Column names:\n")
+print(colnames(dat_tma))
+
+# Look for the relevant columns mentioned in the comments
+cat("\n=== Key Columns for Analysis ===\n")
+relevant_cols <- colnames(dat_tma)[grepl("Days after CRPC|CD138|CD276|GDF15|TROP2", colnames(dat_tma))]
+print(relevant_cols)
+
+# Show first few rows to understand data structure
+cat("\n=== First 5 rows of relevant data ===\n")
+print(head(dat_tma[, relevant_cols], 5))
+```
+
+Lets understand the sheet and extract the values. We do it one TMA at a time.
+
+## Met site 1
+
+The column CD138 MET1, CD276 MET1, GDF15 MET1 and TROP2 MET1 are the TMA result for the first biopsy. If the values in 'Days after CRPC...49' is positive, then the sample is mCRPC if its negative its mCRPC
+
+
+```{r}
+# Extract Met site 1 data
+df_met1 <- dat_tma %>% 
+  select(contains('Days after CRPC...49') | contains('CD138 MET1') | 
+         contains('CD276 MET1') | contains('GDF15 MET1') | contains('TROP2 MET1')) %>%
+  # Remove rows where all TMA values are NA
+  filter(!is.na(`CD138 MET1`) | !is.na(`CD276 MET1`) | 
+         !is.na(`GDF15 MET1`) | !is.na(`TROP2 MET1`)) %>%
+  mutate(
+    # Label as mCRPC or mHSPC based on days after CRPC
+    # Positive = mCRPC, Negative = mHSPC
+    disease_stage = ifelse(`Days after CRPC...49` > 0, "mCRPC", "mHSPC"),
+    # Add site identifier
+    biopsy_site = "MET1",
+    # Add patient ID if available (assuming first column or row identifier)
+    patient_id = row_number()
+  ) %>%
+  # Rename columns for consistency
+  rename(
+    days_after_crpc = `Days after CRPC...49`,
+    CD138 = `CD138 MET1`,
+    CD276 = `CD276 MET1`, 
+    GDF15 = `GDF15 MET1`,
+    TROP2 = `TROP2 MET1`
+  ) %>%
+  # Reorder columns
+  select(patient_id, biopsy_site, disease_stage, days_after_crpc, CD138, CD276, GDF15, TROP2)
+
+cat("=== Met Site 1 Results ===\n")
+cat("Number of samples:", nrow(df_met1), "\n")
+cat("Disease stage distribution:\n")
+print(table(df_met1$disease_stage, useNA = "ifany"))
+cat("\nFirst 5 rows:\n")
+print(head(df_met1, 5))
+```
+
+
+## Met site 2
+
+We follow the same logic, now using 'Days after CRPC...63' values and : CD138 MET2, CD276 MET2, GDF15 MET2, TROP2 MET2
+
+```{r}
+# Extract Met site 2 data
+df_met2 <- dat_tma %>% 
+  select(contains('Days after CRPC...63') | contains('CD138 MET2') | 
+         contains('CD276 MET2') | contains('GDF15 MET2') | contains('TROP2 MET2')) %>%
+  # Remove rows where all TMA values are NA
+  filter(!is.na(`CD138 MET2`) | !is.na(`CD276 MET2`) | 
+         !is.na(`GDF15 MET2`) | !is.na(`TROP2 MET2`)) %>%
+  mutate(
+    # Label as mCRPC or mHSPC based on days after CRPC
+    # Positive = mCRPC, Negative = mHSPC
+    disease_stage = ifelse(`Days after CRPC...63` > 0, "mCRPC", "mHSPC"),
+    # Add site identifier
+    biopsy_site = "MET2",
+    # Add patient ID if available (assuming first column or row identifier)
+    patient_id = row_number()
+  ) %>%
+  # Rename columns for consistency
+  rename(
+    days_after_crpc = `Days after CRPC...63`,
+    CD138 = `CD138 MET2`,
+    CD276 = `CD276 MET2`, 
+    GDF15 = `GDF15 MET2`,
+    TROP2 = `TROP2 MET2`
+  ) %>%
+  # Reorder columns
+  select(patient_id, biopsy_site, disease_stage, days_after_crpc, CD138, CD276, GDF15, TROP2)
+
+cat("=== Met Site 2 Results ===\n")
+cat("Number of samples:", nrow(df_met2), "\n")
+cat("Disease stage distribution:\n")
+print(table(df_met2$disease_stage, useNA = "ifany"))
+cat("\nFirst 5 rows:\n")
+print(head(df_met2, 5))
+```
+
+
+## Met site 3
+
+All here are mCRPC. Read the values of CD138 MET3, CD276 MET3, GDF15 MET3, TROP2 MET3
+
+```{r}
+# Extract Met site 3 data
+df_met3 <- dat_tma %>% 
+  select(contains('CD138 MET3') | contains('CD276 MET3') | 
+         contains('GDF15 MET3') | contains('TROP2 MET3')) %>%
+  # Remove rows where all TMA values are NA
+  filter(!is.na(`CD138 MET3`) | !is.na(`CD276 MET3`) | 
+         !is.na(`GDF15 MET3`) | !is.na(`TROP2 MET3`)) %>%
+  mutate(
+    # All MET3 samples are mCRPC as stated
+    disease_stage = "mCRPC",
+    # Add site identifier
+    biopsy_site = "MET3",
+    # Add patient ID 
+    patient_id = row_number(),
+    # No days after CRPC data for MET3, set to NA
+    days_after_crpc = NA_real_
+  ) %>%
+  # Rename columns for consistency
+  rename(
+    CD138 = `CD138 MET3`,
+    CD276 = `CD276 MET3`, 
+    GDF15 = `GDF15 MET3`,
+    TROP2 = `TROP2 MET3`
+  ) %>%
+  # Reorder columns to match other datasets
+  select(patient_id, biopsy_site, disease_stage, days_after_crpc, CD138, CD276, GDF15, TROP2)
+
+cat("=== Met Site 3 Results ===\n")
+cat("Number of samples:", nrow(df_met3), "\n")
+cat("Disease stage distribution:\n")
+print(table(df_met3$disease_stage, useNA = "ifany"))
+cat("\nFirst 5 rows:\n")
+print(head(df_met3, 5))
+```
+
+
+## Primary site (PRIM)
+
+These are the primary prostate samples. All are considered as mHSPC. Read in the value of CD138 PRIM, CD276 PRIM, GDF15 PRIM, TROP2 PRIM
+
+```{r}
+# Extract Primary site data
+df_prim <- dat_tma %>% 
+  select(contains('CD138 PRIM') | contains('CD276 PRIM') | 
+         contains('GDF15 PRIM') | contains('TROP2 PRIM')) %>%
+  # Remove rows where all TMA values are NA
+  filter(!is.na(`CD138 PRIM`) | !is.na(`CD276 PRIM`) | 
+         !is.na(`GDF15 PRIM`) | !is.na(`TROP2 PRIM`)) %>%
+  mutate(
+    # All primary samples are mHSPC as stated
+    disease_stage = "mHSPC",
+    # Add site identifier
+    biopsy_site = "PRIM",
+    # Add patient ID 
+    patient_id = row_number(),
+    # No days after CRPC data for primary samples, set to NA
+    days_after_crpc = NA_real_
+  ) %>%
+  # Rename columns for consistency
+  rename(
+    CD138 = `CD138 PRIM`,
+    CD276 = `CD276 PRIM`, 
+    GDF15 = `GDF15 PRIM`,
+    TROP2 = `TROP2 PRIM`
+  ) %>%
+  # Reorder columns to match other datasets
+  select(patient_id, biopsy_site, disease_stage, days_after_crpc, CD138, CD276, GDF15, TROP2)
+
+cat("=== Primary Site Results ===\n")
+cat("Number of samples:", nrow(df_prim), "\n")
+cat("Disease stage distribution:\n")
+print(table(df_prim$disease_stage, useNA = "ifany"))
+cat("\nFirst 5 rows:\n")
+print(head(df_prim, 5))
+```
+
+# Obj 2: Combine All TMA Results
+
+Now we combine all the TMA results from different biopsy sites into one comprehensive data frame.
+
+**Note on NT (No Tumor) Values**: 
+- NT values indicate "no tumor" in the TMA sample
+- These are converted to -1 to distinguish from missing data (NA) and valid tumor scores (≥0)  
+- In future analyses, you can easily exclude NT samples by filtering for values ≥ 0
+- Summary statistics are calculated excluding NT values to reflect only tumor-containing samples
+
+```{r}
+# Function to clean TMA marker data
+clean_tma_markers <- function(df) {
+  df %>%
+    mutate(
+      # Convert NT (no tumor) to -1 and convert to numeric
+      CD138 = case_when(
+        CD138 == "NT" ~ -1,
+        TRUE ~ as.numeric(CD138)
+      ),
+      CD276 = case_when(
+        CD276 == "NT" ~ -1,
+        TRUE ~ as.numeric(CD276)
+      ),
+      GDF15 = case_when(
+        GDF15 == "NT" ~ -1,
+        TRUE ~ as.numeric(GDF15)
+      ),
+      TROP2 = case_when(
+        TROP2 == "NT" ~ -1,
+        TRUE ~ as.numeric(TROP2)
+      )
+    )
+}
+
+# Clean all individual datasets first
+df_met1_clean <- clean_tma_markers(df_met1)
+df_met2_clean <- clean_tma_markers(df_met2)  
+df_met3_clean <- clean_tma_markers(df_met3)
+df_prim_clean <- clean_tma_markers(df_prim)
+
+# Now combine the cleaned datasets
+df_tma_combined <- bind_rows(df_met1_clean, df_met2_clean, df_met3_clean, df_prim_clean) %>%
+  # Create a unique sample ID combining patient_id and biopsy_site
+  mutate(
+    sample_id = paste(patient_id, biopsy_site, sep = "_"),
+    # Convert biopsy_site to factor with meaningful order
+    biopsy_site = factor(biopsy_site, levels = c("PRIM", "MET1", "MET2", "MET3")),
+    # Convert disease_stage to factor
+    disease_stage = factor(disease_stage, levels = c("mHSPC", "mCRPC"))
+  ) %>%
+  # Reorder columns for final output
+  select(sample_id, patient_id, biopsy_site, disease_stage, days_after_crpc, 
+         CD138, CD276, GDF15, TROP2)
+
+# Show how many NT values were converted to -1
+cat("=== NT (No Tumor) Value Conversion Summary ===\n")
+markers <- c("CD138", "CD276", "GDF15", "TROP2")
+for(marker in markers) {
+  nt_count <- sum(df_tma_combined[[marker]] == -1, na.rm = TRUE)
+  cat(marker, "- NT values converted to -1:", nt_count, "\n")
+}
+
+cat("=== Combined TMA Results Summary ===\n")
+cat("Total samples:", nrow(df_tma_combined), "\n")
+cat("Samples by biopsy site:\n")
+print(table(df_tma_combined$biopsy_site, useNA = "ifany"))
+cat("\nSamples by disease stage:\n")
+print(table(df_tma_combined$disease_stage, useNA = "ifany"))
+cat("\nSamples by site and disease stage:\n")
+print(table(df_tma_combined$biopsy_site, df_tma_combined$disease_stage, useNA = "ifany"))
+
+# Show summary statistics for each protein marker
+cat("\n=== Protein Marker Summary ===\n")
+markers <- c("CD138", "CD276", "GDF15", "TROP2")
+for(marker in markers) {
+  cat("\n", marker, ":\n")
+  
+  # Count different value types
+  non_missing <- sum(!is.na(df_tma_combined[[marker]]))
+  nt_values <- sum(df_tma_combined[[marker]] == -1, na.rm = TRUE)
+  valid_tumor <- sum(df_tma_combined[[marker]] >= 0, na.rm = TRUE)
+  
+  cat("  Non-missing values:", non_missing, "\n")
+  cat("  NT (no tumor) values (-1):", nt_values, "\n")
+  cat("  Valid tumor values (≥0):", valid_tumor, "\n")
+  
+  # Statistics excluding NT values
+  valid_data <- df_tma_combined[[marker]][df_tma_combined[[marker]] >= 0 & !is.na(df_tma_combined[[marker]])]
+  if(length(valid_data) > 0) {
+    cat("  Range (excluding NT):", paste(range(valid_data), collapse = " - "), "\n")
+    cat("  Mean (SD, excluding NT):", round(mean(valid_data), 2), 
+        "(", round(sd(valid_data), 2), ")\n")
+  } else {
+    cat("  No valid tumor data available\n")
+  }
+}
+
+cat("\n=== First 10 rows of combined dataset ===\n")
+print(head(df_tma_combined, 10))
+```
+
+## Save Results
+
+Save the combined TMA results for further analysis.
+
+```{r}
+# Save the combined dataset
+write.csv(df_tma_combined, 
+          file.path(wd$outCurr, "TMA_combined_results.csv"), 
+          row.names = FALSE)
+
+# Also save individual datasets for reference
+write.csv(df_met1, file.path(wd$outCurr, "TMA_MET1_results.csv"), row.names = FALSE)
+write.csv(df_met2, file.path(wd$outCurr, "TMA_MET2_results.csv"), row.names = FALSE)
+write.csv(df_met3, file.path(wd$outCurr, "TMA_MET3_results.csv"), row.names = FALSE)
+write.csv(df_prim, file.path(wd$outCurr, "TMA_PRIM_results.csv"), row.names = FALSE)
+
+cat("=== Files Saved ===\n")
+cat("Combined results:", file.path(wd$outCurr, "TMA_combined_results.csv"), "\n")
+cat("Individual site files saved in:", wd$outCurr, "\n")
+
+# Create a summary report
+summary_stats <- df_tma_combined %>%
+  group_by(biopsy_site, disease_stage) %>%
+  summarise(
+    n_samples = n(),
+    n_nt_samples = sum(CD138 == -1 | CD276 == -1 | GDF15 == -1 | TROP2 == -1, na.rm = TRUE),
+    # Calculate means excluding NT values (-1)
+    CD138_mean = round(mean(CD138[CD138 >= 0], na.rm = TRUE), 2),
+    CD276_mean = round(mean(CD276[CD276 >= 0], na.rm = TRUE), 2),
+    GDF15_mean = round(mean(GDF15[GDF15 >= 0], na.rm = TRUE), 2),
+    TROP2_mean = round(mean(TROP2[TROP2 >= 0], na.rm = TRUE), 2),
+    # Count valid tumor samples for each marker
+    CD138_n_valid = sum(CD138 >= 0, na.rm = TRUE),
+    CD276_n_valid = sum(CD276 >= 0, na.rm = TRUE),
+    GDF15_n_valid = sum(GDF15 >= 0, na.rm = TRUE),
+    TROP2_n_valid = sum(TROP2 >= 0, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+write.csv(summary_stats, 
+          file.path(wd$outCurr, "TMA_summary_by_site_stage.csv"), 
+          row.names = FALSE)
+
+cat("Summary statistics saved:", file.path(wd$outCurr, "TMA_summary_by_site_stage.csv"), "\n")
+print(summary_stats)
+```
+
+# Obj 3: Compare mHSPC vs mCRPC Marker Expression
+
+Compare TMA marker scores between disease stages, excluding NT (-1) values.
+
+```{r}
+# Create dataset for statistical analysis (exclude NT values)
+df_analysis <- df_tma_combined %>%
+  filter(CD138 >= 0 | CD276 >= 0 | GDF15 >= 0 | TROP2 >= 0) %>%  # At least one valid marker
+  filter(!is.na(disease_stage))  # Remove samples with missing disease stage
+
+cat("=== Analysis Dataset ===\n")
+cat("Total samples for analysis:", nrow(df_analysis), "\n")
+cat("Disease stage distribution:\n")
+print(table(df_analysis$disease_stage))
+
+# Function to perform statistical tests for ordinal data (0-3 scale)
+compare_markers <- function(data, marker_name) {
+  
+  cat("\n=== Analysis for", marker_name, "===\n")
+  
+  # Get valid data (excluding NT values)
+  valid_data <- data %>%
+    filter(get(marker_name) >= 0, !is.na(get(marker_name)), !is.na(disease_stage))
+  
+  if(nrow(valid_data) == 0) {
+    cat("No valid data for", marker_name, "\n")
+    return(NULL)
+  }
+  
+  cat("Valid samples:", nrow(valid_data), "\n")
+  
+  # Summary statistics by group
+  summary_stats <- valid_data %>%
+    group_by(disease_stage) %>%
+    summarise(
+      n = n(),
+      mean = round(mean(get(marker_name)), 2),
+      median = median(get(marker_name)),
+      sd = round(sd(get(marker_name)), 2),
+      min = min(get(marker_name)),
+      max = max(get(marker_name)),
+      .groups = "drop"
+    )
+  
+  print(summary_stats)
+  
+  # Cross-tabulation of scores by disease stage
+  cat("\nScore distribution by disease stage:\n")
+  cross_tab <- table(valid_data$disease_stage, valid_data[[marker_name]])
+  print(cross_tab)
+  
+  # Statistical tests
+  mhspc_scores <- valid_data[[marker_name]][valid_data$disease_stage == "mHSPC"]
+  mcrpc_scores <- valid_data[[marker_name]][valid_data$disease_stage == "mCRPC"]
+  
+  # Mann-Whitney U test (Wilcoxon rank-sum) - best for ordinal data
+  if(length(mhspc_scores) > 0 & length(mcrpc_scores) > 0) {
+    wilcox_test <- wilcox.test(mhspc_scores, mcrpc_scores)
+    cat("\nMann-Whitney U test p-value:", round(wilcox_test$p.value, 4), "\n")
+    
+    # Chi-square test for independence (if sufficient sample size)
+    if(min(cross_tab) >= 5) {
+      chi_test <- chisq.test(cross_tab)
+      cat("Chi-square test p-value:", round(chi_test$p.value, 4), "\n")
+    } else {
+      # Fisher's exact test for small samples
+      fisher_test <- fisher.test(cross_tab, simulate.p.value = TRUE)
+      cat("Fisher's exact test p-value:", round(fisher_test$p.value, 4), "\n")
+    }
+    
+    # Effect size (Cliff's delta for ordinal data)
+    if(require(effsize, quietly = TRUE)) {
+      cliff_delta <- cliff.delta(mhspc_scores, mcrpc_scores)
+      cat("Cliff's delta (effect size):", round(cliff_delta$estimate, 3), "\n")
+      cat("Effect size interpretation:", cliff_delta$magnitude, "\n")
+    } else {
+      # Alternative: Cohen's d (though less appropriate for ordinal data)
+      pooled_sd <- sqrt(((length(mhspc_scores)-1)*var(mhspc_scores) + (length(mcrpc_scores)-1)*var(mcrpc_scores)) / 
+                       (length(mhspc_scores) + length(mcrpc_scores) - 2))
+      cohens_d <- (mean(mcrpc_scores) - mean(mhspc_scores)) / pooled_sd
+      cat("Cohen's d (effect size):", round(cohens_d, 3), "\n")
+      cat("Effect size interpretation:", 
+          ifelse(abs(cohens_d) < 0.2, "negligible", 
+                ifelse(abs(cohens_d) < 0.5, "small",
+                      ifelse(abs(cohens_d) < 0.8, "medium", "large"))), "\n")
+    }
+  }
+  
+  return(summary_stats)
+}
+
+# Analyze each marker
+markers <- c("CD138", "CD276", "GDF15", "TROP2")
+results_list <- list()
+
+for(marker in markers) {
+  results_list[[marker]] <- compare_markers(df_analysis, marker)
+}
+```
+
+## Visualization
+
+Create plots to visualize the differences between mHSPC and mCRPC for each marker.
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+
+# Function to create comparison plots with significance testing
+create_comparison_plot <- function(data, marker_name) {
+  
+  # Filter valid data
+  plot_data <- data %>%
+    filter(get(marker_name) >= 0, !is.na(get(marker_name)), !is.na(disease_stage))
+  
+  if(nrow(plot_data) == 0) return(NULL)
+  
+  # Check if we have both groups for significance testing
+  groups_present <- unique(plot_data$disease_stage)
+  perform_test <- length(groups_present) == 2
+  
+  # Box plot with significance annotation
+  p1 <- ggplot(plot_data, aes(x = disease_stage, y = get(marker_name), fill = disease_stage)) +
+    geom_boxplot(alpha = 0.7, outlier.shape = NA) +  # Remove outlier points to avoid duplication
+    geom_jitter(width = 0.2, height = 0, alpha = 0.6, size = 1.5) +  # Only horizontal jitter
+    scale_y_continuous(breaks = 0:3, limits = c(-0.2, 3.5)) +  # Extra space for significance annotation
+    labs(title = paste(marker_name, "Expression by Disease Stage"),
+         x = "Disease Stage", 
+         y = paste(marker_name, "Score (0-3)"),
+         fill = "Disease Stage") +
+    theme_minimal() +
+    theme(legend.position = "none") +  # Remove legend since x-axis is clear
+    scale_fill_manual(values = c("mHSPC" = "#3498DB", "mCRPC" = "#E74C3C"))
+  
+  # Add significance annotation if both groups present
+  if(perform_test && require(ggsignif, quietly = TRUE)) {
+    p1 <- p1 + 
+      geom_signif(
+        comparisons = list(c("mHSPC", "mCRPC")),
+        test = "wilcox.test",
+        map_signif_level = FALSE,
+        #map_signif_level = c("***" = 0.001, "**" = 0.01, "*" = 0.05, "ns" = 1),
+        textsize = 4,
+        step_increase = 0.1
+      )
+  }
+  
+  # Stacked bar plot showing score distribution
+  p2 <- plot_data %>%
+    count(disease_stage, score = get(marker_name)) %>%
+    group_by(disease_stage) %>%
+    mutate(prop = n / sum(n) * 100) %>%
+    ggplot(aes(x = disease_stage, y = prop, fill = factor(score))) +
+    geom_col(position = "stack", alpha = 0.8) +
+    geom_text(aes(label = ifelse(prop > 8, paste0(round(prop, 1), "%"), "")), 
+              position = position_stack(vjust = 0.5), size = 3, color = "white", fontweight = "bold") +
+    labs(title = paste(marker_name, "Score Distribution"),
+         x = "Disease Stage",
+         y = "Percentage (%)",
+         fill = "TMA Score") +
+    theme_minimal() +
+    scale_fill_viridis_d(option = "plasma", name = "Score") +
+    theme(legend.position = "right")
+  
+  # Alternative: Side-by-side bar plot for clearer comparison
+  p3 <- plot_data %>%
+    count(disease_stage, score = get(marker_name)) %>%
+    group_by(disease_stage) %>%
+    mutate(prop = n / sum(n) * 100) %>%
+    ggplot(aes(x = factor(score), y = prop, fill = disease_stage)) +
+    geom_col(position = "dodge", alpha = 0.8) +
+    geom_text(aes(label = paste0(round(prop, 1), "%")), 
+              position = position_dodge(width = 0.9), vjust = -0.5, size = 3) +
+    scale_y_continuous(limits=c(0,60), breaks = c(0,20, 40, 60)) +
+    theme_custom +
+    scale_fill_manual(values = c("mHSPC" = "#FFBB78", "mCRPC" = "#98DF8A")) +
+    theme(legend.position = "top")
+  
+  # Add statistical test result as subtitle for distribution plots
+  if(perform_test) {
+    # Create contingency table for chi-square/Fisher's test
+    cont_table <- table(plot_data$disease_stage, plot_data[[marker_name]])
+    
+    # Choose appropriate test based on sample size
+    if(min(cont_table) >= 5) {
+      chi_test <- chisq.test(cont_table)
+      test_result <- paste0("χ² test: p = ", format.pval(chi_test$p.value, digits = 3))
+    } else {
+      fisher_test <- fisher.test(cont_table, simulate.p.value = TRUE)
+      test_result <- paste0("Fisher's test: p = ", format.pval(fisher_test$p.value, digits = 3))
+    }
+    
+    # Add test result to title
+    p3 <- p3 + labs(
+      title = paste(marker_name, "Score Distribution by Group"),
+      subtitle = test_result,
+      x = paste(marker_name, "Score"),
+      y = "Percentage (%)",
+      fill = "Disease Stage"
+    )
+  } else {
+    p3 <- p3 + labs(
+      title = paste(marker_name, "Score Distribution by Group"),
+      x = paste(marker_name, "Score"),
+      y = "Percentage (%)",
+      fill = "Disease Stage"
+    )
+  }
+  
+  return(list(boxplot = p1, barplot = p2, dodged_bar = p3))
+}
+
+# Create plots for each marker
+plot_list <- list()
+for(marker in markers) {
+  plot_list[[marker]] <- create_comparison_plot(df_analysis, marker)
+}
+
+# Save individual plots
+for(marker in markers) {
+  if(!is.null(plot_list[[marker]])) {
+    
+    # Save box plot with significance
+    ggsave(file.path(wd$outCurr, paste0(marker, "_boxplot_with_significance.pdf")),
+           plot_list[[marker]]$boxplot, width = 6, height = 5)
+    
+    # Save stacked distribution plot  
+    ggsave(file.path(wd$outCurr, paste0(marker, "_stacked_distribution.pdf")),
+           plot_list[[marker]]$barplot, width = 7, height = 5)
+    
+    # Save side-by-side distribution plot
+    ggsave(file.path(wd$outCurr, paste0(marker, "_dodged_distribution.pdf")),
+           plot_list[[marker]]$dodged_bar, width = 7, height = 5)
+  }
+}
+
+# Create combined plots
+valid_plots <- plot_list[!sapply(plot_list, is.null)]
+if(length(valid_plots) > 0) {
+  
+  # Combined boxplots
+  pdf(file.path(wd$outCurr, "All_markers_boxplot_comparison.pdf"), width = 12, height = 8)
+  grid.arrange(grobs = lapply(valid_plots, function(x) x$boxplot), ncol = 2)
+  dev.off()
+  
+  # Combined dodged distribution plots - one page each
+  pdf(file.path(wd$outCurr, "All_markers_dodged_distributions.pdf"), width = 8, height = 6)
+  for(marker in names(valid_plots)) {
+    grid.arrange(valid_plots[[marker]]$dodged_bar)
+  }
+  dev.off()
+}
+
+cat("Comparison plots saved to:", wd$outCurr, "\n")
+```
+
+## Summary of Statistical Results
+
+```{r}
+# Create summary table of all statistical results
+if(require(broom)) {
+  
+  statistical_summary <- data.frame(
+    Marker = character(),
+    mHSPC_n = numeric(),
+    mHSPC_mean = numeric(),
+    mCRPC_n = numeric(), 
+    mCRPC_mean = numeric(),
+    Mann_Whitney_p = numeric(),
+    Effect_size = character(),
+    stringsAsFactors = FALSE
+  )
+  
+  for(marker in markers) {
+    
+    # Get valid data
+    valid_data <- df_analysis %>%
+      filter(get(marker) >= 0, !is.na(get(marker)), !is.na(disease_stage))
+    
+    if(nrow(valid_data) == 0) next
+    
+    # Group statistics
+    group_stats <- valid_data %>%
+      group_by(disease_stage) %>%
+      summarise(n = n(), mean = mean(get(marker)), .groups = "drop")
+    
+    # Statistical test
+    mhspc_scores <- valid_data[[marker]][valid_data$disease_stage == "mHSPC"]
+    mcrpc_scores <- valid_data[[marker]][valid_data$disease_stage == "mCRPC"]
+    
+    if(length(mhspc_scores) > 0 & length(mcrpc_scores) > 0) {
+      wilcox_p <- wilcox.test(mhspc_scores, mcrpc_scores)$p.value
+      
+      # Calculate effect size
+      if(require(effsize, quietly = TRUE)) {
+        cliff_delta <- cliff.delta(mhspc_scores, mcrpc_scores)
+        effect_size_text <- paste0(round(cliff_delta$estimate, 3), " (", cliff_delta$magnitude, ")")
+      } else {
+        # Alternative: Cohen's d
+        pooled_sd <- sqrt(((length(mhspc_scores)-1)*var(mhspc_scores) + (length(mcrpc_scores)-1)*var(mcrpc_scores)) / 
+                         (length(mhspc_scores) + length(mcrpc_scores) - 2))
+        cohens_d <- (mean(mcrpc_scores) - mean(mhspc_scores)) / pooled_sd
+        magnitude <- ifelse(abs(cohens_d) < 0.2, "negligible", 
+                           ifelse(abs(cohens_d) < 0.5, "small",
+                                 ifelse(abs(cohens_d) < 0.8, "medium", "large")))
+        effect_size_text <- paste0(round(cohens_d, 3), " (", magnitude, ")")
+      }
+      
+      # Add to summary
+      statistical_summary <- rbind(statistical_summary, data.frame(
+        Marker = marker,
+        mHSPC_n = group_stats$n[group_stats$disease_stage == "mHSPC"],
+        mHSPC_mean = round(group_stats$mean[group_stats$disease_stage == "mHSPC"], 2),
+        mCRPC_n = group_stats$n[group_stats$disease_stage == "mCRPC"],
+        mCRPC_mean = round(group_stats$mean[group_stats$disease_stage == "mCRPC"], 2),
+        Mann_Whitney_p = round(wilcox_p, 4),
+        Effect_size = effect_size_text
+      ))
+    }
+  }
+  
+  cat("=== Statistical Summary ===\n")
+  print(statistical_summary)
+  
+  # Save results
+  write.csv(statistical_summary, 
+            file.path(wd$outCurr, "TMA_markers_mHSPC_vs_mCRPC_statistics.csv"), 
+            row.names = FALSE)
+  
+  cat("Statistical summary saved:", file.path(wd$outCurr, "TMA_markers_mHSPC_vs_mCRPC_statistics.csv"), "\n")
+}
+```
+
+
+
+
+
+

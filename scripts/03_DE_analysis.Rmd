@@ -139,9 +139,9 @@ mat_all <- exprMatrix_corrected_sub
 # --------------------------------
 # Groups for each of the columns
 df_group <- df_meta_f5 %>% select(HCI_cID, sample_id_psom, sample_id_Q13356, sample_id_Q15806, txt_stat_ordered) %>% 
-  mutate(id1 = paste0("Disc_", sample_id_psom),
-         id2 = paste0("Proj2_", sample_id_Q13356),
-         id3 = paste0("Proj4_", sample_id_Q15806)
+  mutate(id1 = paste0("", sample_id_psom),
+         id2 = paste0("", sample_id_Q13356),
+         id3 = paste0("", sample_id_Q15806)
          ) #%>% 
   # Select earliest Pre- treatment
   #filter(txt_stat_ordered %in% c("Pre1"))
@@ -737,11 +737,19 @@ p <- ggplot(mat_long, aes(x = cohort, y = NPX, fill = cohort)) +
   #geom_jitter(width = 0.2, size = 0.5, alpha = 0.5) +
   facet_wrap(~ Group) +
   scale_fill_manual(values = group_colors) +
-  scale_y_continuous(limits=c(-2.5,2.5)) +
+  #scale_y_continuous(limits=c(-2.5,2.5)) +
   theme_bw() +
   labs(title = "Expression by Gene Group and Cohort",
        x = "Cohort",
        y = "NPX Expression") +
+  geom_signif(
+    comparisons = list(c("A", "B"),
+                       c("B", "C"),
+                       c("A", "C")),
+    map_signif_level = TRUE,
+    test = "t.test",
+    y_position = c(max_y, max_y+1, max_y+2)
+  ) +
   theme_custom
 
 print(p)
@@ -755,6 +763,7 @@ save(
   cut_logFC, cut_fdr,
   limma_df, cd_prot, overlap_df_limma, 
   cd_prot_dwn, overlap_df_limma_dwn, 
+  exp_mat_sub, 
   file = file.path(wd$outData, "03_data.Rdata"))
 ```
 

@@ -20,6 +20,7 @@ We bridge the different batches using limma. Now we want to focus the analysis o
 1. Treatment effect on mHSPC cohort
 2. Proteins associated with progression
 3. Association with metastatic load
+4. Baseline protein expression correlated with metastatic load
 
 
 # Conclusion
@@ -472,7 +473,7 @@ tmp_npx_full <- exprMatrix_long_full
 results_base_full <- analyze_proteins_highest(prot_ids, npx_in=tmp_npx_full, meta_in=meta_in_full) %>% 
   left_join(df_id_pro) %>% 
   arrange(desc(HR)) %>% 
-  mutate(P_Value_FDR = p.adjust(P_Value, method = "fdr")
+  mutate(P_Value_FDR = p.adjust(P_Value, method = "fdr"))
 write.csv(results_base_full, file.path(wd$outCurr, "HR_values_mHSPC_univariate_pre_full.csv"))
 ```
 
@@ -652,14 +653,15 @@ ggsave(filename=file.path(wd$outCurr, "Top_x_HRs_5yr.pdf"), device="pdf", width=
 Using all the baseline sample, we check how many patients prgressed to mCRPC
 
 ```{r}
-table(meta_in$death)
+table(meta_in_full$death)
+table(meta_in_5yr$death)
 ```
 
 
 Get now the summary of the progression timeline
 
 ```{r}
-summary(meta_in$OS)
+summary(meta_in_full$OS)
 ```
 
 Now lets generate a KM plot stratifying the protein expression to high and low (based on median),
@@ -713,7 +715,7 @@ print(km_plots[[1]]$plot)
 
 Save significant plot
 
-```{r}
+```{r,eval=FALSE}
 pdf(file.path(wd$outCurr, "KM_progression.pdf"), width=7, height = 6)
 km_plots[8] 
 km_plots[9] 
@@ -725,7 +727,7 @@ dev.off()
 
 Lets try an approach where we take the change in protein expression, then associate with CRPC progression. But now we need to limit to the 23 patients that we have pre- and post- measurement.
 
-```{r}
+```{r,eval=FALSE}
 # Calculate change in protein expression (delta NPX) for each patient and protein
 # Assuming df_npx_long has columns: SampleID, PatientID, Timepoint (e.g., "Pre", "Post"), OlinkID, NPX
 
@@ -804,7 +806,7 @@ write.csv(result_df, file.path(wd$outCurr, "HR_values_mHSPC_univariate_delta.csv
 
 Lets run the cox regression on the change of PSA
 
-```{r}
+```{r,eval=FALSE}
 clin_var <- c("psa")
 results <- cox_extract(clin_var, meta_in)
 
@@ -961,8 +963,6 @@ km_plot_mets_5yr <- ggsurvplot(
 
 km_plot_mets_5yr$plot
 
-
-km_plot_mets_full$plot
 pdf(file = file.path(wd$outCurr, "KM_metastatic_load_5yr.pdf"), width = 12, height = 10)
 km_plot_mets_5yr
 dev.off()
@@ -1311,19 +1311,79 @@ if(exists("protein_hrs_full") && exists("protein_hrs_5yr")) {
 # Combined Forest Plot: Univariate vs Metastatic-Controlled
 if(exists("results_base_5yr") && exists("protein_hrs_5yr")) {
   
-  # Combine univariate and metastatic-controlled results for all 10 proteins
+  # Add PSA analysis with log10 transformation for both univariate and metastatic-controlled
+  # Univariate PSA analysis (5-year censored) with log10 transformation
+  meta_in_psa_5yr <- df_b_cox_5yr %>% 
+    rename(OS = time_to_crpc, death = progressed_to_crpc) %>%
+    mutate(log10_psa = log10(psa))
+  
+  clin_var_psa <- c("log10_psa")
+  results_psa_univariate_5yr <- cox_extract(clin_var_psa, meta_in_psa_5yr)
+  psa_univariate_5yr <- results_psa_univariate_5yr$log10_psa %>%
+    mutate(OlinkID = "log10_psa", Assay = "log10(PSA)")
+  
+  # Metastatic-controlled PSA analysis using combined results structure
+  # Get PSA data for metastatic load controlled analysis
+  if(length(combined_results_5yr) > 0) {
+    # Use the first protein's data structure as template and replace with PSA
+    psa_combined_data <- combined_results_5yr[[1]]$data %>%
+      select(-protein_expr, -protein_high, -risk_group) %>%
+      mutate(
+        protein_expr = log10(psa),
+        protein_high = ifelse(protein_expr > median(protein_expr, na.rm = TRUE), "High", "Low"),
+        protein_high = factor(protein_high, levels = c("Low", "High"))
+      )
+    
+    # Cox model with metastatic load control for PSA
+    cox_psa_controlled <- coxph(Surv(time_to_crpc, progressed_to_crpc) ~ mets_volume + protein_high, 
+                               data = psa_combined_data)
+    
+    # Extract PSA coefficient (protein effect adjusted for metastatic load)
+    cox_summary_psa <- summary(cox_psa_controlled)
+    protein_coef_psa <- cox_summary_psa$coefficients["protein_highHigh", , drop = FALSE]
+    protein_confint_psa <- cox_summary_psa$conf.int["protein_highHigh", , drop = FALSE]
+    
+    psa_controlled_5yr <- data.frame(
+      OlinkID = "log10_psa",
+      Assay = "log10(PSA)",
+      HR = protein_confint_psa[,"exp(coef)"],
+      Lower_Bound = protein_confint_psa[,"lower .95"],
+      Upper_Bound = protein_confint_psa[,"upper .95"],
+      P_Value = protein_coef_psa[,"Pr(>|z|)"],
+      stringsAsFactors = FALSE
+    )
+  }
+  
+  # Combine univariate and metastatic-controlled results for all 10 proteins + PSA
   combined_forest_data <- results_base_5yr %>%
     select(OlinkID, Assay, 
            HR_univariate = HR, 
            Lower_univariate = Lower_Bound, 
            Upper_univariate = Upper_Bound, 
            P_univariate = P_Value_FDR) %>%
+    # Add PSA univariate results
+    bind_rows(psa_univariate_5yr %>% 
+              select(OlinkID, Assay,
+                     HR_univariate = HR,
+                     Lower_univariate = Lower_Bound,
+                     Upper_univariate = Upper_Bound,
+                     P_univariate = P_Value) %>%
+              mutate(P_univariate = p.adjust(P_univariate, method = "fdr"))) %>%
     left_join(
-      protein_hrs_5yr %>% select(OlinkID, 
-                                HR_controlled = HR,
-                                Lower_controlled = Lower_Bound,
-                                Upper_controlled = Upper_Bound,
-                                P_controlled = P_Value_FDR),
+      # Combine protein and PSA controlled results
+      bind_rows(
+        protein_hrs_5yr %>% select(OlinkID, 
+                                  HR_controlled = HR,
+                                  Lower_controlled = Lower_Bound,
+                                  Upper_controlled = Upper_Bound,
+                                  P_controlled = P_Value_FDR),
+        psa_controlled_5yr %>% select(OlinkID,
+                                     HR_controlled = HR,
+                                     Lower_controlled = Lower_Bound,
+                                     Upper_controlled = Upper_Bound,
+                                     P_controlled = P_Value) %>%
+                              mutate(P_controlled = p.adjust(P_controlled, method = "fdr"))
+      ),
       by = "OlinkID"
     ) %>%
     # Reshape to long format for plotting
@@ -1351,10 +1411,13 @@ if(exists("results_base_5yr") && exists("protein_hrs_5yr")) {
     # Order by univariate HR for consistent plotting
     arrange(Assay, Analysis)
   
-  # Create ordering based on univariate HR (descending)
-  protein_order <- results_base_5yr %>%
+  # Create ordering with log10(PSA) at the top, then proteins by descending HR
+  protein_hr_order <- combined_forest_data %>%
+    filter(Analysis == "Univariate", Assay != "log10(PSA)") %>%
     arrange(desc(HR)) %>%
     pull(Assay)
+  
+  protein_order <- c("log10(PSA)", protein_hr_order)
   
   # Apply ordering to combined data
   combined_forest_data <- combined_forest_data %>%
@@ -1434,19 +1497,19 @@ if(exists("results_base_5yr") && exists("protein_hrs_5yr")) {
   
   # Save plot
   ggsave(filename = file.path(wd$outCurr, "Forest_plot_univariate_vs_controlled.pdf"), 
-         plot = final_combined_plot, width = 14, height = 10)
+         plot = final_combined_plot, width = 7, height = 5)
   
   # Save data
   write.csv(combined_forest_data, file.path(wd$outCurr, "Combined_forest_data.csv"), row.names = FALSE)
   
   cat("=== Combined Forest Plot Created ===\n")
-  cat("Shows all 10 proteins with both univariate and metastatic-controlled HRs\n")
+  cat("Shows all 10 proteins + log10(PSA) with both univariate and metastatic-controlled HRs\n")
 }
 ```
 
 ### Combined Risk Group Kaplan-Meier Plots
 
-```{r}
+```{r,eval=FALSE}
 pal.km <- c("#2E8B57","#2E8B58", "#DC143C", "#DC143D")
 #pal.km <- c("#228B22", "#98DF8A", "#a02c2c", "#df8a8a")
 
@@ -1709,6 +1772,960 @@ p_viol_gene <-
 p_viol_gene
 ```
 
+
+# Obj 4: Baseline protein expression correlated with metastatic load
+
+In this analysis, we examine which proteins are differentially expressed between high and low metastatic load in baseline samples. Since metastatic load is binary (High/Low), we'll use statistical tests to identify proteins that correlate with metastatic load.
+
+## Data preparation
+
+First, let's prepare the baseline samples with metastatic load information:
+
+```{r}
+# Get baseline samples (Pre1 only) with metastatic load information
+df_baseline_mets <- df_b_cox_5yr %>%
+  left_join(df_b_final %>% select(HCI_cID, mets_volume), by = "HCI_cID") %>%
+  filter(!is.na(mets_volume)) %>%
+  select(SampleID, HCI_cID, mrn, mets_volume, time_to_crpc, progressed_to_crpc) %>%
+  rename(final_sample_id = SampleID)
+
+cat("=== Baseline samples with metastatic load information ===\n")
+cat("Total samples:", nrow(df_baseline_mets), "\n")
+print(table(df_baseline_mets$mets_volume))
+```
+
+## Statistical analysis of protein expression by metastatic load
+
+We'll use limma to compare protein expression between high and low metastatic load groups:
+
+```{r}
+# Prepare protein expression data for baseline samples
+#prot_ids <- limma_b_pair_sig %>% pull(OlinkID) %>% as.character()
+prot_ids <- b_stage_pro
+mat_baseline <- exprMatrix_corrected_sub[prot_ids, df_baseline_mets$final_sample_id]
+
+# Ensure matrix and metadata are aligned
+identical(colnames(mat_baseline), df_baseline_mets$final_sample_id)
+
+# Create design matrix for metastatic load comparison
+group_mets <- df_baseline_mets$mets_volume
+design_mets <- model.matrix(~ 0 + group_mets)
+colnames(design_mets) <- c("High", "Low")
+
+# Create contrast: High vs Low metastatic load
+contrast_mets <- makeContrasts(
+  High_vs_Low = High - Low,  # +ve log2FC means higher in High mets
+  levels = design_mets
+)
+
+# Fit linear model
+fit_mets <- lmFit(mat_baseline, design_mets)
+fit2_mets <- contrasts.fit(fit_mets, contrast_mets)
+fit2_mets <- eBayes(fit2_mets)
+
+# Get results for all proteins (no filtering)
+protein_mets_results <- topTable(fit2_mets, coef = 1, number = Inf, sort.by = "none") %>%
+  tibble::rownames_to_column(var = "OlinkID") %>%
+  left_join(df_id_pro, by = "OlinkID") %>%
+  rename(
+    P_Value = P.Value,
+    P_Value_FDR = adj.P.Val,
+    log2FC = logFC
+  ) %>%
+  mutate(
+    Significant = ifelse(P_Value_FDR < cut_fdr, "Significant", "Non-significant"),
+    Direction = case_when(
+      log2FC > 0 & P_Value_FDR < cut_fdr ~ "Higher in High Mets",
+      log2FC < 0 & P_Value_FDR < cut_fdr ~ "Higher in Low Mets", 
+      TRUE ~ "Non-significant"
+    ),
+    # Round values for display
+    log2FC = round(log2FC, 3),
+    P_Value = round(P_Value, 6),
+    P_Value_FDR = round(P_Value_FDR, 6)
+  ) %>%
+  arrange(P_Value)
+
+# Calculate mean expression by group for additional info
+mean_expression <- df_baseline_mets %>%
+  select(final_sample_id, mets_volume) %>%
+  left_join(
+    mat_baseline %>%
+      as.data.frame() %>%
+      tibble::rownames_to_column(var = "OlinkID") %>%
+      pivot_longer(cols = -OlinkID, names_to = "final_sample_id", values_to = "NPX"),
+    by = "final_sample_id"
+  ) %>%
+  group_by(OlinkID, mets_volume) %>%
+  summarise(mean_NPX = mean(NPX, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = mets_volume, values_from = mean_NPX, names_prefix = "Mean_")
+
+# Add mean expression to results
+protein_mets_results <- protein_mets_results %>%
+  left_join(mean_expression, by = "OlinkID")
+
+# Display results
+cat("=== Protein Expression vs Metastatic Load Results (limma) ===\n")
+cat("Total proteins analyzed:", nrow(protein_mets_results), "\n")
+cat("Significant proteins (FDR < 0.2):", sum(protein_mets_results$P_Value_FDR < cut_fdr, na.rm = TRUE), "\n")
+
+# Show top results
+cat("\n=== Top 10 proteins by p-value ===\n")
+print(protein_mets_results %>% 
+      select(Assay, log2FC, P_Value, P_Value_FDR, Direction) %>% 
+      head(10))
+
+# Save results
+write.csv(protein_mets_results, file.path(wd$outCurr, "Protein_expression_vs_metastatic_load_limma.csv"), row.names = FALSE)
+```
+
+## Visualization
+
+```{r}
+# Box plots for significant proteins
+significant_proteins <- protein_mets_results %>%
+  filter(P_Value_FDR < cut_fdr) %>%
+  arrange(P_Value) %>%
+  head(9)  # Top 9 for a 3x3 plot
+
+if(nrow(significant_proteins) > 0) {
+  
+  # Prepare data for plotting
+  df_npx_baseline <- mat_baseline %>%
+    as.data.frame() %>% 
+    tibble::rownames_to_column(var = "OlinkID") %>% 
+    pivot_longer(cols = -OlinkID, names_to = "final_sample_id", values_to = "NPX") %>%
+    left_join(df_id_pro, by = "OlinkID") %>%
+    left_join(df_baseline_mets, by = "final_sample_id") %>%
+    filter(!is.na(mets_volume), !is.na(NPX))
+  
+  sig_plot_data <- df_npx_baseline %>%
+    filter(OlinkID %in% significant_proteins$OlinkID) %>%
+    left_join(significant_proteins %>% select(OlinkID, P_Value_FDR, log2FC), by = "OlinkID") %>%
+    mutate(
+      facet_label = paste0(Assay, "\n", 
+                          "log2FC=", round(log2FC, 2), 
+                          "\nFDR=", formatC(P_Value_FDR, format = "e", digits = 1))
+    )
+  
+  sig_boxplot <- sig_plot_data %>%
+    ggplot(aes(x = mets_volume, y = NPX, fill = mets_volume)) +
+    geom_quasirandom(dodge.width = 0.9, colour = "grey30", alpha = 0.5) +
+    geom_violin(alpha = 0.5, scale = "width", position = position_dodge(width = 0.9)) +
+    geom_boxplot(outlier.alpha = 0, width = 0.2, coef = 0,
+                 position = position_dodge(width = 0.9)) +
+    facet_wrap(~facet_label, scales = "free_y", ncol = 3) +
+    scale_fill_manual(values = c("Low" = "#2E8B57", "High" = "#DC143C")) +
+    labs(x = "Metastatic Load", y = "NPX Expression",
+         title = "Significant Proteins Associated with Metastatic Load") +
+    theme_bw() +
+    theme(
+      legend.position = "none",
+      panel.grid.major = element_blank(), 
+      panel.grid.minor = element_blank(),
+      strip.text = element_text(size = 8)
+    )
+  
+  print(sig_boxplot)
+  ggsave(sig_boxplot, file = file.path(wd$outCurr, "Significant_proteins_mets_load.pdf"), 
+         height = 3, width = 4)
+  
+} else {
+  cat("No significant proteins found at FDR < 0.05\n")
+}
+```
+
+## Summary statistics
+
+```{r}
+# Summary of results
+summary_stats <- protein_mets_results %>%
+  summarise(
+    total_proteins = n(),
+    significant_05 = sum(P_Value_FDR < 0.05, na.rm = TRUE),
+    significant_01 = sum(P_Value_FDR < 0.01, na.rm = TRUE),
+    significant_20 = sum(P_Value_FDR < 0.2, na.rm = TRUE),
+    higher_in_high_mets_05 = sum(log2FC > 0 & P_Value_FDR < 0.05, na.rm = TRUE),
+    higher_in_low_mets_05 = sum(log2FC < 0 & P_Value_FDR < 0.05, na.rm = TRUE),
+    higher_in_high_mets_20 = sum(log2FC > 0 & P_Value_FDR < 0.2, na.rm = TRUE),
+    higher_in_low_mets_20 = sum(log2FC < 0 & P_Value_FDR < 0.2, na.rm = TRUE),
+    median_log2fc = median(abs(log2FC), na.rm = TRUE),
+    max_log2fc = max(abs(log2FC), na.rm = TRUE)
+  )
+
+cat("=== Summary Statistics ===\n")
+print(summary_stats)
+
+# Show significant proteins by direction (FDR < 0.2)
+if(sum(protein_mets_results$P_Value_FDR < 0.2, na.rm = TRUE) > 0) {
+  cat("\n=== Significant proteins by direction (FDR < 0.2) ===\n")
+  direction_summary <- protein_mets_results %>%
+    filter(P_Value_FDR < 0.2) %>%
+    count(Direction) %>%
+    arrange(desc(n))
+  print(direction_summary)
+  
+  # List significant proteins
+  cat("\n=== Significant proteins (FDR < 0.2) ===\n")
+  sig_list <- protein_mets_results %>%
+    filter(P_Value_FDR < 0.2) %>%
+    arrange(P_Value) %>%
+    select(Assay, log2FC, P_Value_FDR, Direction)
+  print(sig_list)
+}
+```
+
+## Cox regression analysis for metastatic load-associated proteins
+
+For the proteins significantly associated with metastatic load (FDR < 0.2), we'll perform Cox regression analysis to assess their prognostic value using the full follow-up approach while controlling for metastatic load.
+
+```{r}
+# Get proteins significantly associated with metastatic load (FDR < 0.2)
+mets_associated_proteins <- protein_mets_results %>%
+  filter(P_Value_FDR < 0.2) %>%
+  arrange(P_Value)
+
+cat("=== Proteins associated with metastatic load (FDR < 0.2) ===\n")
+cat("Number of proteins:", nrow(mets_associated_proteins), "\n")
+print(mets_associated_proteins %>% select(Assay, log2FC, P_Value_FDR, Direction))
+
+if(nrow(mets_associated_proteins) > 0) {
+  
+  # Prepare survival data (full follow-up)
+  meta_cox_full <- df_b_cox_full %>% 
+    rename(OS = time_to_crpc, death = progressed_to_crpc)
+  
+  # Get metastatic load information
+  df_survival_mets_full <- meta_cox_full %>%
+    left_join(df_b_final %>% select(HCI_cID, mets_volume), by = "HCI_cID") %>%
+    filter(!is.na(mets_volume)) %>%
+    mutate(mets_volume = factor(mets_volume, levels = c("Low", "High")))
+  
+  # Get protein expression data for these proteins
+  mets_protein_ids <- mets_associated_proteins %>% pull(OlinkID)
+  mat_mets_proteins <- exprMatrix_corrected_sub[mets_protein_ids, df_survival_mets_full$SampleID]
+  
+  # Convert to long format
+  exprMatrix_mets_long <- mat_mets_proteins %>%
+    as.data.frame() %>%
+    rownames_to_column(var = "OlinkID") %>%
+    pivot_longer(cols = -OlinkID, names_to = "SampleID", values_to = "NPX") %>%
+    rename(sample_id = SampleID)
+  
+  # Perform Cox regression for each protein
+  cox_results_mets <- list()
+  
+  for (prot in mets_protein_ids) {
+    # Get protein expression data
+    prot_data <- exprMatrix_mets_long %>%
+      filter(OlinkID == prot) %>%
+      select(sample_id, NPX) %>%
+      rename(protein_expr = NPX)
+    
+    # Merge with survival and metastatic load data
+    combined_data <- df_survival_mets_full %>%
+      left_join(prot_data, by = c("SampleID" = "sample_id")) %>%
+      filter(!is.na(protein_expr)) %>%
+      mutate(
+        # Dichotomize protein expression at median
+        protein_high = ifelse(protein_expr > median(protein_expr, na.rm = TRUE), "High", "Low"),
+        protein_high = factor(protein_high, levels = c("Low", "High"))
+      )
+    
+    # Run Cox models
+    # 1. Univariate protein model
+    cox_univariate <- coxph(Surv(OS, death) ~ protein_expr, data = combined_data)
+    
+    # 2. Model controlling for metastatic load
+    cox_controlled <- coxph(Surv(OS, death) ~ protein_expr + mets_volume, data = combined_data)
+    
+    # 3. Model with interaction
+    cox_interaction <- coxph(Surv(OS, death) ~ protein_expr * mets_volume, data = combined_data)
+    
+    # Extract results
+    protein_name <- df_id_pro %>% filter(OlinkID == prot) %>% pull(Assay)
+    
+    # Univariate results
+    univ_summary <- summary(cox_univariate)
+    univ_coef <- univ_summary$coefficients["protein_expr", ]
+    univ_confint <- univ_summary$conf.int["protein_expr", ]
+    
+    # Controlled results
+    ctrl_summary <- summary(cox_controlled)
+    ctrl_coef <- ctrl_summary$coefficients["protein_expr", ]
+    ctrl_confint <- ctrl_summary$conf.int["protein_expr", ]
+    
+    # Store results
+    cox_results_mets[[prot]] <- data.frame(
+      OlinkID = prot,
+      Assay = protein_name,
+      # Univariate
+      HR_univariate = univ_confint["exp(coef)"],
+      Lower_univariate = univ_confint["lower .95"],
+      Upper_univariate = univ_confint["upper .95"],
+      P_univariate = univ_coef["Pr(>|z|)"],
+      # Metastatic load controlled
+      HR_controlled = ctrl_confint["exp(coef)"],
+      Lower_controlled = ctrl_confint["lower .95"],
+      Upper_controlled = ctrl_confint["upper .95"],
+      P_controlled = ctrl_coef["Pr(>|z|)"],
+      # Sample info
+      n_samples = nrow(combined_data),
+      n_events = sum(combined_data$death),
+      stringsAsFactors = FALSE
+    )
+    
+    cat("\n=== Cox regression results for", protein_name, "===\n")
+    cat("Sample size:", nrow(combined_data), "| Events:", sum(combined_data$death), "\n")
+    cat("Univariate HR:", round(univ_confint["exp(coef)"], 3), 
+        "[", round(univ_confint["lower .95"], 3), "-", round(univ_confint["upper .95"], 3), "]",
+        "P =", formatC(univ_coef["Pr(>|z|)"], format = "e", digits = 2), "\n")
+    cat("Controlled HR:", round(ctrl_confint["exp(coef)"], 3), 
+        "[", round(ctrl_confint["lower .95"], 3), "-", round(ctrl_confint["upper .95"], 3), "]",
+        "P =", formatC(ctrl_coef["Pr(>|z|)"], format = "e", digits = 2), "\n")
+  }
+  
+  # Combine results
+  cox_results_df <- do.call(rbind, cox_results_mets) %>%
+    mutate(
+      P_univariate_FDR = p.adjust(P_univariate, method = "fdr"),
+      P_controlled_FDR = p.adjust(P_controlled, method = "fdr")
+    ) %>%
+    arrange(P_univariate)
+  
+  # Save results
+  write.csv(cox_results_df, file.path(wd$outCurr, "Cox_regression_mets_associated_proteins.csv"), row.names = FALSE)
+  
+  # Display final results
+  cat("\n=== Summary: Cox regression for metastatic load-associated proteins ===\n")
+  print(cox_results_df %>% 
+        select(Assay, HR_univariate, P_univariate, HR_controlled, P_controlled) %>%
+        mutate(across(starts_with("HR"), ~ round(.x, 3)),
+               across(starts_with("P_"), ~ formatC(.x, format = "e", digits = 2))))
+  
+} else {
+  cat("No proteins significantly associated with metastatic load at FDR < 0.2\n")
+}
+```
+
+## Pre/Post treatment violin plots by metastatic load
+
+Create violin plots showing protein expression before and after treatment, stratified by metastatic load for the proteins associated with metastatic burden.
+
+```{r}
+# Create violin plots for the metastatic load-associated proteins
+if(exists("mets_associated_proteins") && nrow(mets_associated_proteins) > 0) {
+  
+  # Get the protein IDs
+  mets_protein_ids <- mets_associated_proteins %>% pull(OlinkID)
+  
+  # Prepare all Pre and Post treatment data with metastatic load information
+  df_prepost_mets <- df_meta_f5 %>%
+    filter(cohort == "B") %>%  # mHSPC cohort
+    filter(txt_stat %in% c("Pre", "Post")) %>%  # All Pre and Post samples
+    left_join(df_b_final %>% select(HCI_cID, mets_volume), by = "HCI_cID") %>%
+    filter(!is.na(mets_volume), !is.na(final_sample_id))
+  
+  # Get protein expression matrix for all Pre/Post samples
+  exp_mat_mets <- exprMatrix_corrected_sub[mets_protein_ids, df_prepost_mets$final_sample_id]
+  
+  # Prepare long-format data for plotting
+  df_plot_mets <- exp_mat_mets %>%
+    as.data.frame() %>% 
+    tibble::rownames_to_column(var = "OlinkID") %>% 
+    pivot_longer(cols = -OlinkID, names_to = "final_sample_id", values_to = "NPX") %>%
+    left_join(df_id_pro, by = "OlinkID") %>%
+    left_join(df_prepost_mets %>% select(final_sample_id, HCI_cID, mrn, txt_stat, mets_volume), 
+              by = "final_sample_id") %>%
+    filter(!is.na(mets_volume), !is.na(NPX)) %>%
+    mutate(
+      txt_stat = factor(txt_stat, levels = c("Pre", "Post")),
+      mets_volume = factor(mets_volume, levels = c("Low", "High"))
+    )
+  
+  cat("=== Pre/Post violin plots for metastatic load-associated proteins ===\n")
+  cat("Number of proteins:", length(mets_protein_ids), "\n")
+  cat("Number of samples with mets data:", nrow(df_plot_mets), "\n")
+  cat("Number of patients:", length(unique(df_plot_mets$mrn)), "\n")
+  
+  # Show sample distribution
+  sample_counts <- df_plot_mets %>%
+    count(txt_stat, mets_volume) %>%
+    pivot_wider(names_from = mets_volume, values_from = n, names_prefix = "Mets_")
+  cat("Sample distribution:\n")
+  print(sample_counts)
+  
+  # Create violin plot
+  p_violin_mets <- df_plot_mets %>%
+    ggplot(aes(x = txt_stat, y = NPX, fill = mets_volume)) +
+    geom_quasirandom(aes(color = mets_volume), 
+                     dodge.width = 0.8, alpha = 0.6, size = 1.5) +
+    geom_violin(alpha = 0.7, scale = "width", 
+                position = position_dodge(width = 0.8), 
+                draw_quantiles = c(0.5)) +
+    geom_boxplot(outlier.alpha = 0, width = 0.15, coef = 0,
+                 position = position_dodge(width = 0.8),
+                 alpha = 0.8, color = "white") +
+    facet_wrap(~Assay, scales = "free_y", ncol = length(mets_protein_ids)) +
+    scale_fill_manual(values = c("Low" = "#2E8B57", "High" = "#DC143C"),
+                      name = "Metastatic Load") +
+    scale_color_manual(values = c("Low" = "#1F5F3F", "High" = "#A01F1F"),
+                       name = "Metastatic Load") +
+    labs(x = "Treatment Status", 
+         y = "NPX Expression",
+         title = "Protein Expression Pre/Post Treatment by Metastatic Load",
+         subtitle = "Paired samples from mHSPC cohort") +
+    theme_bw() +
+    theme(
+      panel.grid.major = element_blank(), 
+      panel.grid.minor = element_blank(),
+      strip.text = element_text(size = 12, face = "bold"),
+      axis.text = element_text(size = 10),
+      axis.title = element_text(size = 12),
+      legend.position = "top",
+      legend.title = element_text(size = 12),
+      legend.text = element_text(size = 10),
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 12)
+    )
+  
+  print(p_violin_mets)
+  
+  # Save the plot
+  ggsave(p_violin_mets, 
+         file = file.path(wd$outCurr, "PrePost_violin_by_mets_load.pdf"), 
+         width = max(8, length(mets_protein_ids) * 4), 
+         height = 6)
+  
+  # Additional analysis: Statistical comparison within each protein and mets group
+  cat("\n=== Statistical analysis: Treatment effect by metastatic load ===\n")
+  
+  for(protein_id in mets_protein_ids) {
+    protein_name <- df_id_pro %>% filter(OlinkID == protein_id) %>% pull(Assay)
+    
+    # Get data for this protein
+    protein_data <- df_plot_mets %>% 
+      filter(OlinkID == protein_id)
+    
+    cat("\n--- ", protein_name, " ---\n")
+    
+    # Test treatment effect within each metastatic load group (unpaired)
+    for(mets_group in c("Low", "High")) {
+      mets_data <- protein_data %>% filter(mets_volume == mets_group)
+      
+      pre_data <- mets_data %>% filter(txt_stat == "Pre") %>% pull(NPX)
+      post_data <- mets_data %>% filter(txt_stat == "Post") %>% pull(NPX)
+      
+      if(length(pre_data) >= 3 & length(post_data) >= 3) {
+        # Unpaired t-test for pre vs post within mets group
+        test_result <- t.test(post_data, pre_data, paired = FALSE)
+        
+        cat(mets_group, "Mets - Pre: n=", length(pre_data), 
+            " (mean=", round(mean(pre_data), 3), "), ",
+            "Post: n=", length(post_data), 
+            " (mean=", round(mean(post_data), 3), "), ",
+            "P = ", formatC(test_result$p.value, format = "e", digits = 2), "\n")
+      }
+    }
+    
+    # Test interaction: Does treatment effect differ between metastatic load groups?
+    # Using two-way ANOVA approach
+    if(nrow(protein_data) >= 10) {
+      tryCatch({
+        # Two-way ANOVA: NPX ~ txt_stat * mets_volume
+        aov_result <- aov(NPX ~ txt_stat * mets_volume, data = protein_data)
+        aov_summary <- summary(aov_result)
+        
+        interaction_p <- aov_summary[[1]]["txt_stat:mets_volume", "Pr(>F)"]
+        treatment_p <- aov_summary[[1]]["txt_stat", "Pr(>F)"]
+        mets_p <- aov_summary[[1]]["mets_volume", "Pr(>F)"]
+        
+        cat("Two-way ANOVA - Treatment effect: P = ", 
+            formatC(treatment_p, format = "e", digits = 2), "\n")
+        cat("Two-way ANOVA - Mets effect: P = ", 
+            formatC(mets_p, format = "e", digits = 2), "\n")
+        cat("Two-way ANOVA - Interaction: P = ", 
+            formatC(interaction_p, format = "e", digits = 2), "\n")
+      }, error = function(e) {
+        cat("ANOVA analysis failed: insufficient data\n")
+      })
+    }
+  }
+  
+  # Summary statistics table
+  summary_table <- df_plot_mets %>%
+    group_by(Assay, txt_stat, mets_volume) %>%
+    summarise(
+      n = n(),
+      mean_NPX = round(mean(NPX, na.rm = TRUE), 3),
+      sd_NPX = round(sd(NPX, na.rm = TRUE), 3),
+      median_NPX = round(median(NPX, na.rm = TRUE), 3),
+      .groups = "drop"
+    ) %>%
+    arrange(Assay, mets_volume, txt_stat)
+  
+  cat("\n=== Summary statistics by protein, treatment, and metastatic load ===\n")
+  print(summary_table)
+  
+  # Save summary table
+  write.csv(summary_table, 
+            file.path(wd$outCurr, "PrePost_summary_by_mets_load.csv"), 
+            row.names = FALSE)
+  
+} else {
+  cat("No metastatic load-associated proteins found for pre/post analysis\n")
+}
+```
+
+## Expression of metastatic load-associated proteins in mCRPC cohort
+
+Examine how the proteins associated with metastatic load in mHSPC behave in the mCRPC cohort (Pre and Post treatment). Note: metastatic load information is not available for mCRPC patients.
+
+```{r}
+# Create violin plots for the metastatic load-associated proteins in mCRPC cohort
+if(exists("mets_associated_proteins") && nrow(mets_associated_proteins) > 0) {
+  
+  # Get the protein IDs
+  mets_protein_ids <- mets_associated_proteins %>% pull(OlinkID)
+  
+  # Prepare mCRPC Pre and Post treatment data
+  df_mcrpc_prepost <- df_meta_f5 %>%
+    filter(cohort %in% c("C", "D")) %>%  # mCRPC cohorts
+    filter(txt_stat %in% c("Pre", "Post")) %>%  # All Pre and Post samples
+    filter(!is.na(final_sample_id))
+  
+  # Get protein expression matrix for mCRPC Pre/Post samples
+  exp_mat_mcrpc <- exprMatrix_corrected_sub[mets_protein_ids, df_mcrpc_prepost$final_sample_id]
+  
+  # Prepare long-format data for plotting
+  df_plot_mcrpc <- exp_mat_mcrpc %>%
+    as.data.frame() %>% 
+    tibble::rownames_to_column(var = "OlinkID") %>% 
+    pivot_longer(cols = -OlinkID, names_to = "final_sample_id", values_to = "NPX") %>%
+    left_join(df_id_pro, by = "OlinkID") %>%
+    left_join(df_mcrpc_prepost %>% select(final_sample_id, HCI_cID, mrn, txt_stat, cohort), 
+              by = "final_sample_id") %>%
+    filter(!is.na(NPX)) %>%
+    mutate(
+      txt_stat = factor(txt_stat, levels = c("Pre", "Post")),
+      cohort = factor(cohort, levels = c("C", "D"))
+    )
+  
+  cat("=== mCRPC violin plots for metastatic load-associated proteins ===\n")
+  cat("Number of proteins:", length(mets_protein_ids), "\n")
+  cat("Number of mCRPC samples:", nrow(df_plot_mcrpc), "\n")
+  cat("Number of mCRPC patients:", length(unique(df_plot_mcrpc$mrn)), "\n")
+  
+  # Show sample distribution
+  sample_counts_mcrpc <- df_plot_mcrpc %>%
+    count(txt_stat, cohort) %>%
+    pivot_wider(names_from = cohort, values_from = n, names_prefix = "Cohort_")
+  cat("Sample distribution by cohort:\n")
+  print(sample_counts_mcrpc)
+  
+  # Total sample counts by treatment status
+  total_counts <- df_plot_mcrpc %>%
+    count(txt_stat)
+  cat("Total samples by treatment status:\n")
+  print(total_counts)
+  
+  # Create violin plot for mCRPC
+  p_violin_mcrpc <- df_plot_mcrpc %>%
+    ggplot(aes(x = txt_stat, y = NPX, fill = txt_stat)) +
+    geom_quasirandom(alpha = 0.6, size = 1.5, color = "grey30") +
+    geom_violin(alpha = 0.7, scale = "width", draw_quantiles = c(0.5)) +
+    geom_boxplot(outlier.alpha = 0, width = 0.2, coef = 0,
+                 alpha = 0.8, color = "white") +
+    facet_wrap(~Assay, scales = "free_y", ncol = length(mets_protein_ids)) +
+    scale_fill_manual(values = c("Pre" = "#FF7F0E", "Post" = "#D62728"),
+                      name = "Treatment") +
+    labs(x = "Treatment Status", 
+         y = "NPX Expression",
+         title = "Metastatic Load-Associated Proteins in mCRPC Cohort",
+         subtitle = "Expression before and after mCRPC treatment") +
+    theme_bw() +
+    theme(
+      panel.grid.major = element_blank(), 
+      panel.grid.minor = element_blank(),
+      strip.text = element_text(size = 12, face = "bold"),
+      axis.text = element_text(size = 10),
+      axis.title = element_text(size = 12),
+      legend.position = "top",
+      legend.title = element_text(size = 12),
+      legend.text = element_text(size = 10),
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 12)
+    )
+  
+  print(p_violin_mcrpc)
+  
+  # Save the plot
+  ggsave(p_violin_mcrpc, 
+         file = file.path(wd$outCurr, "mCRPC_PrePost_violin.pdf"), 
+         width = max(8, length(mets_protein_ids) * 4), 
+         height = 6)
+  
+  # Statistical analysis for mCRPC
+  cat("\n=== Statistical analysis: mCRPC treatment effect ===\n")
+  
+  for(protein_id in mets_protein_ids) {
+    protein_name <- df_id_pro %>% filter(OlinkID == protein_id) %>% pull(Assay)
+    
+    # Get data for this protein
+    protein_data_mcrpc <- df_plot_mcrpc %>% 
+      filter(OlinkID == protein_id)
+    
+    cat("\n--- ", protein_name, " in mCRPC ---\n")
+    
+    # Test treatment effect in mCRPC (unpaired)
+    pre_data <- protein_data_mcrpc %>% filter(txt_stat == "Pre") %>% pull(NPX)
+    post_data <- protein_data_mcrpc %>% filter(txt_stat == "Post") %>% pull(NPX)
+    
+    if(length(pre_data) >= 3 & length(post_data) >= 3) {
+      # Unpaired t-test for pre vs post
+      test_result <- t.test(post_data, pre_data, paired = FALSE)
+      
+      cat("Pre: n=", length(pre_data), " (mean=", round(mean(pre_data), 3), 
+          ", sd=", round(sd(pre_data), 3), ")\n")
+      cat("Post: n=", length(post_data), " (mean=", round(mean(post_data), 3), 
+          ", sd=", round(sd(post_data), 3), ")\n")
+      cat("Treatment effect P = ", formatC(test_result$p.value, format = "e", digits = 2), "\n")
+      cat("Effect size (Cohen's d): ", 
+          round((mean(post_data) - mean(pre_data)) / sqrt(((length(post_data)-1)*var(post_data) + (length(pre_data)-1)*var(pre_data))/(length(post_data)+length(pre_data)-2)), 3), "\n")
+    } else {
+      cat("Insufficient data for statistical testing\n")
+    }
+    
+    # Test cohort effect within treatment status
+    if(length(unique(protein_data_mcrpc$cohort)) == 2) {
+      cat("Cohort comparison:\n")
+      
+      for(tx_status in c("Pre", "Post")) {
+        cohort_data <- protein_data_mcrpc %>% filter(txt_stat == tx_status)
+        
+        if(nrow(cohort_data) >= 6 && length(unique(cohort_data$cohort)) == 2) {
+          cohort_test <- t.test(NPX ~ cohort, data = cohort_data)
+          cat("  ", tx_status, "samples - Cohort C vs D: P = ", 
+              formatC(cohort_test$p.value, format = "e", digits = 2), "\n")
+        }
+      }
+    }
+  }
+  
+  # Summary statistics table for mCRPC
+  summary_table_mcrpc <- df_plot_mcrpc %>%
+    group_by(Assay, txt_stat) %>%
+    summarise(
+      n = n(),
+      mean_NPX = round(mean(NPX, na.rm = TRUE), 3),
+      sd_NPX = round(sd(NPX, na.rm = TRUE), 3),
+      median_NPX = round(median(NPX, na.rm = TRUE), 3),
+      q25_NPX = round(quantile(NPX, 0.25, na.rm = TRUE), 3),
+      q75_NPX = round(quantile(NPX, 0.75, na.rm = TRUE), 3),
+      .groups = "drop"
+    ) %>%
+    arrange(Assay, txt_stat)
+  
+  cat("\n=== Summary statistics for mCRPC cohort ===\n")
+  print(summary_table_mcrpc)
+  
+  # Save summary table
+  write.csv(summary_table_mcrpc, 
+            file.path(wd$outCurr, "mCRPC_PrePost_summary.csv"), 
+            row.names = FALSE)
+  
+  # Compare mHSPC vs mCRPC baseline expression
+  cat("\n=== Comparison: mHSPC vs mCRPC baseline expression ===\n")
+  
+  if(exists("df_plot_mets")) {
+    # Get mHSPC baseline data
+    mhspc_baseline <- df_plot_mets %>%
+      filter(txt_stat == "Pre") %>%
+      select(OlinkID, Assay, NPX) %>%
+      mutate(cohort_type = "mHSPC")
+    
+    # Get mCRPC baseline data  
+    mcrpc_baseline <- df_plot_mcrpc %>%
+      filter(txt_stat == "Pre") %>%
+      select(OlinkID, Assay, NPX) %>%
+      mutate(cohort_type = "mCRPC")
+    
+    # Combine for comparison
+    combined_baseline <- bind_rows(mhspc_baseline, mcrpc_baseline) %>%
+      mutate(cohort_type = factor(cohort_type, levels = c("mHSPC", "mCRPC")))
+    
+    for(protein_id in mets_protein_ids) {
+      protein_name <- df_id_pro %>% filter(OlinkID == protein_id) %>% pull(Assay)
+      
+      baseline_data <- combined_baseline %>% filter(OlinkID == protein_id)
+      
+      if(nrow(baseline_data) >= 6) {
+        baseline_test <- t.test(NPX ~ cohort_type, data = baseline_data)
+        
+        mhspc_mean <- baseline_data %>% filter(cohort_type == "mHSPC") %>% pull(NPX) %>% mean()
+        mcrpc_mean <- baseline_data %>% filter(cohort_type == "mCRPC") %>% pull(NPX) %>% mean()
+        
+        cat(protein_name, ": mHSPC baseline mean =", round(mhspc_mean, 3),
+            ", mCRPC baseline mean =", round(mcrpc_mean, 3),
+            ", P =", formatC(baseline_test$p.value, format = "e", digits = 2), "\n")
+      }
+    }
+  }
+  
+} else {
+  cat("No metastatic load-associated proteins found for mCRPC analysis\n")
+}
+```
+
+## Enzalutamide-treated mCRPC patients analysis
+
+Examine the expression of metastatic load-associated proteins specifically in mCRPC patients treated with Enzalutamide (Pre vs Post treatment).
+
+```{r}
+# Analyze proteins in Enzalutamide-treated mCRPC patients
+if(exists("mets_associated_proteins") && nrow(mets_associated_proteins) > 0) {
+  
+  # Get the protein IDs
+  mets_protein_ids <- mets_associated_proteins %>% pull(OlinkID)
+  
+  # Check if df_c_final exists and has treatment information
+  if(exists("df_c_final") && "txt_mcrpc_1st_type" %in% colnames(df_c_final)) {
+    
+    # Prepare Enzalutamide-treated mCRPC data
+    df_enza_patients <- df_c_final %>%
+      filter(txt_mcrpc_1st_type == "Enzalutamide") %>%
+      select(HCI_cID, txt_mcrpc_1st_type)
+    
+    cat("=== Enzalutamide-treated mCRPC patients ===\n")
+    cat("Number of Enzalutamide-treated patients:", nrow(df_enza_patients), "\n")
+    
+    # Get Pre/Post samples for Enzalutamide-treated patients
+    df_enza_prepost <- df_meta_f5 %>%
+      filter(cohort %in% c("C", "D")) %>%
+      filter(txt_stat %in% c("Pre", "Post")) %>%
+      filter(HCI_cID %in% df_enza_patients$HCI_cID) %>%
+      left_join(df_enza_patients, by = "HCI_cID") %>%
+      filter(!is.na(final_sample_id))
+    
+    cat("Number of Pre/Post samples from Enzalutamide patients:", nrow(df_enza_prepost), "\n")
+    
+    if(nrow(df_enza_prepost) > 0) {
+      
+      # Get protein expression matrix for Enzalutamide Pre/Post samples
+      exp_mat_enza <- exprMatrix_corrected_sub[mets_protein_ids, df_enza_prepost$final_sample_id]
+      
+      # Prepare long-format data for plotting
+      df_plot_enza <- exp_mat_enza %>%
+        as.data.frame() %>% 
+        tibble::rownames_to_column(var = "OlinkID") %>% 
+        pivot_longer(cols = -OlinkID, names_to = "final_sample_id", values_to = "NPX") %>%
+        left_join(df_id_pro, by = "OlinkID") %>%
+        left_join(df_enza_prepost %>% select(final_sample_id, HCI_cID, mrn, txt_stat, cohort, txt_mcrpc_1st_type), 
+                  by = "final_sample_id") %>%
+        filter(!is.na(NPX)) %>%
+        mutate(txt_stat = factor(txt_stat, levels = c("Pre", "Post")))
+      
+      # Show sample distribution
+      sample_counts_enza <- df_plot_enza %>%
+        count(txt_stat) %>%
+        mutate(percentage = round(100 * n / sum(n), 1))
+      
+      cat("Sample distribution for Enzalutamide patients:\n")
+      print(sample_counts_enza)
+      
+      # Create violin plot for Enzalutamide-treated patients
+      p_violin_enza <- df_plot_enza %>%
+        ggplot(aes(x = txt_stat, y = NPX, fill = txt_stat)) +
+        geom_quasirandom(alpha = 0.7, size = 2, color = "grey20") +
+        geom_violin(alpha = 0.8, scale = "width", draw_quantiles = c(0.5)) +
+        geom_boxplot(outlier.alpha = 0, width = 0.25, coef = 0,
+                     alpha = 0.9, color = "white") +
+        facet_wrap(~Assay, scales = "free_y", ncol = length(mets_protein_ids)) +
+        scale_fill_manual(values = c("Pre" = "#1f77b4", "Post" = "#17becf"),
+                          name = "Treatment") +
+        labs(x = "Treatment Status", 
+             y = "NPX Expression",
+             title = "Metastatic Load-Associated Proteins in Enzalutamide-Treated mCRPC",
+             subtitle = paste0("Pre vs Post Enzalutamide treatment (n=", 
+                              length(unique(df_plot_enza$mrn)), " patients)")) +
+        theme_bw() +
+        theme(
+          panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          strip.text = element_text(size = 12, face = "bold"),
+          axis.text = element_text(size = 11),
+          axis.title = element_text(size = 12),
+          legend.position = "top",
+          legend.title = element_text(size = 12),
+          legend.text = element_text(size = 11),
+          plot.title = element_text(size = 14, face = "bold"),
+          plot.subtitle = element_text(size = 12)
+        )
+      
+      print(p_violin_enza)
+      
+      # Save the plot
+      ggsave(p_violin_enza, 
+             file = file.path(wd$outCurr, "Enzalutamide_PrePost_violin.pdf"), 
+             width = max(8, length(mets_protein_ids) * 4.5), 
+             height = 6)
+      
+      # Statistical analysis for Enzalutamide-treated patients
+      cat("\n=== Statistical analysis: Enzalutamide treatment effect ===\n")
+      
+      for(protein_id in mets_protein_ids) {
+        protein_name <- df_id_pro %>% filter(OlinkID == protein_id) %>% pull(Assay)
+        
+        # Get data for this protein
+        protein_data_enza <- df_plot_enza %>% 
+          filter(OlinkID == protein_id)
+        
+        cat("\n--- ", protein_name, " in Enzalutamide patients ---\n")
+        
+        # Test treatment effect (unpaired)
+        pre_data <- protein_data_enza %>% filter(txt_stat == "Pre") %>% pull(NPX)
+        post_data <- protein_data_enza %>% filter(txt_stat == "Post") %>% pull(NPX)
+        
+        if(length(pre_data) >= 3 & length(post_data) >= 3) {
+          # Unpaired t-test
+          test_result <- t.test(post_data, pre_data, paired = FALSE)
+          
+          # Calculate effect size (Cohen's d)
+          pooled_sd <- sqrt(((length(post_data)-1)*var(post_data) + (length(pre_data)-1)*var(pre_data))/(length(post_data)+length(pre_data)-2))
+          cohens_d <- (mean(post_data) - mean(pre_data)) / pooled_sd
+          
+          cat("Pre: n=", length(pre_data), " (mean=", round(mean(pre_data), 3), 
+              ", sd=", round(sd(pre_data), 3), ")\n")
+          cat("Post: n=", length(post_data), " (mean=", round(mean(post_data), 3), 
+              ", sd=", round(sd(post_data), 3), ")\n")
+          cat("Mean difference:", round(mean(post_data) - mean(pre_data), 3), "\n")
+          cat("Enzalutamide effect P = ", formatC(test_result$p.value, format = "e", digits = 2), "\n")
+          cat("Effect size (Cohen's d) = ", round(cohens_d, 3))
+          
+          # Interpret effect size
+          if(abs(cohens_d) < 0.2) {
+            cat(" (negligible effect)\n")
+          } else if(abs(cohens_d) < 0.5) {
+            cat(" (small effect)\n")
+          } else if(abs(cohens_d) < 0.8) {
+            cat(" (medium effect)\n")
+          } else {
+            cat(" (large effect)\n")
+          }
+          
+          # 95% CI for mean difference
+          ci_lower <- test_result$conf.int[1]
+          ci_upper <- test_result$conf.int[2]
+          cat("95% CI for difference: [", round(ci_lower, 3), ", ", round(ci_upper, 3), "]\n")
+          
+        } else {
+          cat("Insufficient data for statistical testing\n")
+          cat("Pre: n=", length(pre_data), ", Post: n=", length(post_data), "\n")
+        }
+        
+        # Check for paired samples if available
+        paired_data <- protein_data_enza %>%
+          count(mrn) %>%
+          filter(n == 2)  # Patients with both Pre and Post
+        
+        if(nrow(paired_data) >= 3) {
+          cat("Paired analysis (n=", nrow(paired_data), " patients with both timepoints):\n")
+          
+          paired_wide <- protein_data_enza %>%
+            filter(mrn %in% paired_data$mrn) %>%
+            select(mrn, txt_stat, NPX) %>%
+            pivot_wider(names_from = txt_stat, values_from = NPX) %>%
+            filter(!is.na(Pre), !is.na(Post))
+          
+          if(nrow(paired_wide) >= 3) {
+            paired_test <- t.test(paired_wide$Post, paired_wide$Pre, paired = TRUE)
+            
+            cat("Paired t-test P = ", formatC(paired_test$p.value, format = "e", digits = 2), "\n")
+            cat("Mean paired change = ", round(mean(paired_wide$Post - paired_wide$Pre), 3), "\n")
+          }
+        }
+      }
+      
+      # Summary statistics table for Enzalutamide patients
+      summary_table_enza <- df_plot_enza %>%
+        group_by(Assay, txt_stat) %>%
+        summarise(
+          n = n(),
+          n_patients = n_distinct(mrn),
+          mean_NPX = round(mean(NPX, na.rm = TRUE), 3),
+          sd_NPX = round(sd(NPX, na.rm = TRUE), 3),
+          median_NPX = round(median(NPX, na.rm = TRUE), 3),
+          q25_NPX = round(quantile(NPX, 0.25, na.rm = TRUE), 3),
+          q75_NPX = round(quantile(NPX, 0.75, na.rm = TRUE), 3),
+          min_NPX = round(min(NPX, na.rm = TRUE), 3),
+          max_NPX = round(max(NPX, na.rm = TRUE), 3),
+          .groups = "drop"
+        ) %>%
+        arrange(Assay, txt_stat)
+      
+      cat("\n=== Summary statistics for Enzalutamide-treated patients ===\n")
+      print(summary_table_enza)
+      
+      # Save summary table
+      write.csv(summary_table_enza, 
+                file.path(wd$outCurr, "Enzalutamide_PrePost_summary.csv"), 
+                row.names = FALSE)
+      
+      # Compare Enzalutamide vs All mCRPC patients
+      if(exists("df_plot_mcrpc")) {
+        cat("\n=== Comparison: Enzalutamide vs All mCRPC patients ===\n")
+        
+        for(protein_id in mets_protein_ids) {
+          protein_name <- df_id_pro %>% filter(OlinkID == protein_id) %>% pull(Assay)
+          
+          # Get baseline data for comparison
+          enza_baseline <- df_plot_enza %>%
+            filter(OlinkID == protein_id, txt_stat == "Pre") %>%
+            pull(NPX)
+          
+          all_mcrpc_baseline <- df_plot_mcrpc %>%
+            filter(OlinkID == protein_id, txt_stat == "Pre") %>%
+            pull(NPX)
+          
+          if(length(enza_baseline) >= 3 & length(all_mcrpc_baseline) >= 3) {
+            baseline_test <- t.test(enza_baseline, all_mcrpc_baseline)
+            
+            cat(protein_name, " baseline: Enzalutamide mean =", round(mean(enza_baseline), 3),
+                " vs All mCRPC mean =", round(mean(all_mcrpc_baseline), 3),
+                ", P =", formatC(baseline_test$p.value, format = "e", digits = 2), "\n")
+          }
+          
+          # Compare treatment effects if possible
+          enza_post <- df_plot_enza %>%
+            filter(OlinkID == protein_id, txt_stat == "Post") %>%
+            pull(NPX)
+          
+          all_mcrpc_post <- df_plot_mcrpc %>%
+            filter(OlinkID == protein_id, txt_stat == "Post") %>%
+            pull(NPX)
+          
+          if(length(enza_post) >= 3 & length(all_mcrpc_post) >= 3) {
+            enza_change <- mean(enza_post) - mean(enza_baseline)
+            all_change <- mean(all_mcrpc_post) - mean(all_mcrpc_baseline)
+            
+            cat(protein_name, " treatment effect: Enzalutamide Δ =", round(enza_change, 3),
+                " vs All mCRPC Δ =", round(all_change, 3), "\n")
+          }
+        }
+      }
+      
+    } else {
+      cat("No Pre/Post samples found for Enzalutamide-treated patients\n")
+    }
+    
+  } else {
+    cat("Treatment information (txt_mcrpc_1st_type) not available in df_c_final\n")
+  }
+  
+} else {
+  cat("No metastatic load-associated proteins found for Enzalutamide analysis\n")
+}
+```
 
 # Save
 

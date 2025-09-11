@@ -1054,9 +1054,9 @@ analyze_proteins_multi <- function(cd_prot, npx_in, meta_in) {
         npx_bin = factor(npx_bin, levels = c("low", "high"))
       )
     
-    # Fit Cox regression models with additional covariates
-    model1 <- coxph(Surv(OS, death) ~ NPX + psa + ldh + alk_phos, data = filtered_data)
-    model2 <- coxph(Surv(OS, death) ~ npx_bin + psa + ldh + alk_phos, data = filtered_data)
+    # Fit Cox regression models with log10-transformed clinical covariates (PSA + ALP only)
+    model1 <- coxph(Surv(OS, death) ~ NPX + log10_psa + log10_alp, data = filtered_data)
+    model2 <- coxph(Surv(OS, death) ~ npx_bin + log10_psa + log10_alp, data = filtered_data)
     
     # Extract results for model1 (continuous NPX)
     coef_summary1 <- summary(model1)$coefficients["NPX", ]

@@ -1,0 +1,238 @@
+---
+title: "Pathway analysis - mCRPC specific proteins"
+date: "2025-09-09"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+    number_sections: false
+    theme: lumen
+---
+
+# Background
+
+We identified 81 significant proteins from the mCRPC multivariate analysis (Multi_Sig = "Yes" from HR_values_mCRPC_specific_multivariate_cell_surface.csv). Now we want to run pathway analysis on these proteins.
+
+# Objectives
+
+1. Pathway analysis on 81 significant mCRPC-specific proteins
+
+# Conclusion
+
+Pathway analysis was performed on the 81 proteins that were significantly associated with mCRPC outcomes in multivariate analysis.
+
+# Pre-processing 
+
+## Loading packages
+
+```{r, message=FALSE, warning=FALSE}
+library(here)
+library(tidyverse)
+library(paletteer)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(msigdbr)
+library(enrichplot)
+
+library(stringr)
+library(gridExtra)
+```
+
+## Directories
+
+```{r}
+set.seed(1234)
+wd <- list()
+wd$main <- here()
+wd$data <- file.path(wd$main, "data")
+wd$manishData <- file.path(wd$data, "raw/data_fromManish")
+wd$d2024 <- file.path(wd$data, "updated_2024")
+wd$d2024_npx <- file.path(wd$d2024, "NPX_data")
+wd$output <- file.path(wd$main, "output")
+wd$script <- file.path(wd$main, "scripts")
+
+wd$outData <- file.path(wd$output, "data")
+wd$outCurr <- file.path(wd$output, "07_Pathway_mCRPC")
+wd$mcrpcData <- file.path(wd$output, "06_mCRPC_analysis")
+```
+
+Create directories
+
+```{r}
+if (!file.exists(wd$outCurr)) {
+  dir.create(wd$outCurr)
+} else {
+  print("Directory already exists")
+}
+```
+
+Load mCRPC results
+
+```{r}
+mcrpc_results <- read_csv(file.path(wd$mcrpcData, "HR_values_mCRPC_specific_multivariate_cell_surface.csv"))
+```
+
+# Obj 1: Pathway analysis
+
+## Extract 81 significant proteins
+
+We extract the 81 proteins that are significant in multivariate analysis (Multi_Sig = "Yes")
+
+```{r}
+genes_of_interest <- mcrpc_results %>% 
+  filter(Multi_Sig == "Yes") %>% 
+  pull(Assay) %>% unique()
+
+print(paste("Number of significant proteins:", length(genes_of_interest)))
+print("First 10 significant proteins:")
+print(head(genes_of_interest, 10))
+```
+
+We need a background set for pathway enrichment. So we use all the gene ids
+
+```{r}
+background_genes <- df_id_pro %>% pull(Assay) %>% unique()
+```
+
+Run the pathway analysis
+
+```{r}
+# Convert genes of interest to Entrez IDs
+foreground_entrez <- bitr(genes_of_interest, 
+                          fromType = "SYMBOL", 
+                          toType = "ENTREZID", 
+                          OrgDb = org.Hs.eg.db)
+
+# Convert background genes to Entrez IDs
+background_entrez <- bitr(background_genes, 
+                          fromType = "SYMBOL", 
+                          toType = "ENTREZID", 
+                          OrgDb = org.Hs.eg.db)
+
+# Remove any duplicates or NA values
+foreground_entrez <- unique(na.omit(foreground_entrez))
+background_entrez <- unique(na.omit(background_entrez))
+
+# Retrieve Hallmark gene sets for Homo sapiens
+msig_hallmark <- msigdbr(species = "Homo sapiens", category = "H")
+
+# Prepare TERM2GENE as a data frame
+msig_term2gene <- msig_hallmark[, c("gs_name", "entrez_gene")]
+
+# Perform over-representation analysis with the correct TERM2GENE
+enrich_results <- enricher(gene = foreground_entrez$ENTREZID,
+                           TERM2GENE = msig_term2gene,
+                           #universe = background_entrez$ENTREZID,
+                           pAdjustMethod = "BH",
+                           pvalueCutoff = 0.05,
+                           qvalueCutoff = 0.2)
+
+enrich_mcrpc <- enrich_results
+```
+
+## Results visualization
+
+Let's generate a custom plot for the enriched pathways
+
+```{r}
+# Custom plot
+top_x <- enrich_mcrpc@result %>% 
+  #filter(p.adjust < 0.2) %>% 
+  mutate(logP = -log10(p.adjust)) %>% 
+  arrange(desc(logP)) %>% 
+  mutate(ID = factor(ID, levels = rev(ID))) %>% 
+  slice_max(logP, n = 10, with_ties = FALSE) 
+
+p_mcrpc <-
+  ggplot(top_x,
+       aes(x = logP, y = ID)) +
+  geom_bar(stat = "identity", fill = "#2CA02C") +  # Bars with color
+  geom_vline(xintercept = -log10(0.2), linetype = "dashed") +
+  labs(
+    title = "Top Enriched Hallmark Pathways",
+    subtitle = "mCRPC Significant Proteins (n=81)",
+    x = "-log10(adjusted p-value)",
+    y = "Pathway"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    axis.text.y = element_text(size = 10),
+    axis.text.x = element_text(size = 10)
+  )
+
+print(p_mcrpc)
+```
+
+Save the plot
+
+```{r}
+ggsave(file = file.path(wd$outCurr, "mCRPC_enrichedPathway.pdf"), 
+       plot = p_mcrpc, height = 6, width = 8)
+
+ggsave(file = file.path(wd$outCurr, "mCRPC_enrichedPathway.png"), 
+       plot = p_mcrpc, height = 6, width = 8, dpi = 300)
+```
+
+## Summary table
+
+Create a summary table of the enrichment results
+
+```{r}
+# Create summary table
+enrichment_summary <- enrich_mcrpc@result %>% as.data.frame() %>% 
+  dplyr::select(ID, Description, GeneRatio, BgRatio, pvalue, p.adjust, qvalue, Count) %>%
+  arrange(p.adjust)
+
+# Display top results
+print("Top 20 enriched pathways:")
+print(head(enrichment_summary, 20))
+
+# Save results
+write_csv(enrichment_summary, file.path(wd$outCurr, "mCRPC_pathway_enrichment_results.csv"))
+```
+
+## Gene-pathway mapping
+
+Show which genes contribute to the top pathways
+
+```{r}
+# Get genes for top pathways
+if(nrow(enrich_mcrpc@result) > 0) {
+  top_pathways <- head(enrichment_summary, 5)$ID
+  
+  for(pathway in top_pathways) {
+    cat("\n", pathway, ":\n")
+    genes_in_pathway <- enrich_mcrpc@result %>%
+      filter(ID == pathway) %>%
+      pull(geneID) %>%
+      str_split("/") %>%
+      unlist()
+    
+    # Convert back to gene symbols
+    gene_symbols <- bitr(genes_in_pathway, 
+                        fromType = "ENTREZID", 
+                        toType = "SYMBOL", 
+                        OrgDb = org.Hs.eg.db)
+    
+    cat(paste(gene_symbols$SYMBOL, collapse = ", "), "\n")
+  }
+}
+```
+
+## Save workspace
+
+```{r}
+save(enrich_mcrpc, genes_of_interest, foreground_entrez, background_entrez,
+     enrichment_summary, p_mcrpc,
+     file = file.path(wd$outData, "07_mCRPC_pathway.Rdata"))
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
