@@ -40,6 +40,7 @@ library(paletteer)
 library(VennDiagram)
 library(ggvenn)
 library(ggbeeswarm)
+library(gridExtra)
 # DE
 library(limma)
 # Survival
@@ -110,7 +111,7 @@ load(file.path(wd$outData, "03_data.Rdata"))
 # Print censor date
 censor_date
 
-cut_fdr <- 0.25
+cut_fdr <- 0.2
 ```
 
 ## Load other files
@@ -1686,11 +1687,11 @@ cat("\nCPPS will be constructed using these proteins:", paste(cpps_proteins, col
 
 ```{r}
 # Simple Selection: Top x proteins based on FDR and HR (default approach)
-top_cpps <- res_all %>%
+top_cpps <- res_all2 %>%
   filter(Multi_Sig == "Yes") %>%
   #arrange(Multi_FDR, desc(Multi_HR)) %>%
   arrange(desc(Multi_HR)) %>%
-  slice_head(n = 5) 
+  slice_head(n = 10) 
 
 # # Manually picked drug targets (top 10)
 # t1 <- res_all %>%
@@ -1708,6 +1709,24 @@ top_cpps <- res_all %>%
 # top_cpps <- res_all2 %>%
 #   filter(OlinkID %in% c(t1$OlinkID, t2$OlinkID))
 # write.csv(top_cpps, file.path(wd$outCurr, "CPPS_top20.csv"))
+
+
+# # Manually picked drug targets (top 5)
+# t1 <- res_all %>%
+#   filter(OlinkID %in% c("OID21380", "OID31100", "OID30400", "OID21297", "OID20650"))
+# 
+# # Then select the top HR aside from these
+# t2 <- res_all  %>%
+#   filter(!OlinkID %in% t1$OlinkID) %>%
+#   filter(Multi_Sig == "Yes") %>%
+#   #arrange(Multi_FDR, desc(Multi_HR)) %>%
+#   arrange(desc(Multi_HR)) %>%
+#   slice_head(n = 5)
+# 
+# top_cpps <- res_all2 %>%
+#   filter(OlinkID %in% c(t1$OlinkID, t2$OlinkID))
+# write.csv(top_cpps, file.path(wd$outCurr, "CPPS_top10_5drugs_5top.csv"))
+
 
 
 cat("=== Top 10 Proteins for CPPS Construction ===\n")
@@ -1771,6 +1790,18 @@ df_cpps <- df_cpps %>%
 # Display risk group distribution
 cat("=== CPPS Risk Group Distribution ===\n")
 table(df_cpps$CPPS_risk)
+
+# Add metadata as well
+meta_pre_tmp <- meta_pre %>% select(HCI_cID, final_sample_id) %>% distinct() %>% 
+  left_join(meta_c_surv) %>% 
+  select(-time_to_death, -death_event) %>% 
+  rename(SampleID = final_sample_id)
+
+# Join with the df_cpps
+df_cpps_2 <- df_cpps %>% 
+  left_join(meta_pre_tmp) %>% 
+  dplyr::select(-SampleID)
+write.csv(df_cpps_2, file.path(wd$outCurr, "CPPS_score_top10_proteins.csv"))
 
 # Cox regression for CPPS
 cpps_cox <- coxph(Surv(time_to_death, death) ~ CPPS, data = df_cpps)
@@ -2022,6 +2053,12 @@ cpps_logrank_p <- 1 - pchisq(cpps_survdiff$chisq, length(cpps_survdiff$n) - 1)
 cat("=== Log-rank Test for CPPS Risk Groups ===\n")
 print(cpps_survdiff)
 cat("Log-rank p-value:", cpps_logrank_p, "\n")
+
+# Fit Cox proportional hazards model
+cpps_cox <- coxph(Surv(time_to_death, death) ~ CPPS_risk, data = df_cpps)
+
+# View summary to get HR, CI, p-value
+summary(cpps_cox)
 
 # Kaplan-Meier analysis
 cpps_survfit <- survfit(Surv(time_to_death, death) ~ CPPS_risk, data = df_cpps)
@@ -2488,7 +2525,7 @@ for(n_proteins in protein_counts) {
 }
 
 # Create a multi-panel plot with all KM plots
-library(gridExtra)
+
 
 if(length(km_plots) > 0) {
   # Arrange plots in a grid (4 rows x 5 columns for 20 plots)
@@ -2546,9 +2583,9 @@ cat("Patients excluded due to missing data:", nrow(df_cpps) - nrow(df_cpps_compl
 library(rms)
 cox_model_clinical <- cph(Surv(time_to_death, death) ~ log10_psa + log10_alp, 
                          data = df_cpps_complete, x = TRUE, y = TRUE, surv = TRUE)
-cox_model_cpps_alone <- cph(Surv(time_to_death, death) ~ CPPS, 
+cox_model_cpps_alone <- cph(Surv(time_to_death, death) ~ CPPS_risk, 
                            data = df_cpps_complete, x = TRUE, y = TRUE, surv = TRUE)
-cox_model_cpps_combined <- cph(Surv(time_to_death, death) ~ log10_psa + log10_alp + CPPS, 
+cox_model_cpps_combined <- cph(Surv(time_to_death, death) ~ log10_psa + log10_alp + CPPS_risk, 
                               data = df_cpps_complete, x = TRUE, y = TRUE, surv = TRUE)
 
 # Also create standard coxph versions for compatibility with some functions

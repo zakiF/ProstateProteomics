@@ -956,9 +956,10 @@ create_binary_comparison <- function(data, marker_name) {
          fill = "Disease Stage") +
     theme_custom +
     scale_fill_manual(values = c("Local" = "#AED6F1", "mHSPC" = "#FFBB78", "mCRPC" = "#98DF8A")) +
-    scale_y_continuous(limits = c(0, max(plot_data %>% count(disease_stage, expression_level) %>% 
-                                        group_by(expression_level) %>% 
-                                        mutate(prop = n/sum(n)*100) %>% pull(prop)) * 1.2)) +
+    scale_y_continuous(limits = c(0, 110), breaks = seq(0, 100, 25)) +
+    # scale_y_continuous(limits = c(0, max(plot_data %>% count(disease_stage, expression_level) %>% 
+    #                                     group_by(expression_level) %>% 
+    #                                     mutate(prop = n/sum(n)*100) %>% pull(prop)) * 1.2)) +
     theme(legend.position = "top")
   
   return(list(stacked = p1, dodged = p2, contingency_table = cont_table, test_result = test_result, plot_data = plot_data))
@@ -1158,8 +1159,7 @@ library(broom)
 df_analysis <- df_tma_combined %>%
   # Remove rows with missing disease_stage or GDF15 = -1
   filter(!is.na(disease_stage),
-         disease_stage %in% c("Local", "mHSPC", "mCRPC"),
-         GDF15 != -1) %>%
+         disease_stage %in% c("Local", "mHSPC", "mCRPC")) %>%
   # Create bone vs non-bone grouping
   mutate(
     organ_group = case_when(
@@ -1168,14 +1168,20 @@ df_analysis <- df_tma_combined %>%
     ),
     # Create categorical GDF15 variable
     GDF15_cat = case_when(
-      GDF15 %in% c(0, 1, 2) ~ "Low (0-2)",
-      GDF15 == 3 ~ "High (3)",
+      GDF15 %in% c(0, 1) ~ "Low (0-2)",
+      GDF15 %in% c(2,3) ~ "High (3)",
       TRUE ~ NA_character_
     ),
+    CD138_cat = case_when(
+      CD138 %in% c(0, 1) ~ "Low (0-2)",
+      CD138 %in% c(2,3) ~ "High (3)",
+      TRUE ~ NA_character_
+      ),
     # Ensure proper factor levels
     disease_stage = factor(disease_stage, levels = c("Local", "mHSPC", "mCRPC")),
     organ_group = factor(organ_group, levels = c("Bone", "Non-bone")),
-    GDF15_cat = factor(GDF15_cat, levels = c("Low (0-2)", "High (3)"))
+    GDF15_cat = factor(GDF15_cat, levels = (c("Low (0-2)", "High (3)"))),
+    CD138_cat = factor(CD138_cat, levels = (c("Low (0-2)", "High (3)")))
   )
 
 # Summary statistics
@@ -1198,26 +1204,26 @@ summary_stats <- df_analysis %>%
 print(summary_stats)
 
 # 1) CONTINUOUS ANALYSIS
-print("\n=== 1) CONTINUOUS ANALYSIS (GDF15 as 0,1,2,3) ===")
-
-# Wilcoxon rank-sum tests for each organ group
-print("\nWilcoxon Rank-Sum Tests:")
-
-# Bone metastases
-bone_data <- df_analysis %>% filter(organ_group == "Bone")
-if(nrow(bone_data) > 0) {
-  bone_test <- wilcox.test(GDF15 ~ disease_stage, data = bone_data)
-  print(paste("Bone metastases - mHSPC vs mCRPC:"))
-  print(paste("  W =", bone_test$statistic, ", p-value =", format.pval(bone_test$p.value)))
-}
-
-# Non-bone metastases
-nonbone_data <- df_analysis %>% filter(organ_group == "Non-bone")
-if(nrow(nonbone_data) > 0) {
-  nonbone_test <- wilcox.test(GDF15 ~ disease_stage, data = nonbone_data)
-  print(paste("Non-bone metastases - mHSPC vs mCRPC:"))
-  print(paste("  W =", nonbone_test$statistic, ", p-value =", format.pval(nonbone_test$p.value)))
-}
+# print("\n=== 1) CONTINUOUS ANALYSIS (GDF15 as 0,1,2,3) ===")
+# 
+# # Wilcoxon rank-sum tests for each organ group
+# print("\nWilcoxon Rank-Sum Tests:")
+# 
+# # Bone metastases
+# bone_data <- df_analysis %>% filter(organ_group == "Bone")
+# if(nrow(bone_data) > 0) {
+#   bone_test <- wilcox.test(GDF15 ~ disease_stage, data = bone_data)
+#   print(paste("Bone metastases - mHSPC vs mCRPC:"))
+#   print(paste("  W =", bone_test$statistic, ", p-value =", format.pval(bone_test$p.value)))
+# }
+# 
+# # Non-bone metastases
+# nonbone_data <- df_analysis %>% filter(organ_group == "Non-bone")
+# if(nrow(nonbone_data) > 0) {
+#   nonbone_test <- wilcox.test(GDF15 ~ disease_stage, data = nonbone_data)
+#   print(paste("Non-bone metastases - mHSPC vs mCRPC:"))
+#   print(paste("  W =", nonbone_test$statistic, ", p-value =", format.pval(nonbone_test$p.value)))
+# }
 
 # 2) CATEGORICAL ANALYSIS
 print("\n=== 2) CATEGORICAL ANALYSIS (Low 0-2 vs High 3) ===")
@@ -1225,33 +1231,33 @@ print("\n=== 2) CATEGORICAL ANALYSIS (Low 0-2 vs High 3) ===")
 # Contingency tables and Fisher's exact tests
 print("\nContingency Tables and Fisher's Exact Tests:")
 
-# Bone metastases
-if(nrow(bone_data) > 0) {
-  bone_table <- table(bone_data$disease_stage, bone_data$GDF15_cat)
-  print("Bone metastases:")
-  print(bone_table)
-  if(all(bone_table > 0)) {
-    bone_fisher <- fisher.test(bone_table)
-    print(paste("  Fisher's exact test p-value =", format.pval(bone_fisher$p.value)))
-    print(paste("  Odds ratio =", round(bone_fisher$estimate, 2)))
-  } else {
-    print("  Cannot perform Fisher's test - zero cells present")
-  }
-}
-
-# Non-bone metastases
-if(nrow(nonbone_data) > 0) {
-  nonbone_table <- table(nonbone_data$disease_stage, nonbone_data$GDF15_cat)
-  print("\nNon-bone metastases:")
-  print(nonbone_table)
-  if(all(nonbone_table > 0)) {
-    nonbone_fisher <- fisher.test(nonbone_table)
-    print(paste("  Fisher's exact test p-value =", format.pval(nonbone_fisher$p.value)))
-    print(paste("  Odds ratio =", round(nonbone_fisher$estimate, 2)))
-  } else {
-    print("  Cannot perform Fisher's test - zero cells present")
-  }
-}
+# # Bone metastases
+# if(nrow(bone_data) > 0) {
+#   bone_table <- table(bone_data$disease_stage, bone_data$GDF15_cat)
+#   print("Bone metastases:")
+#   print(bone_table)
+#   if(all(bone_table > 0)) {
+#     bone_fisher <- fisher.test(bone_table)
+#     print(paste("  Fisher's exact test p-value =", format.pval(bone_fisher$p.value)))
+#     print(paste("  Odds ratio =", round(bone_fisher$estimate, 2)))
+#   } else {
+#     print("  Cannot perform Fisher's test - zero cells present")
+#   }
+# }
+# 
+# # Non-bone metastases
+# if(nrow(nonbone_data) > 0) {
+#   nonbone_table <- table(nonbone_data$disease_stage, nonbone_data$GDF15_cat)
+#   print("\nNon-bone metastases:")
+#   print(nonbone_table)
+#   if(all(nonbone_table > 0)) {
+#     nonbone_fisher <- fisher.test(nonbone_table)
+#     print(paste("  Fisher's exact test p-value =", format.pval(nonbone_fisher$p.value)))
+#     print(paste("  Odds ratio =", round(nonbone_fisher$estimate, 2)))
+#   } else {
+#     print("  Cannot perform Fisher's test - zero cells present")
+#   }
+# }
 
 # VISUALIZATION
 print("\n=== CREATING VISUALIZATIONS ===")
@@ -1280,6 +1286,7 @@ print(p1)
 
 # Plot 2: Categorical GDF15 proportions
 prop_data <- df_analysis %>%
+  filter(GDF15 != -1) %>% 
   group_by(disease_stage, organ_group, GDF15_cat) %>%
   summarise(n = n(), .groups = 'drop') %>%
   group_by(disease_stage, organ_group) %>%
@@ -1295,7 +1302,7 @@ sample_size_data <- prop_data %>%
   summarise(total = first(total), .groups = 'drop') %>%
   mutate(label = paste0("n=", total))
 
-p2 <- ggplot(prop_data, aes(x = organ_group, y = proportion, fill = GDF15_cat)) +
+p2 <- ggplot(prop_data, aes(x = disease_stage, y = proportion, fill = GDF15_cat)) +
   geom_col(position = "stack", alpha = 0.8) +
   facet_wrap(~disease_stage) +
   scale_fill_manual(
@@ -1319,7 +1326,7 @@ p2 <- ggplot(prop_data, aes(x = organ_group, y = proportion, fill = GDF15_cat)) 
             position = position_stack(vjust = 0.5), 
             color = "white", fontweight = "bold", size = 3) +
   geom_text(data = sample_size_data, 
-            aes(x = organ_group, y = 105, label = label), 
+            aes(x = disease_stage, y = 105, label = label), 
             inherit.aes = FALSE, 
             size = 3.5, fontface = "bold", color = "black")
 
@@ -1342,6 +1349,493 @@ cat_summary <- df_analysis %>%
 print(cat_summary)
 ```
 
+## GDF15
 
+GDF15 Analysis with Statistical Testing - Test if mCRPC has higher expression (2-3) compared to other groups
 
+```{r}
+# GDF15 Analysis with Statistical Testing
+# Test if mCRPC has higher expression (2-3) compared to other groups
+
+# Filter valid GDF15 data
+gdf15_data <- df_analysis %>%
+  filter(GDF15 != -1, !is.na(GDF15)) %>%
+  mutate(
+    GDF15_high = ifelse(GDF15 %in% c(3), 1, 0),  # Binary: 1 = high (3), 0 = low (0-2)
+    GDF15_cat = case_when(
+      GDF15 %in% c(0, 1, 2) ~ "Low (0-2)",
+      GDF15 %in% c(3) ~ "High (3)",
+      TRUE ~ NA_character_
+    ),
+    GDF15_cat = factor(GDF15_cat, levels = c("Low (0-2)", "High (3)"))
+  )
+
+# Print sample sizes
+cat("=== GDF15 Sample Sizes ===\n")
+print(table(gdf15_data$disease_stage))
+
+# Statistical tests comparing mCRPC vs other groups for high expression
+cat("\n=== GDF15 Statistical Tests: mCRPC vs Others for High Expression (3) ===\n")
+
+# Create contingency table for binary analysis
+cont_table_gdf15 <- table(gdf15_data$disease_stage, gdf15_data$GDF15_cat)
+print("Contingency Table (Binary):")
+print(cont_table_gdf15)
+
+# Create contingency table for trend test using original values (0,1,2,3)
+cont_table_gdf15_trend <- table(gdf15_data$disease_stage, gdf15_data$GDF15)
+print("Contingency Table (Original Values 0-3):")
+print(cont_table_gdf15_trend)
+
+# Cochran-Armitage Trend Test (requires exactly 2 groups)
+if(require(DescTools, quietly = TRUE) && nrow(cont_table_gdf15_trend) >= 2 && ncol(cont_table_gdf15_trend) >= 2) {
+  available_stages <- rownames(cont_table_gdf15_trend)
+
+  # Test 1: Local vs mCRPC
+  if("Local" %in% available_stages && "mCRPC" %in% available_stages) {
+    cont_table_local_mcrpc_gdf15 <- cont_table_gdf15_trend[c("Local", "mCRPC"), , drop = FALSE]
+    tryCatch({
+      ca_test_local_mcrpc_gdf15 <- CochranArmitageTest(cont_table_local_mcrpc_gdf15, alternative = "one.sided")
+      cat("\nCochran-Armitage Trend Test - Local vs mCRPC (GDF15):\n")
+      cat("p-value:", format.pval(ca_test_local_mcrpc_gdf15$p.value, digits = 3), "\n")
+      cat("Test statistic:", round(ca_test_local_mcrpc_gdf15$statistic, 3), "\n")
+    }, error = function(e) {
+      cat("\nCochran-Armitage test (Local vs mCRPC) failed for GDF15:", e$message, "\n")
+    })
+  }
+
+  # Test 2: mHSPC vs mCRPC (if mHSPC exists)
+  if("mHSPC" %in% available_stages && "mCRPC" %in% available_stages) {
+    cont_table_mhspc_mcrpc_gdf15 <- cont_table_gdf15_trend[c("mHSPC", "mCRPC"), , drop = FALSE]
+    tryCatch({
+      ca_test_mhspc_mcrpc_gdf15 <- CochranArmitageTest(cont_table_mhspc_mcrpc_gdf15, alternative = "one.sided")
+      cat("\nCochran-Armitage Trend Test - mHSPC vs mCRPC (GDF15):\n")
+      cat("p-value:", format.pval(ca_test_mhspc_mcrpc_gdf15$p.value, digits = 3), "\n")
+      cat("Test statistic:", round(ca_test_mhspc_mcrpc_gdf15$statistic, 3), "\n")
+    }, error = function(e) {
+      cat("\nCochran-Armitage test (mHSPC vs mCRPC) failed for GDF15:", e$message, "\n")
+    })
+  }
+}
+
+# Test 1: Compare mCRPC vs Local for high expression
+if("Local" %in% gdf15_data$disease_stage && "mCRPC" %in% gdf15_data$disease_stage) {
+  mcrpc_local_data_gdf15 <- gdf15_data %>% filter(disease_stage %in% c("Local", "mCRPC"))
+
+  # Fisher's exact test
+  local_mcrpc_table_gdf15 <- table(mcrpc_local_data_gdf15$disease_stage, mcrpc_local_data_gdf15$GDF15_cat)
+  if(all(local_mcrpc_table_gdf15 > 0)) {
+    fisher_local_gdf15 <- fisher.test(local_mcrpc_table_gdf15, alternative = "greater")
+    cat("\nLocal vs mCRPC - Fisher's exact test:\n")
+    cat("p-value:", format.pval(fisher_local_gdf15$p.value, digits = 3), "\n")
+    cat("Odds ratio:", round(fisher_local_gdf15$estimate, 2), "\n")
+    cat("95% CI:", round(fisher_local_gdf15$conf.int[1], 2), "-", round(fisher_local_gdf15$conf.int[2], 2), "\n")
+  }
+
+  # Proportion test for high expression
+  local_high_gdf15 <- sum(mcrpc_local_data_gdf15$GDF15_high[mcrpc_local_data_gdf15$disease_stage == "Local"])
+  local_total_gdf15 <- sum(mcrpc_local_data_gdf15$disease_stage == "Local")
+  mcrpc_high_gdf15 <- sum(mcrpc_local_data_gdf15$GDF15_high[mcrpc_local_data_gdf15$disease_stage == "mCRPC"])
+  mcrpc_total_gdf15 <- sum(mcrpc_local_data_gdf15$disease_stage == "mCRPC")
+
+  prop_test_local_gdf15 <- prop.test(c(mcrpc_high_gdf15, local_high_gdf15), c(mcrpc_total_gdf15, local_total_gdf15),
+                                    alternative = "greater")
+  cat("Proportion test (mCRPC > Local for high expression):\n")
+  cat("p-value:", format.pval(prop_test_local_gdf15$p.value, digits = 3), "\n")
+  cat("mCRPC high expression: ", mcrpc_high_gdf15, "/", mcrpc_total_gdf15, " (",
+      round(mcrpc_high_gdf15/mcrpc_total_gdf15*100, 1), "%)\n")
+  cat("Local high expression: ", local_high_gdf15, "/", local_total_gdf15, " (",
+      round(local_high_gdf15/local_total_gdf15*100, 1), "%)\n")
+}
+
+# Test 2: Compare mCRPC vs mHSPC for high expression (if mHSPC exists)
+if("mHSPC" %in% gdf15_data$disease_stage && "mCRPC" %in% gdf15_data$disease_stage) {
+  mcrpc_mhspc_data_gdf15 <- gdf15_data %>% filter(disease_stage %in% c("mHSPC", "mCRPC"))
+
+  # Fisher's exact test
+  mhspc_mcrpc_table_gdf15 <- table(mcrpc_mhspc_data_gdf15$disease_stage, mcrpc_mhspc_data_gdf15$GDF15_cat)
+  if(all(mhspc_mcrpc_table_gdf15 > 0)) {
+    fisher_mhspc_gdf15 <- fisher.test(mhspc_mcrpc_table_gdf15, alternative = "greater")
+    cat("\nmHSPC vs mCRPC - Fisher's exact test:\n")
+    cat("p-value:", format.pval(fisher_mhspc_gdf15$p.value, digits = 3), "\n")
+    cat("Odds ratio:", round(fisher_mhspc_gdf15$estimate, 2), "\n")
+    cat("95% CI:", round(fisher_mhspc_gdf15$conf.int[1], 2), "-", round(fisher_mhspc_gdf15$conf.int[2], 2), "\n")
+  }
+
+  # Proportion test for high expression
+  mhspc_high_gdf15 <- sum(mcrpc_mhspc_data_gdf15$GDF15_high[mcrpc_mhspc_data_gdf15$disease_stage == "mHSPC"])
+  mhspc_total_gdf15 <- sum(mcrpc_mhspc_data_gdf15$disease_stage == "mHSPC")
+  mcrpc_high_2_gdf15 <- sum(mcrpc_mhspc_data_gdf15$GDF15_high[mcrpc_mhspc_data_gdf15$disease_stage == "mCRPC"])
+  mcrpc_total_2_gdf15 <- sum(mcrpc_mhspc_data_gdf15$disease_stage == "mCRPC")
+
+  prop_test_mhspc_gdf15 <- prop.test(c(mcrpc_high_2_gdf15, mhspc_high_gdf15), c(mcrpc_total_2_gdf15, mhspc_total_gdf15),
+                                    alternative = "greater")
+  cat("Proportion test (mCRPC > mHSPC for high expression):\n")
+  cat("p-value:", format.pval(prop_test_mhspc_gdf15$p.value, digits = 3), "\n")
+  cat("mCRPC high expression: ", mcrpc_high_2_gdf15, "/", mcrpc_total_2_gdf15, " (",
+      round(mcrpc_high_2_gdf15/mcrpc_total_2_gdf15*100, 1), "%)\n")
+  cat("mHSPC high expression: ", mhspc_high_gdf15, "/", mhspc_total_gdf15, " (",
+      round(mhspc_high_gdf15/mhspc_total_gdf15*100, 1), "%)\n")
+}
+
+# Create plot with statistical annotations
+prop_data <- gdf15_data %>%
+  group_by(disease_stage, GDF15_cat) %>%
+  summarise(n = n(), .groups = 'drop') %>%
+  group_by(disease_stage) %>%
+  mutate(
+    total = sum(n),
+    proportion = n / total * 100
+  ) %>%
+  ungroup()
+
+# Create sample size labels for top of bars
+sample_size_data <- prop_data %>%
+  group_by(disease_stage) %>%
+  summarise(total = first(total), .groups = 'drop') %>%
+  mutate(label = paste0("n=", total))
+
+# Add significance annotations based on tests
+significance_text_gdf15 <- ""
+if(exists("prop_test_local_gdf15") && exists("prop_test_mhspc_gdf15")) {
+  significance_text_gdf15 <- paste0("Local vs mCRPC: p = ", format.pval(prop_test_local_gdf15$p.value, digits = 3),
+                                   "; mHSPC vs mCRPC: p = ", format.pval(prop_test_mhspc_gdf15$p.value, digits = 3))
+} else if(exists("prop_test_local_gdf15")) {
+  significance_text_gdf15 <- paste0("Local vs mCRPC: p = ", format.pval(prop_test_local_gdf15$p.value, digits = 3))
+} else if(exists("prop_test_mhspc_gdf15")) {
+  significance_text_gdf15 <- paste0("mHSPC vs mCRPC: p = ", format.pval(prop_test_mhspc_gdf15$p.value, digits = 3))
+}
+
+p2 <- ggplot(prop_data, aes(x = disease_stage, y = proportion, fill = GDF15_cat)) +
+  geom_col(position = "stack", alpha = 0.8) +
+  scale_fill_manual(
+    values = c("Low (0-2)" = "#95a5a6", "High (3)" = "#f39c12"),
+    name = "GDF15 Level"
+  ) +
+  labs(
+    title = "GDF15 Expression Categories",
+    subtitle = paste0("Categorical analysis (Low: 0-2, High: 3)\n", significance_text_gdf15),
+    x = "Disease Stage",
+    y = "Percentage (%)",
+    fill = "GDF15 Category"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    strip.text = element_text(size = 12, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  geom_text(aes(label = paste0(round(proportion, 1), "%")),
+            position = position_stack(vjust = 0.5),
+            color = "white", fontweight = "bold", size = 3) +
+  geom_text(data = sample_size_data,
+            aes(x = disease_stage, y = 105, label = label),
+            inherit.aes = FALSE,
+            size = 3.5, fontface = "bold", color = "black")
+
+print(p2)
+
+# Save GDF15 results
+gdf15_results <- data.frame(
+  Test = character(),
+  P_value = numeric(),
+  Odds_Ratio = numeric(),
+  mCRPC_High_Pct = numeric(),
+  Other_High_Pct = numeric(),
+  stringsAsFactors = FALSE
+)
+
+if(exists("prop_test_local_gdf15")) {
+  gdf15_results <- rbind(gdf15_results, data.frame(
+    Test = "Local_vs_mCRPC",
+    P_value = prop_test_local_gdf15$p.value,
+    Odds_Ratio = ifelse(exists("fisher_local_gdf15"), fisher_local_gdf15$estimate, NA),
+    mCRPC_High_Pct = mcrpc_high_gdf15/mcrpc_total_gdf15*100,
+    Other_High_Pct = local_high_gdf15/local_total_gdf15*100
+  ))
+}
+
+if(exists("prop_test_mhspc_gdf15")) {
+  gdf15_results <- rbind(gdf15_results, data.frame(
+    Test = "mHSPC_vs_mCRPC",
+    P_value = prop_test_mhspc_gdf15$p.value,
+    Odds_Ratio = ifelse(exists("fisher_mhspc_gdf15"), fisher_mhspc_gdf15$estimate, NA),
+    mCRPC_High_Pct = mcrpc_high_2_gdf15/mcrpc_total_2_gdf15*100,
+    Other_High_Pct = mhspc_high_gdf15/mhspc_total_gdf15*100
+  ))
+}
+
+print("=== GDF15 Results Summary ===")
+print(gdf15_results)
+```
+
+## CD138
+
+```{r}
+# CD138 Analysis with Statistical Testing
+# Test if mCRPC has higher expression (2-3) compared to other groups
+
+# Filter valid CD138 data
+cd138_data <- df_analysis %>%
+  filter(CD138 != -1, !is.na(CD138)) %>%
+  mutate(
+    CD138_high = ifelse(CD138 %in% c(3), 1, 0),  # Binary: 1 = high (3), 0 = low (0-2)
+    CD138_cat = case_when(
+      CD138 %in% c(0, 1, 2) ~ "Low (0-2)",
+      CD138 %in% c(3) ~ "High (3)",
+      TRUE ~ NA_character_
+    ),
+    CD138_cat = factor(CD138_cat, levels = c("Low (0-2)", "High (3)"))
+  )
+
+# Print sample sizes
+cat("=== CD138 Sample Sizes ===\n")
+print(table(cd138_data$disease_stage))
+
+# Statistical tests comparing mCRPC vs other groups for high expression
+cat("\n=== CD138 Statistical Tests: mCRPC vs Others for High Expression (3) ===\n")
+
+# Create contingency table for binary analysis
+cont_table_cd138 <- table(cd138_data$disease_stage, cd138_data$CD138_cat)
+print("Contingency Table (Binary):")
+print(cont_table_cd138)
+
+# Create contingency table for trend test using original values (0,1,2,3)
+cont_table_cd138_trend <- table(cd138_data$disease_stage, cd138_data$CD138)
+print("Contingency Table (Original Values 0-3):")
+print(cont_table_cd138_trend)
+
+# Cochran-Armitage Trend Test (requires exactly 2 groups)
+if(require(DescTools, quietly = TRUE) && nrow(cont_table_cd138_trend) >= 2 && ncol(cont_table_cd138_trend) >= 2) {
+  available_stages <- rownames(cont_table_cd138_trend)
+
+  # Test 1: Local vs mCRPC
+  if("Local" %in% available_stages && "mCRPC" %in% available_stages) {
+    cont_table_local_mcrpc <- cont_table_cd138_trend[c("Local", "mCRPC"), , drop = FALSE]
+    tryCatch({
+      ca_test_local_mcrpc <- CochranArmitageTest(cont_table_local_mcrpc, alternative = "one.sided")
+      cat("\nCochran-Armitage Trend Test - Local vs mCRPC (CD138):\n")
+      cat("p-value:", format.pval(ca_test_local_mcrpc$p.value, digits = 3), "\n")
+      cat("Test statistic:", round(ca_test_local_mcrpc$statistic, 3), "\n")
+    }, error = function(e) {
+      cat("\nCochran-Armitage test (Local vs mCRPC) failed for CD138:", e$message, "\n")
+    })
+  }
+
+  # Test 2: mHSPC vs mCRPC (if mHSPC exists)
+  if("mHSPC" %in% available_stages && "mCRPC" %in% available_stages) {
+    cont_table_mhspc_mcrpc <- cont_table_cd138_trend[c("mHSPC", "mCRPC"), , drop = FALSE]
+    tryCatch({
+      ca_test_mhspc_mcrpc <- CochranArmitageTest(cont_table_mhspc_mcrpc, alternative = "one.sided")
+      cat("\nCochran-Armitage Trend Test - mHSPC vs mCRPC (CD138):\n")
+      cat("p-value:", format.pval(ca_test_mhspc_mcrpc$p.value, digits = 3), "\n")
+      cat("Test statistic:", round(ca_test_mhspc_mcrpc$statistic, 3), "\n")
+    }, error = function(e) {
+      cat("\nCochran-Armitage test (mHSPC vs mCRPC) failed for CD138:", e$message, "\n")
+    })
+  }
+}
+
+# Test 1: Compare mCRPC vs Local for high expression
+if("Local" %in% cd138_data$disease_stage && "mCRPC" %in% cd138_data$disease_stage) {
+  mcrpc_local_data <- cd138_data %>% filter(disease_stage %in% c("Local", "mCRPC"))
+
+  # Fisher's exact test
+  local_mcrpc_table <- table(mcrpc_local_data$disease_stage, mcrpc_local_data$CD138_cat)
+  if(all(local_mcrpc_table > 0)) {
+    fisher_local <- fisher.test(local_mcrpc_table, alternative = "greater")
+    cat("\nLocal vs mCRPC - Fisher's exact test:\n")
+    cat("p-value:", format.pval(fisher_local$p.value, digits = 3), "\n")
+    cat("Odds ratio:", round(fisher_local$estimate, 2), "\n")
+    cat("95% CI:", round(fisher_local$conf.int[1], 2), "-", round(fisher_local$conf.int[2], 2), "\n")
+  }
+
+  # Proportion test for high expression
+  local_high <- sum(mcrpc_local_data$CD138_high[mcrpc_local_data$disease_stage == "Local"])
+  local_total <- sum(mcrpc_local_data$disease_stage == "Local")
+  mcrpc_high <- sum(mcrpc_local_data$CD138_high[mcrpc_local_data$disease_stage == "mCRPC"])
+  mcrpc_total <- sum(mcrpc_local_data$disease_stage == "mCRPC")
+
+  prop_test_local <- prop.test(c(mcrpc_high, local_high), c(mcrpc_total, local_total),
+                              alternative = "greater")
+  cat("Proportion test (mCRPC > Local for high expression):\n")
+  cat("p-value:", format.pval(prop_test_local$p.value, digits = 3), "\n")
+  cat("mCRPC high expression: ", mcrpc_high, "/", mcrpc_total, " (",
+      round(mcrpc_high/mcrpc_total*100, 1), "%)\n")
+  cat("Local high expression: ", local_high, "/", local_total, " (",
+      round(local_high/local_total*100, 1), "%)\n")
+}
+
+# Test 2: Compare mCRPC vs mHSPC for high expression (if mHSPC exists)
+if("mHSPC" %in% cd138_data$disease_stage && "mCRPC" %in% cd138_data$disease_stage) {
+  mcrpc_mhspc_data <- cd138_data %>% filter(disease_stage %in% c("mHSPC", "mCRPC"))
+
+  # Fisher's exact test
+  mhspc_mcrpc_table <- table(mcrpc_mhspc_data$disease_stage, mcrpc_mhspc_data$CD138_cat)
+  if(all(mhspc_mcrpc_table > 0)) {
+    fisher_mhspc <- fisher.test(mhspc_mcrpc_table, alternative = "greater")
+    cat("\nmHSPC vs mCRPC - Fisher's exact test:\n")
+    cat("p-value:", format.pval(fisher_mhspc$p.value, digits = 3), "\n")
+    cat("Odds ratio:", round(fisher_mhspc$estimate, 2), "\n")
+    cat("95% CI:", round(fisher_mhspc$conf.int[1], 2), "-", round(fisher_mhspc$conf.int[2], 2), "\n")
+  }
+
+  # Proportion test for high expression
+  mhspc_high <- sum(mcrpc_mhspc_data$CD138_high[mcrpc_mhspc_data$disease_stage == "mHSPC"])
+  mhspc_total <- sum(mcrpc_mhspc_data$disease_stage == "mHSPC")
+  mcrpc_high_2 <- sum(mcrpc_mhspc_data$CD138_high[mcrpc_mhspc_data$disease_stage == "mCRPC"])
+  mcrpc_total_2 <- sum(mcrpc_mhspc_data$disease_stage == "mCRPC")
+
+  prop_test_mhspc <- prop.test(c(mcrpc_high_2, mhspc_high), c(mcrpc_total_2, mhspc_total),
+                              alternative = "greater")
+  cat("Proportion test (mCRPC > mHSPC for high expression):\n")
+  cat("p-value:", format.pval(prop_test_mhspc$p.value, digits = 3), "\n")
+  cat("mCRPC high expression: ", mcrpc_high_2, "/", mcrpc_total_2, " (",
+      round(mcrpc_high_2/mcrpc_total_2*100, 1), "%)\n")
+  cat("mHSPC high expression: ", mhspc_high, "/", mhspc_total, " (",
+      round(mhspc_high/mhspc_total*100, 1), "%)\n")
+}
+
+# Create plot with statistical annotations
+prop_data <- cd138_data %>%
+  group_by(disease_stage, CD138_cat) %>%
+  summarise(n = n(), .groups = 'drop') %>%
+  group_by(disease_stage) %>%
+  mutate(
+    total = sum(n),
+    proportion = n / total * 100
+  ) %>%
+  ungroup()
+
+# Create sample size labels for top of bars
+sample_size_data <- prop_data %>%
+  group_by(disease_stage) %>%
+  summarise(total = first(total), .groups = 'drop') %>%
+  mutate(label = paste0("n=", total))
+
+# Add significance annotations based on tests
+significance_text <- ""
+if(exists("prop_test_local") && exists("prop_test_mhspc")) {
+  significance_text <- paste0("Local vs mCRPC: p = ", format.pval(prop_test_local$p.value, digits = 3),
+                             "; mHSPC vs mCRPC: p = ", format.pval(prop_test_mhspc$p.value, digits = 3))
+} else if(exists("prop_test_local")) {
+  significance_text <- paste0("Local vs mCRPC: p = ", format.pval(prop_test_local$p.value, digits = 3))
+} else if(exists("prop_test_mhspc")) {
+  significance_text <- paste0("mHSPC vs mCRPC: p = ", format.pval(prop_test_mhspc$p.value, digits = 3))
+}
+
+p3 <- ggplot(prop_data, aes(x = disease_stage, y = proportion, fill = CD138_cat)) +
+  geom_col(position = "stack", alpha = 0.8) +
+  scale_fill_manual(
+    values = c("Low (0-2)" = "#95a5a6", "High (3)" = "#f39c12"),
+    name = "CD138 Level"
+  ) +
+  labs(
+    title = "CD138 Expression Categories",
+    subtitle = paste0("Categorical analysis (Low: 0-2, High: 3)\n", significance_text),
+    x = "Disease Stage",
+    y = "Percentage (%)",
+    fill = "CD138 Category"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    strip.text = element_text(size = 12, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  geom_text(aes(label = paste0(round(proportion, 1), "%")),
+            position = position_stack(vjust = 0.5),
+            color = "white", fontweight = "bold", size = 3) +
+  geom_text(data = sample_size_data,
+            aes(x = disease_stage, y = 105, label = label),
+            inherit.aes = FALSE,
+            size = 3.5, fontface = "bold", color = "black")
+
+print(p3)
+
+# Save CD138 results
+cd138_results <- data.frame(
+  Test = character(),
+  P_value = numeric(),
+  Odds_Ratio = numeric(),
+  mCRPC_High_Pct = numeric(),
+  Other_High_Pct = numeric(),
+  stringsAsFactors = FALSE
+)
+
+if(exists("prop_test_local")) {
+  cd138_results <- rbind(cd138_results, data.frame(
+    Test = "Local_vs_mCRPC",
+    P_value = prop_test_local$p.value,
+    Odds_Ratio = ifelse(exists("fisher_local"), fisher_local$estimate, NA),
+    mCRPC_High_Pct = mcrpc_high/mcrpc_total*100,
+    Other_High_Pct = local_high/local_total*100
+  ))
+}
+
+if(exists("prop_test_mhspc")) {
+  cd138_results <- rbind(cd138_results, data.frame(
+    Test = "mHSPC_vs_mCRPC",
+    P_value = prop_test_mhspc$p.value,
+    Odds_Ratio = ifelse(exists("fisher_mhspc"), fisher_mhspc$estimate, NA),
+    mCRPC_High_Pct = mcrpc_high_2/mcrpc_total_2*100,
+    Other_High_Pct = mhspc_high/mhspc_total*100
+  ))
+}
+
+print("=== CD138 Results Summary ===")
+print(cd138_results)
+
+# Save CD138 results to file
+write.csv(cd138_results,
+          file.path(wd$outCurr, "CD138_mCRPC_high_expression_tests.csv"),
+          row.names = FALSE)
+```
+
+## Combined Results Summary
+
+```{r}
+# Combine results from both markers
+combined_marker_results <- data.frame(
+  Marker = character(),
+  Test = character(),
+  P_value = numeric(),
+  Odds_Ratio = numeric(),
+  mCRPC_High_Pct = numeric(),
+  Other_High_Pct = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Add CD138 results
+if(exists("cd138_results") && nrow(cd138_results) > 0) {
+  combined_marker_results <- rbind(combined_marker_results,
+                                  cbind(Marker = "CD138", cd138_results))
+}
+
+# Add GDF15 results
+if(exists("gdf15_results") && nrow(gdf15_results) > 0) {
+  combined_marker_results <- rbind(combined_marker_results,
+                                  cbind(Marker = "GDF15", gdf15_results))
+}
+
+cat("=== COMBINED RESULTS: CD138 & GDF15 High Expression in mCRPC ===\n")
+print(combined_marker_results)
+
+# Save combined results
+write.csv(combined_marker_results,
+          file.path(wd$outCurr, "Combined_CD138_GDF15_mCRPC_high_expression_tests.csv"),
+          row.names = FALSE)
+
+# Save GDF15 results separately too
+if(exists("gdf15_results")) {
+  write.csv(gdf15_results,
+            file.path(wd$outCurr, "GDF15_mCRPC_high_expression_tests.csv"),
+            row.names = FALSE)
+}
+
+cat("\nFiles saved:\n")
+cat("- CD138 results:", file.path(wd$outCurr, "CD138_mCRPC_high_expression_tests.csv"), "\n")
+cat("- GDF15 results:", file.path(wd$outCurr, "GDF15_mCRPC_high_expression_tests.csv"), "\n")
+cat("- Combined results:", file.path(wd$outCurr, "Combined_CD138_GDF15_mCRPC_high_expression_tests.csv"), "\n")
+```
 
