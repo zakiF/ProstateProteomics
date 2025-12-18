@@ -169,6 +169,12 @@ meta_c <- meta_c %>%
          death = case_when(death_status == "n" ~ 0,
                            death_status == "y" ~ 1)) %>% 
   select(HCI_cID, OS, death, psa, ldh, alk_phos)
+
+# Save this 
+meta_c_tmp <- meta_c %>% 
+  dplyr::mutate(HCI_cID = gsub("-", "_", HCI_cID),
+                HCI_cID = paste0("c_", HCI_cID))
+write.csv(meta_c_tmp, file.path(wd$outData, "mCRPC_metadata.csv"))
 ```
 
 ### Univariate
@@ -182,6 +188,7 @@ c_stage_pro <- overlap_df_limma %>%
   filter(Category %in% c("B and CD", "CD")) %>% 
   pull(OlinkID)
 length(c_stage_pro)
+write.csv(c_stage_pro, file.path(wd$outData, "mCRPC_proteins.csv"))
 ```
 
 Secondly, for prognostic, we want to select just the pre- treatment patients in cohort C
@@ -592,6 +599,10 @@ hr_summary <- df_plot %>%
 write.csv(hr_summary, file.path(wd$outCurr, "All_523_proteins_summary.csv"), row.names = FALSE)
 print(hr_summary)
 ```
+### Viz as pie and bar chart
+
+
+
 
 ## Drug related proteins
 
@@ -1485,6 +1496,8 @@ if(nrow(available_proteins) > 0) {
 Based on the manuscript methodology, we develop a composite proteomic prognostic score (CPPS) using the top 10 proteins with the highest hazard ratios for overall survival.
 
 ### Feature selection 
+
+> We did not do this section
 
 ```{r eval=FALSE}
 # Feature Selection for Optimal CPPS Construction
@@ -2890,9 +2903,9 @@ options(datadist = "dd")
 # Refit models with datadist in place for nomograms
 cox_model_clinical_nom <- cph(Surv(time_to_death, death) ~ log10_psa + log10_alp, 
                              data = df_cpps_complete, x = TRUE, y = TRUE, surv = TRUE)
-cox_model_cpps_alone_nom <- cph(Surv(time_to_death, death) ~ CPPS, 
+cox_model_cpps_alone_nom <- cph(Surv(time_to_death, death) ~ CPPS_risk, 
                                data = df_cpps_complete, x = TRUE, y = TRUE, surv = TRUE)
-cox_model_cpps_combined_nom <- cph(Surv(time_to_death, death) ~ log10_psa + log10_alp + CPPS, 
+cox_model_cpps_combined_nom <- cph(Surv(time_to_death, death) ~ log10_psa + log10_alp + CPPS_risk, 
                                   data = df_cpps_complete, x = TRUE, y = TRUE, surv = TRUE)
 
 # Define survival probability function for nomograms

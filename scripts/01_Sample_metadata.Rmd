@@ -324,11 +324,57 @@ df_clin <- read_xlsx(meta_file, sheet = 1)
 dd <- df_clin
 df_a <- data.frame(
   mrn = dd$`MRN (UUHSC)`,
+  age = dd$Age_at_time_of_enrollment,
   HCI_cID = c(dd$Sample1_HCI_Num, dd$Sample2_HCI_Num),
   date = c(dd$Sample1_date, dd$`Sample 2 Start date`)
   ) %>% filter(!is.na(HCI_cID)) %>% 
   mutate(cohort = "A") %>% 
   filter(HCI_cID %in% df_hci_id$HCI_cID)
+
+
+df_a2 <- data.frame(
+    mrn = dd$`MRN (UUHSC)`,
+    age = dd$Age_at_time_of_enrollment,
+    HCI_cID = c(dd$Sample1_HCI_Num, dd$Sample2_HCI_Num),
+    date = c(dd$Sample1_date, dd$`Sample 2 Start date`),
+    psa = c(dd$sample1_psa, dd$sample2_psa),
+    alk_phos = c(dd$sample1_alk_phos, dd$sample2_alk_phos),
+    testo = NA,  # No testosterone data for Cohort A
+    hemoGlo = c(dd$`Hemoglobin at s1`, rep(NA, length(dd$Sample1_HCI_Num))),  # Only sample 1 has hemoglobin data
+    surgery_type = dd$Surgery_Type,
+    surgery_date = dd$Surgery_date,
+    radiation_type = dd$Radiation_Type,
+    radiation_date = dd$Radiation_date,
+    glsn_diag = dd$diag_glsn,
+    death_status = dd$`Deceased?`)  %>%
+  filter(!is.na(HCI_cID)) %>%
+  mutate(cohort = "A") %>%
+  mutate(
+    psa = as.numeric(gsub("<", "", psa)),
+    testo = as.numeric(gsub("<", "", testo))
+  ) %>%
+  filter(HCI_cID %in% df_hci_id$HCI_cID) %>% 
+  # Convert dates to Date type
+  mutate(
+    date = as.Date(date),
+    surgery_date = as.Date(surgery_date),
+    radiation_date = as.Date(radiation_date),
+    # Calculate days from treatment to sample (positive if treatment was before sample)
+    days_since_surgery = abs(as.numeric(difftime(date, surgery_date, units = "days"))),
+    days_since_radiation = abs(as.numeric(difftime(date, radiation_date, units = "days"))),
+    # Create sur_or_rad column: pick treatment that happened before sample and is closest to sample date
+    sur_or_rad = case_when(
+    # Both treatments happened before sample - pick the closer one (smaller time difference)
+    !is.na(days_since_surgery) & days_since_surgery > 0 &
+    !is.na(days_since_radiation) & days_since_radiation > 0 ~
+    ifelse(days_since_surgery < days_since_radiation, surgery_type, radiation_type),
+    # Only surgery happened before sample
+    !is.na(days_since_surgery) & days_since_surgery > 0 ~ surgery_type,
+    # Only radiation happened before sample
+    !is.na(days_since_radiation) & days_since_radiation > 0 ~ radiation_type,
+    # No treatment before sample
+    TRUE ~ NA_character_)
+    ) 
 ```
 
 ### Cohort B
@@ -340,16 +386,27 @@ df_clin <- read_xlsx(meta_file, sheet = 2)
 
 dd <- df_clin
 
+HCI_cID = c(dd$Sample1_HCI_Num, dd$Sample2_HCI_Num, dd$Sample3_HCI_Num)
+
+
 df_b <- data.frame(
   mrn = dd$`MRN (UUHSC)`,
+  age = dd$Age_at_time_of_enrollment,
   HCI_cID = c(dd$Sample1_HCI_Num, dd$Sample2_HCI_Num, dd$Sample3_HCI_Num),
   date = c(dd$Sample1_date, dd$`Sample 2 Start date`, dd$`sample3 date`),
   psa = c(dd$sample1_psa, dd$sample2_psa, dd$sample3_psa),
-  testo = c(dd$sample1_testos, dd$`Sample 2 Testerone`, dd$`Sample 3 Testosterone`), 
+  testo = c(dd$sample1_testos, dd$`Sample 2 Testerone`, dd$`Sample 3 Testosterone`),
+  hemoGlo = c(dd$`Hemoglobin at s1`, rep(NA, (length(HCI_cID) - length(dd$`Hemoglobin at s1`)  ) )),
+  surgery_type = dd$Surgery_Type,
+  surgery_date = dd$Surgery_date,
+  radiation_type = dd$Radiation_Type,
+  radiation_date = dd$Radiation_date,
+  glsn_diag = dd$diag_glsn,
+  mets_stage = dd$`De Novo Mets`,
+  mets_volume = dd$chaarted_volume_at_mhspc,
   txt_ori = dd$txt_stat,
   death_date = c(dd$`Death date`),
   death_status = dd$`Deceased?`,
-  mets_volume = dd$chaarted_volume_at_mhspc,
   # Info on HSPC treatment
   txt_nhspc_1st_type = dd$`1st_nmhspc_rx`,
   txt_nhspc_1st_date = dd$`1st_nmhspc_rx_date`,
@@ -363,14 +420,35 @@ df_b <- data.frame(
   txt_nmcrpc_1st_date = dd$`1st_nmcrpc_rx_date`,
   txt_mcrpc_1st_date = dd$`1st_mcrpc_rx_date`,
   txt_mcrpc_2nd_date = dd$`2nd_mcrpc_rx_date`
-) %>% 
-  filter(!is.na(HCI_cID)) %>% 
+) %>%
+  filter(!is.na(HCI_cID)) %>%
   mutate(
     cohort = "B",
     psa = as.numeric(gsub("<", "", psa)),
     testo = as.numeric(gsub("<", "", testo))
-  ) %>% 
-  filter(HCI_cID %in% df_hci_id$HCI_cID)
+  ) %>%
+  filter(HCI_cID %in% df_hci_id$HCI_cID) %>% 
+    # Convert dates to Date type
+  mutate(
+    date = as.Date(date),
+    surgery_date = as.Date(surgery_date),
+    radiation_date = as.Date(radiation_date),
+    # Calculate days from treatment to sample (positive if treatment was before sample)
+    days_since_surgery = abs(as.numeric(difftime(date, surgery_date, units = "days"))),
+    days_since_radiation = abs(as.numeric(difftime(date, radiation_date, units = "days"))),
+    # Create sur_or_rad column: pick treatment that happened before sample and is closest to sample date
+    sur_or_rad = case_when(
+    # Both treatments happened before sample - pick the closer one (smaller time difference)
+    !is.na(days_since_surgery) & days_since_surgery > 0 &
+    !is.na(days_since_radiation) & days_since_radiation > 0 ~
+    ifelse(days_since_surgery < days_since_radiation, surgery_type, radiation_type),
+    # Only surgery happened before sample
+    !is.na(days_since_surgery) & days_since_surgery > 0 ~ surgery_type,
+    # Only radiation happened before sample
+    !is.na(days_since_radiation) & days_since_radiation > 0 ~ radiation_type,
+    # No treatment before sample
+    TRUE ~ NA_character_)
+    )
 ```
 
 #### ADT treatment
@@ -550,13 +628,24 @@ df_clin <- read_xlsx(meta_file, sheet = 5)
 
 dd <- df_clin
 
+HCI_cID = c(dd$Sample1_HCI_Num, dd$Sample2_HCI_Num, dd$Sample3_HCI_Num)
+
 df_c <- data.frame(
   mrn = dd$`MRN (UUHSC)`,
+  age = dd$Age_at_time_of_enrollment,
   HCI_cID = c(dd$Sample1_HCI_Num, dd$Sample2_HCI_Num, dd$Sample3_HCI_Num),
   date = c(dd$Sample1_date, dd$`Sample 2 Start date`, dd$`Sample3_Start date`),
   psa = c(dd$sample1_psa, dd$sample2_psa, dd$sample3_psa),
   ldh = c(dd$sample1_ldh, dd$sample2_ldh, dd$sample3_ldh),
   alk_phos = c(dd$sample1_alk_phos, dd$sample2_alk_phos, dd$sample3_alk_phos),
+  testo = c(dd$sample1_testos, dd$`Sample 2 Testos`, rep(NA, (length(HCI_cID) - length(c(dd$`sample1_testos`, dd$`Sample 2 Testos`)  ) ) )),
+  hemoGlo = c(dd$`Hemoglobin at s1`, rep(NA, (length(HCI_cID) - length(dd$`Hemoglobin at s1`)  ) )),
+    surgery_type = dd$Surgery_Type,
+  surgery_date = dd$Surgery_date,
+  radiation_type = dd$Radiation_Type,
+  radiation_date = dd$Radiation_date,
+  glsn_diag = dd$diag_glsn,
+  mets_stage = dd$`De-Novo Metastatic (Y/N)`,
   death_date = c(dd$`Death date`),
   death_status = dd$`Deceased?`,
   txt_nmcrpc_1st_type = dd$`1st_nmcrpc_rx`,
@@ -565,15 +654,37 @@ df_c <- data.frame(
   txt_mcrpc_1st_date = dd$`1st_mcrpc_rx_date`,
   txt_mcrpc_2nd_type = dd$`2nd_mcrpc_rx`,
   txt_mcrpc_2nd_date = dd$`2nd_mcrpc_rx_date`
-) %>% 
-  filter(!is.na(HCI_cID)) %>% 
+) %>%
+  filter(!is.na(HCI_cID)) %>%
   mutate(
     cohort = "C",
     psa = as.numeric(gsub("<", "", psa)),
     ldh = as.numeric(gsub("<", "", ldh)),
-    alk_phos = as.numeric(gsub("<", "", alk_phos))
-  ) %>% 
-  filter(HCI_cID %in% df_hci_id$HCI_cID)
+    alk_phos = as.numeric(gsub("<", "", alk_phos)),
+    testo = as.numeric(gsub("<", "", testo))
+  ) %>%
+  filter(HCI_cID %in% df_hci_id$HCI_cID) %>% 
+  # Convert dates to Date type
+  mutate(
+    date = as.Date(date),
+    surgery_date = as.Date(surgery_date),
+    radiation_date = as.Date(radiation_date),
+    # Calculate days from treatment to sample (positive if treatment was before sample)
+    days_since_surgery = abs(as.numeric(difftime(date, surgery_date, units = "days"))),
+    days_since_radiation = abs(as.numeric(difftime(date, radiation_date, units = "days"))),
+    # Create sur_or_rad column: pick treatment that happened before sample and is closest to sample date
+    sur_or_rad = case_when(
+    # Both treatments happened before sample - pick the closer one (smaller time difference)
+    !is.na(days_since_surgery) & days_since_surgery > 0 &
+    !is.na(days_since_radiation) & days_since_radiation > 0 ~
+    ifelse(days_since_surgery < days_since_radiation, surgery_type, radiation_type),
+    # Only surgery happened before sample
+    !is.na(days_since_surgery) & days_since_surgery > 0 ~ surgery_type,
+    # Only radiation happened before sample
+    !is.na(days_since_radiation) & days_since_radiation > 0 ~ radiation_type,
+    # No treatment before sample
+    TRUE ~ NA_character_)
+    )
 ```
 
 We want to figure out when is the first CRPC treatment is given. Regardless of what CRPC treatment was given
@@ -665,10 +776,10 @@ Create a master file to see the treatment status and collection date of all samp
 d1 <- df_a %>% 
   mutate(txt_stat = "Pre",
          time2txt = 0) 
-d2 <- df_b3 %>% select(mrn, HCI_cID, date, cohort, updated_adt_early, days_to_adt_early) %>% 
+d2 <- df_b3 %>% select(mrn, age, HCI_cID, date, cohort, updated_adt_early, days_to_adt_early) %>% 
   rename(txt_stat = updated_adt_early,
          time2txt= days_to_adt_early)
-d3 <- df_c2 %>% select(mrn, HCI_cID, date, cohort, mcrpc_status_early, days_to_mcrpc_early) %>% 
+d3 <- df_c2 %>% select(mrn, age, HCI_cID, date, cohort, mcrpc_status_early, days_to_mcrpc_early) %>% 
   rename(txt_stat = mcrpc_status_early,
          time2txt = days_to_mcrpc_early)
 
@@ -1542,6 +1653,66 @@ rect_data <- data.frame(
 
 write.csv(swimmers_data, file.path(wd$outCurr, "SwimmersData_cleaned.csv"))
 
+# 10. All samples
+p_swimmers_ordered4 <- ggplot(
+  swimmers_data,
+  aes(x = x_pos, y = y_pos)) +
+  geom_vline(
+    xintercept = c(0, 1, 2),
+    linetype = "dashed",
+    color = "grey50",
+    alpha = 0.5
+  ) +
+  geom_point(
+    aes(color = txt_stat_ordered),
+    size = 3,
+    shape = 16
+  ) +
+  geom_line(
+    aes(group = mrn),
+    color = "grey50",
+    alpha = 0.5
+  ) +
+  # geom_text(
+  #   aes(label = time2txt),
+  #   vjust = -1,
+  #   size = 3
+  #) +
+  scale_x_continuous(
+    breaks = 0:2,
+    labels = c("Cohort A", "Cohort B", "Cohort C/D"),
+    limits = c(-0.5, 2.5)
+  ) +
+  scale_color_manual(
+    values = c(
+      "Pre1" = "steelblue", "Pre2" = "steelblue", "Pre3" = "red",
+      "Post1" = "orange", "Post2" = "orange", "Post3" = "orange"
+    )
+    #labels = c("Pre1", "Pre2", "Pre3", "Post1", "Post2", "Post3")
+  ) +
+  labs(
+    x = "",
+    y = "Patient",
+    color = "Sample Type"
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    legend.position = "right"
+  )
+
+ggsave(
+  p_swimmers_ordered4,
+  file = file.path(wd$outCurr, "Sample_collection_timeline_ordered_noTime_cleaned.pdf"),
+  height = 15,
+  width = 8,
+  limitsize = FALSE
+)
+
+
 # 11. Zommed section
 p_swimmers_ordered4 <- ggplot(
   swimmers_data %>% filter(!pattern %in% c("A", "B_Pre_Only", "B_Post_Only",
@@ -1563,11 +1734,11 @@ p_swimmers_ordered4 <- ggplot(
     color = "grey50",
     alpha = 0.5
   ) +
-  geom_text(
-    aes(label = time2txt),
-    vjust = -1,
-    size = 3
-  ) +
+  # geom_text(
+  #   aes(label = time2txt),
+  #   vjust = -1,
+  #   size = 3
+  #) +
   scale_x_continuous(
     breaks = 0:2,
     labels = c("Cohort A", "Cohort B", "Cohort C/D"),
@@ -1680,6 +1851,326 @@ p_bar <- ggplot(summary_data, aes(x = cohort, y = count, fill = metric)) +
 ggsave(p_bar, file=file.path(wd$outCurr, "Patients_number_bar_clean.pdf"), height = 5, width = 7)
 ```
 
+## Swimmer + bar
+
+We used Claude to fix some of the plot
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(patchwork)  # For combining plots
+
+
+# Define pattern order with original names
+pattern_order_original <- c(
+  "A",
+  "B_Pre_Only", "B_Post_Only",
+  "C_Pre_Only", "C_Post_Only",
+  "B_Serial_PrePost",
+  "C_Serial_PrePost",
+  "B_Pre_to_C_Pre",
+  "B_Post_to_C_Post",
+  "C_Post1_to_C_Post2",
+  "B_Post_to_C_Pre",
+  "C_Pre1_to_C_Pre2",
+  "B_Pre1_to_B_Pre2",
+  "B_Post_to_C_Pre_to_C_Post"
+)
+
+# Create mapping for better labels
+pattern_labels <- c(
+  "A" = "Localized\nBaseline only",
+  
+  # Single timepoint patterns
+  "B_Pre_Only" = "mHSPC\nPre-treatment only",
+  "B_Post_Only" = "mHSPC\nPost-treatment only",
+  "C_Pre_Only" = "mCRPC\nPre-treatment only",
+  "C_Post_Only" = "mCRPC\nPost-treatment only",
+  
+  # Serial within same disease state
+  "B_Serial_PrePost" = "mHSPC\nPre → Post treatment",
+  "C_Serial_PrePost" = "mCRPC\nPre → Post treatment",
+  
+  # Cross-disease state patterns (Pre-treatment)
+  "B_Pre_to_C_Pre" = "Pre-treatment\nmHSPC → mCRPC",
+  
+  # Cross-disease state patterns (Post-treatment)
+  "B_Post_to_C_Post" = "Post-treatment\nmHSPC → mCRPC",
+  
+  # Multiple timepoints within disease state
+  "C_Post1_to_C_Post2" = "mCRPC\nPost → Post (serial)",
+  "C_Pre1_to_C_Pre2" = "mCRPC\nPre → Pre (serial)",
+  "B_Pre1_to_B_Pre2" = "mHSPC\nPre → Pre (serial)",
+  
+  # Complex cross-disease patterns
+  "B_Post_to_C_Pre" = "mHSPC Post →\nmCRPC Pre",
+  "B_Post_to_C_Pre_to_C_Post" = "mHSPC Post →\nmCRPC Pre → Post"
+)
+
+# Add any missing patterns with generic labels
+for (pattern in unique(swimmers_data$pattern)) {
+  if (!pattern %in% names(pattern_labels)) {
+    pattern_labels[pattern] = pattern
+  }
+}
+
+# Update cohort labels in the data
+swimmers_data <- swimmers_data %>%
+  mutate(
+    cohort_display = case_when(
+      cohort == "A" ~ "Localized",
+      cohort == "B" ~ "mHSPC",
+      cohort %in% c("C", "D") ~ "mCRPC",
+      TRUE ~ cohort
+    )
+  )
+
+# Create pattern factor with desired order
+swimmers_data$pattern <- factor(swimmers_data$pattern, levels = pattern_order_original)
+
+# Count patients per pattern for spacing
+pattern_counts <- swimmers_data %>%
+  group_by(pattern) %>%
+  summarise(n_patients = n_distinct(mrn)) %>%
+  arrange(pattern)
+
+# INCREASED SPACING for better readability
+pattern_spacing <- 3  # Increased from 1.5 to 3 for more separation
+
+# Create new y-positions grouped by pattern with more spacing
+swimmers_data <- swimmers_data %>%
+  arrange(pattern, mrn) %>%
+  group_by(pattern) %>%
+  mutate(
+    patient_within_pattern = as.numeric(factor(mrn)),
+    pattern_num = as.numeric(pattern)
+  ) %>%
+  ungroup()
+
+# Recalculate grouped_y_pos with increased spacing
+pattern_positions <- pattern_counts %>%
+  mutate(
+    cumulative_patients = cumsum(n_patients),
+    pattern_y_start = lag(cumulative_patients, default = 0) + (row_number() - 1) * pattern_spacing,
+    pattern_y_end = pattern_y_start + n_patients - 1,
+    pattern_label = pattern_labels[as.character(pattern)]
+  )
+
+swimmers_data <- swimmers_data %>%
+  left_join(pattern_positions %>% select(pattern, pattern_y_start), by = "pattern") %>%
+  mutate(grouped_y_pos = pattern_y_start + patient_within_pattern - 1)
+
+# Calculate sample counts for bar graph
+sample_counts <- swimmers_data %>%
+  mutate(
+    sample_type = case_when(
+      txt_stat_ordered %in% c("Pre1", "Pre2", "Pre3") ~ "Pre",
+      txt_stat_ordered %in% c("Post1", "Post2", "Post3") ~ "Post"
+    )
+  ) %>%
+  group_by(cohort_display, sample_type) %>%
+  summarise(n_samples = n(), .groups = "drop") %>%
+  mutate(
+    x_pos = case_when(
+      cohort_display == "Localized" & sample_type == "Pre" ~ -0.2,
+      cohort_display == "Localized" & sample_type == "Post" ~ 0.2,
+      cohort_display == "mHSPC" & sample_type == "Pre" ~ 0.8,
+      cohort_display == "mHSPC" & sample_type == "Post" ~ 1.2,
+      cohort_display == "mCRPC" & sample_type == "Pre" ~ 1.8,
+      cohort_display == "mCRPC" & sample_type == "Post" ~ 2.2
+    )
+  )
+
+# Create the bar plot with fixed y-axis range
+p_bars <- ggplot(sample_counts, aes(x = x_pos, y = n_samples)) +
+  geom_col(aes(fill = sample_type), width = 0.3, alpha = 0.7) +
+  geom_text(aes(label = n_samples), vjust = -0.5, size = 3.5, fontface = "bold") +
+  scale_fill_manual(
+    values = c("Pre" = "steelblue", "Post" = "orange"),
+    name = "Sample Type",
+    labels = c("Pre" = "Pre-treatment", "Post" = "Post-treatment")
+  ) +
+  scale_x_continuous(
+    breaks = c(0, 1, 2),
+    labels = c("", "", ""),  # Will add labels in main plot
+    limits = c(-0.5, 3.5)
+  ) +
+  scale_y_continuous(
+    limits = c(0, 100),  # Fixed range 0-100
+    breaks = seq(0, 100, by = 20),
+    expand = c(0, 0)
+  ) +
+  labs(
+    x = "",
+    y = "Number of Samples",
+    title = "Sample Distribution by Disease State and Treatment Status"
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.major.y = element_line(color = "grey90"),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.position = "top",
+    legend.box = "horizontal",
+    plot.margin = margin(t = 5, r = 5, b = 0, l = 5),
+    plot.title = element_text(size = 10, face = "italic")
+  )
+
+# Create the main swimmer plot with better separation
+p_grouped <- ggplot(swimmers_data, aes(x = x_pos, y = grouped_y_pos)) +
+  # Add alternating background rectangles for pattern groups
+  geom_rect(
+    data = pattern_positions[seq(1, nrow(pattern_positions), by = 2), ],
+    aes(xmin = -0.5, xmax = 2.5, 
+        ymin = pattern_y_start - 0.5, 
+        ymax = pattern_y_end + 0.5),
+    fill = "grey95",
+    alpha = 0.5,
+    inherit.aes = FALSE
+  ) +
+  # Add shaded regions for disease states
+  annotate("rect", xmin = -0.5, xmax = 0.5, ymin = -Inf, ymax = Inf, 
+           fill = "lightgreen", alpha = 0.05) +
+  annotate("rect", xmin = 0.5, xmax = 1.5, ymin = -Inf, ymax = Inf, 
+           fill = "lightblue", alpha = 0.05) +
+  annotate("rect", xmin = 1.5, xmax = 2.5, ymin = -Inf, ymax = Inf, 
+           fill = "lightyellow", alpha = 0.05) +
+  # Add vertical lines for cohorts
+  geom_vline(
+    xintercept = c(0.5, 1.5),
+    linetype = "solid",
+    color = "grey70",
+    alpha = 0.5,
+    size = 0.5
+  ) +
+  # Add THICKER horizontal lines to separate pattern groups
+  geom_hline(
+    data = data.frame(y = pattern_positions$pattern_y_start[-1] - pattern_spacing/2),
+    aes(yintercept = y),
+    linetype = "solid",
+    color = "grey50",
+    alpha = 0.8,
+    size = 1  # Thicker lines for better separation
+  ) +
+  # Add connecting lines for each patient
+  geom_line(
+    aes(group = mrn),
+    color = "grey50",
+    alpha = 0.5
+  ) +
+  # Add points colored by sample type
+  geom_point(
+    aes(color = txt_stat_ordered),
+    size = 2.5,
+    shape = 16
+  ) +
+  # Add pattern group labels with boxes
+  geom_rect(
+    data = pattern_positions,
+    aes(xmin = 2.6, xmax = 3.4,
+        ymin = pattern_y_start + (n_patients - 1) / 2 - 0.8,
+        ymax = pattern_y_start + (n_patients - 1) / 2 + 0.8),
+    fill = "white",
+    color = "grey60",
+    size = 0.5,
+    inherit.aes = FALSE
+  ) +
+  geom_text(
+    data = pattern_positions,
+    aes(x = 3, y = pattern_y_start + (n_patients - 1) / 2,
+        label = pattern_label),
+    size = 2.8,
+    hjust = 0.5,
+    inherit.aes = FALSE
+  ) +
+  # Color scale
+  scale_color_manual(
+    values = c(
+      "Pre1" = "steelblue", 
+      "Pre2" = "steelblue", 
+      "Pre3" = "red",
+      "Post1" = "orange", 
+      "Post2" = "orange", 
+      "Post3" = "orange"
+    ),
+    name = "Sample Type",
+    labels = c(
+      "Pre1" = "Pre-treatment 1", 
+      "Pre2" = "Pre-treatment 2", 
+      "Pre3" = "Pre-treatment 3 (special)",
+      "Post1" = "Post-treatment 1", 
+      "Post2" = "Post-treatment 2", 
+      "Post3" = "Post-treatment 3"
+    )
+  ) +
+  # X-axis setup
+  scale_x_continuous(
+    breaks = 0:2,
+    labels = c("Localized", "mHSPC", "mCRPC"),
+    limits = c(-0.5, 3.5)
+  ) +
+  # Y-axis setup
+  scale_y_continuous(
+    trans = "reverse",  # Invert y-axis
+    breaks = pattern_positions$pattern_y_start + pattern_positions$n_patients/2,
+    labels = rep("", nrow(pattern_positions)),  # Remove y-axis labels since we have boxes
+    sec.axis = sec_axis(
+      ~.,
+      breaks = pattern_positions$pattern_y_start + pattern_positions$n_patients/2,
+      labels = paste0("(n=", pattern_positions$n_patients, ")")
+    )
+  ) +
+  # Labels
+  labs(
+    x = "Disease State",
+    y = "",
+    color = "Sample Type"
+  ) +
+  # Theme
+  theme_bw() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text.y.right = element_text(size = 7, color = "grey40"),
+    axis.text.x = element_text(size = 11, face = "bold"),
+    axis.title.x = element_text(size = 11, face = "bold"),
+    legend.position = "right",
+    plot.margin = margin(t = 0, r = 5, b = 5, l = 5),
+    panel.border = element_rect(color = "grey50", size = 1)
+  ) +
+  coord_cartesian(clip = "off")  # Allow drawing outside plot area
+
+# Combine the plots using patchwork
+combined_plot <- p_bars / p_grouped + 
+  plot_layout(heights = c(1, 5)) + 
+  plot_annotation(
+    title = "Sample Collection Timeline - Grouped by Pattern",
+    subtitle = "Disease progression from Localized → mHSPC (metastatic Hormone-Sensitive) → mCRPC (metastatic Castration-Resistant)",
+    theme = theme(
+      plot.title = element_text(face = "bold", size = 14),
+      plot.subtitle = element_text(size = 10, face = "italic", color = "grey40")
+    )
+  )
+
+# Save the combined plot
+ggsave(
+  combined_plot,
+  file=file.path(wd$outCurr, "swimmers_plot_improved_spacing.pdf"),
+  height = 18,  # Increased height for better spacing
+  width = 12,
+  limitsize = FALSE
+)
+
+
+```
+
+
+
 ## Sample number 
 
 Lets get the sample numbers
@@ -1741,6 +2232,143 @@ cat("  Post samples:", n_post_c_samples, "\n")
 cat("  Pre patients:", n_pre_c_patients, "\n")
 cat("  Post patients:", n_post_c_patients, "\n")
 ```
+
+# Objective 4: Table 
+
+We want to get additional information about the cohorts to make a supplemental table. But we only select those that pass the final selection
+
+## Cohort A
+
+```{r}
+# Age
+summary(df_a2$age)
+
+# Prostate treatment
+df_a2 <- df_a2 %>% 
+  mutate(sur_or_rad = case_when(
+    str_detect(sur_or_rad, "^Surgery") ~ "Surgery",
+    str_detect(sur_or_rad, "^Radiation") ~ "Radiation",
+    TRUE ~ sur_or_rad))
+  
+# Display table with percentages for sur_or_rad
+tbl <- table(df_a2$sur_or_rad, useNA = "ifany")
+setNames(paste0(tbl, " [", round(prop.table(tbl) * 100, 1), "%]"), names(tbl))
+
+# Display table with percentages
+tbl <- table(case_when(is.na(df_a2$glsn_diag) ~ "Missing", df_a2$glsn_diag < 8 ~ "<8", df_a2$glsn_diag >= 8 ~ ">=8"))
+setNames(paste0(tbl, " [", round(prop.table(tbl) * 100, 1), "%]"), names(tbl))
+
+# 1st PSA
+summary(df_a2$psa)
+
+
+```
+
+## Cohort B
+
+```{r}
+# Since they are serials, we need to get the unique mrns
+
+# Age
+d1 <- df_b3 %>% dplyr::select(mrn, age) %>% distinct()
+dim(d1)
+summary(d1$age)
+
+# Prostate treatment
+df_b3 <- df_b3 %>% 
+  mutate(sur_or_rad = case_when(
+    str_detect(sur_or_rad, "^Surgery") ~ "Surgery",
+    str_detect(sur_or_rad, "^Radiation") ~ "Radiation",
+    TRUE ~ sur_or_rad))
+d1 <- df_b3 %>% dplyr::select(mrn, age, sur_or_rad) %>% distinct()
+dim(d1)
+  
+# Display table with percentages for sur_or_rad
+tbl <- table(d1$sur_or_rad, useNA = "ifany")
+setNames(paste0(tbl, " [", round(prop.table(tbl) * 100, 1), "%]"), names(tbl))
+
+# Gleason
+d1 <- df_b3 %>% 
+  group_by(mrn) %>%
+  slice_min(date, n = 1) %>%
+  ungroup()
+# Display table with percentages
+tbl <- table(case_when(is.na(d1$glsn_diag) ~ "Missing", d1$glsn_diag < 8 ~ "<8", d1$glsn_diag >= 8 ~ ">=8"))
+setNames(paste0(tbl, " [", round(prop.table(tbl) * 100, 1), "%]"), names(tbl))
+
+# 1st PSA
+summary(d1$psa)
+
+# Find PSA of those serially sampeled
+mrn_pre_post <- df_meta_f4 %>%
+  filter(cohort == "B") %>% 
+  group_by(mrn) %>%
+  summarise(
+    has_pre = as.integer(any(txt_stat == "Pre", na.rm = TRUE)),
+    has_post = as.integer(any(txt_stat == "Post", na.rm = TRUE))
+  )
+
+# View only those with both Pre and Post
+paired_mrn <- mrn_pre_post %>%
+  filter(has_pre == 1 & has_post == 1)
+dim(paired_mrn)
+
+# PSA pre
+d2 <- df_meta_f4 %>% filter(mrn %in% paired_mrn$mrn) %>% 
+  filter(cohort == "B" & txt_stat == "Pre")
+d3 <- df_b3 %>% filter(HCI_cID %in% d2$HCI_cID)
+summary(d3$psa)
+
+# PSA post
+d2 <- df_meta_f4 %>% filter(mrn %in% paired_mrn$mrn) %>% 
+  filter(cohort == "B" & txt_stat == "Post")
+
+# Now get the PSA
+d3 <- df_b3 %>% filter(HCI_cID %in% d2$HCI_cID)
+summary(d3$psa)
+
+```
+
+## Cohort C
+
+```{r}
+# Age
+d1 <- df_c2 %>% dplyr::select(mrn, age) %>% distinct()
+dim(d1)
+summary(d1$age)
+
+# Prostate treatment
+df_c2 <- df_c2 %>% 
+  mutate(sur_or_rad = case_when(
+    str_detect(sur_or_rad, "^Surgery") ~ "Surgery",
+    str_detect(sur_or_rad, "^Radiation") ~ "Radiation",
+    TRUE ~ sur_or_rad))
+d1 <- df_c2 %>% 
+  filter(!HCI_cID == "2022-0449") %>% 
+  dplyr::select(mrn, age, sur_or_rad) %>% distinct()
+dim(d1)
+# We got 120, one more because a patient - 2021-4689 and 2022-0449 has both surgery and radiation
+# Surgery was more recent - so we take that
+#d1 <- d1 %>% filter(!HCI_cID == "2022-0449")
+# Display table with percentages for sur_or_rad
+tbl <- table(d1$sur_or_rad, useNA = "ifany")
+setNames(paste0(tbl, " [", round(prop.table(tbl) * 100, 1), "%]"), names(tbl))
+
+
+# Gleason
+d1 <- df_c2 %>% 
+  group_by(mrn) %>%
+  slice_min(date, n = 1) %>%
+  ungroup()
+# Display table with percentages
+tbl <- table(case_when(is.na(d1$glsn_diag) ~ "Missing", d1$glsn_diag < 8 ~ "<8", d1$glsn_diag >= 8 ~ ">=8"))
+setNames(paste0(tbl, " [", round(prop.table(tbl) * 100, 1), "%]"), names(tbl))
+
+# 1st PSA
+summary(d1$psa)
+```
+
+
 
 # Save objects
 

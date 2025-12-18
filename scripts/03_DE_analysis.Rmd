@@ -767,3 +767,30 @@ save(
   file = file.path(wd$outData, "03_data.Rdata"))
 ```
 
+Save the de-anonymized expression matrix
+
+We rename the expression matrix 
+
+```{r}
+mat_re <- exp_mat_sub
+
+df_rename <- data.frame(
+  final_sample_id = colnames(mat_re)
+) %>% 
+  left_join(df_de_anno)
+
+# De-anonymize the mrn
+df_rename <- df_rename %>%
+  mutate(fake_mrn = paste0("mrn_", sprintf("%03d", match(mrn, unique(mrn))))) %>% 
+  mutate(HCI_cID = paste0("c_", HCI_cID),
+         HCI_cID = gsub("-", "_", HCI_cID)) %>% 
+  dplyr::select(HCI_cID, cohort, txt_stat, txt_stat_ordered,
+                total_samples, fake_mrn)
+
+# Rename the expression matrix based on HCI_cID
+colnames(mat_re) <- df_rename$HCI_cID
+
+write.csv(mat_re, file.path(wd$outData, "allSamples_expression_matrix.csv"))
+write.csv(df_rename, file.path(wd$outData, "allSamples_metadata.csv"))
+```
+
