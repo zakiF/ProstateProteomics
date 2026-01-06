@@ -1,0 +1,535 @@
+---
+title: "Protein biomarker heatmap"
+date: "2026-01-05"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+    number_sections: true
+    theme: lumen
+---
+
+# Background
+
+Generate summary heatmap of proteins associated with prognosis/predictive in prostate cancer from protein biomarker publications.
+
+# Pre-processing
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyr)
+library(ggplot2)
+library(dplyr)
+library(here)
+library(readxl)
+library(writexl)
+library(patchwork)
+library(gridExtra)
+library(grid)
+library(cowplot)
+library(ComplexHeatmap)
+library(circlize)
+```
+
+File paths
+
+```{r}
+wd <- list()
+wd$main <- here()
+
+wd$data <- file.path(wd$main, "data", "updated_2024")
+wd$out <- file.path(wd$main, "output")
+
+# out data (location to save future data)
+wd$outData <- file.path(wd$out, "out_data")
+```
+
+# Data Extraction
+
+Read the protein biomarker data
+
+```{r}
+# Read the protein biomarker table
+protein_table <- read_excel(file.path(wd$data, "Protein biomarker pubs mCRPC_zaki_edit.xlsx"))
+
+# Display column names
+cat("Column names in the dataset:\n")
+print(colnames(protein_table))
+
+# Display dimensions
+cat("\nDataset dimensions:\n")
+cat(paste("Total studies:", nrow(protein_table), "\n"))
+
+# Extract relevant columns
+protein_markers_col <- protein_table$`Protein markers`
+focus_col <- protein_table$`Prognostic and/or Predictive focus`
+predictive_col <- protein_table$`If predictive, then drug target`
+sample_type_col <- protein_table$`Tissue-based or Plasma or Urine-based`
+study_design_col <- protein_table$`Prospective or retrospectiv/observational or in-vitro/in-vivo study`
+
+# Display sample type distribution
+cat("\nSample type distribution:\n")
+print(table(sample_type_col, useNA = "ifany"))
+```
+
+# Classify studies
+
+```{r}
+# Classify study types (Prognostic, Predictive, Both)
+study_type <- character(nrow(protein_table))
+study_design <- character(nrow(protein_table))
+
+for (i in 1:nrow(protein_table)) {
+  has_predictive_value <- !is.na(predictive_col[i])
+  focus_text <- focus_col[i]
+
+  # Check if both prognostic and predictive are mentioned in focus column OR if predictive column has value
+  has_prognostic <- grepl("Prognostic", focus_text, ignore.case = TRUE)
+  has_predictive_focus <- grepl("predictive", focus_text, ignore.case = TRUE)
+
+  if ((has_prognostic && has_predictive_focus) || (has_prognostic && has_predictive_value)) {
+    study_type[i] <- "Both"
+  } else if (has_predictive_focus || has_predictive_value) {
+    study_type[i] <- "Predictive"
+  } else if (has_prognostic) {
+    study_type[i] <- "Prognostic"
+  } else {
+    study_type[i] <- "Unknown"
+  }
+
+  # Extract study design (Prospective vs Retrospective)
+  design_text <- study_design_col[i]
+  if (grepl("Prospective", design_text, ignore.case = TRUE)) {
+    study_design[i] <- "Prospective"
+  } else if (grepl("Retrospective", design_text, ignore.case = TRUE)) {
+    study_design[i] <- "Retrospective"
+  } else {
+    study_design[i] <- "Unknown"
+  }
+}
+
+# Print summary of study types
+cat("\n=== Study Type Distribution ===\n")
+print(table(study_type))
+cat("\n=== Study Design Distribution ===\n")
+print(table(study_design))
+```
+
+# Extract protein names
+
+```{r}
+# Extract individual proteins from the protein markers column
+all_proteins <- c()
+for (i in 1:nrow(protein_table)) {
+  markers <- protein_markers_col[i]
+  if (!is.na(markers)) {
+    # Split by comma
+    proteins <- unlist(strsplit(markers, ",\\s*"))
+    proteins <- trimws(proteins)
+
+    # Clean up protein names
+    # Remove "and" prefix
+    proteins <- gsub("^and\\s+", "", proteins, ignore.case = TRUE)
+    proteins <- trimws(proteins)
+
+    # Remove empty strings
+    proteins <- proteins[proteins != ""]
+
+    all_proteins <- c(all_proteins, proteins)
+  }
+}
+
+# Get unique proteins
+unique_proteins <- sort(unique(all_proteins))
+cat("\n=== Protein Extraction Summary ===\n")
+cat(paste("Total unique proteins found:", length(unique_proteins), "\n"))
+cat("\nFirst 20 proteins:\n")
+print(head(unique_proteins, 20))
+```
+
+# Create binary matrix
+
+```{r}
+# Create a binary matrix
+n_studies <- nrow(protein_table)
+protein_matrix <- matrix(0, nrow = length(unique_proteins), ncol = n_studies)
+rownames(protein_matrix) <- unique_proteins
+colnames(protein_matrix) <- 1:n_studies
+
+# Fill in the matrix
+for (i in 1:n_studies) {
+  markers <- protein_markers_col[i]
+  if (!is.na(markers)) {
+    # Split by comma
+    study_proteins <- unlist(strsplit(markers, ",\\s*"))
+    study_proteins <- trimws(study_proteins)
+
+    # Clean up protein names
+    study_proteins <- gsub("^and\\s+", "", study_proteins, ignore.case = TRUE)
+    study_proteins <- trimws(study_proteins)
+    study_proteins <- study_proteins[study_proteins != ""]
+
+    # Mark proteins as present
+    for (protein in study_proteins) {
+      if (protein %in% unique_proteins) {
+        protein_matrix[protein, i] <- 1
+      }
+    }
+  }
+}
+
+cat("\n=== Matrix Summary ===\n")
+cat(paste("Matrix dimensions:", nrow(protein_matrix), "proteins x", ncol(protein_matrix), "studies\n"))
+
+# Identify proteins that appear only once
+protein_counts <- rowSums(protein_matrix)
+single_occurrence_proteins <- names(protein_counts)[protein_counts == 1]
+
+cat(paste("\nProteins appearing in only one study:", length(single_occurrence_proteins), "\n"))
+
+# Group single occurrence proteins
+if (length(single_occurrence_proteins) > 0) {
+  # Create a combined row for all single-occurrence proteins
+  other_proteins_row <- apply(protein_matrix[single_occurrence_proteins, , drop = FALSE], 2,
+                               function(x) as.integer(any(x == 1)))
+
+  # Remove individual proteins that are being grouped
+  proteins_to_keep <- setdiff(rownames(protein_matrix), single_occurrence_proteins)
+  protein_matrix <- protein_matrix[proteins_to_keep, , drop = FALSE]
+
+  # Add the grouped row
+  other_proteins_row_name <- "Other proteins"
+  protein_matrix <- rbind(protein_matrix, other_proteins_row)
+  rownames(protein_matrix)[nrow(protein_matrix)] <- other_proteins_row_name
+
+  cat(paste("Grouped", length(single_occurrence_proteins), "single-occurrence proteins into 'Other proteins'\n"))
+}
+
+cat(paste("\nUpdated matrix dimensions:", nrow(protein_matrix), "proteins x", ncol(protein_matrix), "studies\n"))
+```
+
+# Prepare data for visualization
+
+```{r}
+# Calculate percentage and study counts for each protein
+protein_counts <- rowSums(protein_matrix)
+protein_percentage <- (protein_counts / ncol(protein_matrix)) * 100
+
+# Get study numbers for each protein
+get_study_numbers <- function(protein_name, protein_matrix) {
+  study_cols <- which(protein_matrix[protein_name, ] == 1)
+  return(paste(study_cols, collapse = ", "))
+}
+
+# Create data frame for plotting
+plot_data <- data.frame(
+  Protein = rownames(protein_matrix),
+  Count = protein_counts,
+  Percentage = protein_percentage,
+  StudyNumbers = sapply(rownames(protein_matrix), function(x) get_study_numbers(x, protein_matrix)),
+  stringsAsFactors = FALSE
+)
+
+# Filter proteins appearing in at least 2 studies
+plot_data <- plot_data[plot_data$Count >= 2, ]
+
+# Order by percentage (descending)
+plot_data <- plot_data[order(-plot_data$Percentage), ]
+
+# Reorder protein factor levels for plotting
+plot_data$Protein <- factor(plot_data$Protein, levels = plot_data$Protein)
+
+cat("\n=== Plotting Data Summary ===\n")
+cat(paste("Number of proteins to plot:", nrow(plot_data), "\n"))
+cat("\nTop 10 proteins by frequency:\n")
+print(head(plot_data, 10))
+```
+
+# Create matrix for ComplexHeatmap
+
+```{r}
+# Get proteins that appear in at least 2 studies
+proteins_to_include <- plot_data$Protein
+
+# Create a character matrix to store study type information
+# Format: "pred" for Predictive, "prog" for Prognostic, "both" for Both
+heatmap_matrix <- matrix("", nrow = length(proteins_to_include), ncol = ncol(protein_matrix))
+rownames(heatmap_matrix) <- proteins_to_include
+colnames(heatmap_matrix) <- colnames(protein_matrix)
+
+# Fill the matrix with study type information
+for (i in 1:nrow(heatmap_matrix)) {
+  protein <- rownames(heatmap_matrix)[i]
+
+  for (j in 1:ncol(heatmap_matrix)) {
+    # Check if protein is present in this study
+    if (protein_matrix[protein, j] == 1) {
+      # Get the study type for this study
+      study_type_j <- study_type[j]
+
+      # Create strings based on study type
+      if (study_type_j == "Both") {
+        heatmap_matrix[i, j] <- "pred;prog"
+      } else if (study_type_j == "Predictive") {
+        heatmap_matrix[i, j] <- "pred"
+      } else if (study_type_j == "Prognostic") {
+        heatmap_matrix[i, j] <- "prog"
+      } else {
+        # Unknown - treat as prognostic
+        heatmap_matrix[i, j] <- "prog"
+      }
+    }
+  }
+}
+
+# Create ordering data frame for sorting proteins by frequency
+protein_order_df <- data.frame(
+  Protein = rownames(heatmap_matrix),
+  Frequency = rowSums(protein_matrix[rownames(heatmap_matrix), ] > 0),
+  stringsAsFactors = FALSE
+)
+
+# Sort by Frequency (descending)
+protein_order_df <- protein_order_df[order(-protein_order_df$Frequency), ]
+
+# Reorder heatmap_matrix rows
+heatmap_matrix <- heatmap_matrix[protein_order_df$Protein, ]
+
+cat("\n=== Heatmap Matrix Summary ===\n")
+cat(paste("Heatmap matrix dimensions:", nrow(heatmap_matrix), "x", ncol(heatmap_matrix), "\n"))
+cat("\nSample values (first 5 proteins, first 5 studies):\n")
+print(heatmap_matrix[1:min(5, nrow(heatmap_matrix)), 1:min(5, ncol(heatmap_matrix))])
+cat("\nProtein ordering (first 10):\n")
+print(head(protein_order_df, 10))
+```
+
+# Column ordering based on sample type
+
+```{r}
+# Create column ordering based on sample type
+col_order_df <- data.frame(
+  StudyIndex = 1:ncol(protein_matrix),
+  StudyType = study_type,
+  SampleType = sample_type_col,
+  stringsAsFactors = FALSE
+)
+
+# Clean up sample type values
+col_order_df$SampleType <- trimws(col_order_df$SampleType)
+
+# Classify each study as Plasma, Tissue, or Urine
+col_order_df$SampleCategory <- sapply(col_order_df$SampleType, function(x) {
+  if (is.na(x)) return("Unknown")
+  x_lower <- tolower(x)
+  if (grepl("plasma", x_lower)) return("Plasma")
+  else if (grepl("tissue", x_lower)) return("Tissue")
+  else if (grepl("urine", x_lower)) return("Urine")
+  else return("Other")
+})
+
+# Print sample category distribution
+cat("\n=== Sample Category Distribution ===\n")
+print(table(col_order_df$SampleCategory))
+
+# Sort by sample category, then by study type
+col_order_df <- col_order_df[order(col_order_df$SampleCategory, col_order_df$StudyType), ]
+
+# Get the column order indices
+column_order <- col_order_df$StudyIndex
+
+# Reorder heatmap_matrix columns
+heatmap_matrix_ordered <- heatmap_matrix[, column_order]
+
+# Create mapping from old study numbers to new study numbers
+study_mapping <- data.frame(
+  Original_Study_Number = column_order,
+  New_Study_Number = 1:length(column_order),
+  stringsAsFactors = FALSE
+)
+
+# Rename columns to new sequential numbers
+colnames(heatmap_matrix_ordered) <- as.character(1:ncol(heatmap_matrix_ordered))
+
+cat("\n=== Column Ordering Summary ===\n")
+cat("First 10 studies in new order:\n")
+print(head(col_order_df[, c("StudyIndex", "StudyType", "SampleCategory")], 10))
+```
+
+# Define color functions for heatmap
+
+```{r}
+# Define base colors
+# Predictive = darker shade, Prognostic = lighter shade
+col <- c(
+  # Predictive (darker)
+  pred = "#E41A1C",      # Dark red
+
+  # Prognostic (lighter)
+  prog = "#FFB3B3"       # Light red
+)
+
+# Create alter_fun list for triangular splits
+alter_fun_list <- list(
+  # Background shows grey when no protein present
+  background = function(x, y, w, h) {
+    # Bottom-left triangle
+    grid.polygon(
+      unit.c(x - 0.5*w, x - 0.5*w, x + 0.5*w),
+      unit.c(y - 0.5*h, y + 0.5*h, y - 0.5*h),
+      gp = gpar(fill = "grey95", col = "white"))
+    # Top-right triangle
+    grid.polygon(
+      unit.c(x + 0.5*w, x + 0.5*w, x - 0.5*w),
+      unit.c(y + 0.5*h, y - 0.5*h, y + 0.5*h),
+      gp = gpar(fill = "grey95", col = "white"))
+  },
+
+  # Predictive (bottom-left triangle, dark red)
+  pred = function(x, y, w, h) {
+    grid.polygon(
+      unit.c(x - 0.5*w, x - 0.5*w, x + 0.5*w),
+      unit.c(y - 0.5*h, y + 0.5*h, y - 0.5*h),
+      gp = gpar(fill = col["pred"], col = "white"))
+  },
+
+  # Prognostic (top-right triangle, light red)
+  prog = function(x, y, w, h) {
+    grid.polygon(
+      unit.c(x + 0.5*w, x + 0.5*w, x - 0.5*w),
+      unit.c(y + 0.5*h, y - 0.5*h, y + 0.5*h),
+      gp = gpar(fill = col["prog"], col = "white"))
+  }
+)
+
+cat("\n=== Color Functions Created ===\n")
+print(names(alter_fun_list))
+```
+
+# Create column annotations for sample types
+
+```{r}
+# Reorder sample type data to match column ordering
+sample_types_ordered <- col_order_df$SampleCategory
+
+# Create binary vectors for each sample type
+plasma_vec <- ifelse(sample_types_ordered == "Plasma", 1, 0)
+tissue_vec <- ifelse(sample_types_ordered == "Tissue", 1, 0)
+urine_vec <- ifelse(sample_types_ordered == "Urine", 1, 0)
+
+# Define colors for sample type annotations
+sample_type_colors <- c(
+  "Plasma" = "#377EB8",  # Blue
+  "Tissue" = "#4DAF4A",  # Green
+  "Urine" = "#FF7F00"    # Orange
+)
+
+# Create column annotation showing sample types
+column_ha <- HeatmapAnnotation(
+  Plasma = anno_simple(plasma_vec,
+                       col = c("0" = "white", "1" = sample_type_colors["Plasma"]),
+                       height = unit(5, "mm"),
+                       border = TRUE),
+  Tissue = anno_simple(tissue_vec,
+                       col = c("0" = "white", "1" = sample_type_colors["Tissue"]),
+                       height = unit(5, "mm"),
+                       border = TRUE),
+  Urine = anno_simple(urine_vec,
+                      col = c("0" = "white", "1" = sample_type_colors["Urine"]),
+                      height = unit(5, "mm"),
+                      border = TRUE),
+  annotation_name_side = "left",
+  annotation_name_gp = gpar(fontsize = 8)
+)
+
+cat("\n=== Column Annotations Created ===\n")
+cat("Sample type distribution in ordered matrix:\n")
+print(table(sample_types_ordered))
+```
+
+# Create the OncoPrint-style plot
+
+```{r, fig.width=16, fig.height=12}
+# Calculate protein frequency percentage
+protein_freq <- rowSums(protein_matrix[rownames(heatmap_matrix_ordered), ] > 0)
+protein_pct <- round((protein_freq / ncol(protein_matrix)) * 100, 1)
+
+# Create row annotation with barplot showing percentage
+row_ha_right <- rowAnnotation(
+  `Frequency %` = anno_barplot(protein_pct,
+                                gp = gpar(fill = "#4DAF4A"),
+                                border = FALSE,
+                                bar_width = 0.8,
+                                axis_param = list(side = "top",
+                                                  labels_rot = 0,
+                                                  gp = gpar(fontsize = 8)),
+                                width = unit(3, "cm"))
+)
+
+# Create the oncoPrint
+onco_plot <- oncoPrint(heatmap_matrix_ordered,
+          alter_fun = alter_fun_list,
+          col = col,
+          column_title = "Protein Biomarkers by Study (Triangle: ◣ Predictive, ◥ Prognostic)",
+          remove_empty_columns = FALSE,
+          show_column_names = TRUE,
+          column_names_gp = gpar(fontsize = 6),
+          row_names_gp = gpar(fontsize = 8),
+          row_names_side = "right",
+          right_annotation = row_ha_right,
+          row_order = 1:nrow(heatmap_matrix_ordered),
+          column_order = 1:ncol(heatmap_matrix_ordered),
+          top_annotation = column_ha)
+
+print(onco_plot)
+cat("\n=== OncoPrint Created Successfully ===\n")
+```
+
+# Save outputs
+
+```{r}
+# Save reordered study table
+protein_table_reordered <- protein_table[column_order, ]
+protein_table_reordered$New_Study_Number <- 1:nrow(protein_table_reordered)
+protein_table_reordered$Original_Study_Number <- column_order
+
+# Reorder columns
+protein_table_reordered <- protein_table_reordered[, c("New_Study_Number", "Original_Study_Number",
+                                                       setdiff(names(protein_table_reordered),
+                                                              c("New_Study_Number", "Original_Study_Number")))]
+
+# Save the reordered table
+write_xlsx(protein_table_reordered,
+           file.path(wd$outData, "Protein_Biomarker_Studies_REORDERED.xlsx"))
+
+cat("\n=== Reordered study table saved ===\n")
+cat(paste("Location:", file.path(wd$outData, "Protein_Biomarker_Studies_REORDERED.xlsx"), "\n"))
+
+# Save study mapping
+write_xlsx(study_mapping,
+           file.path(wd$outData, "Protein_Study_Number_Mapping.xlsx"))
+
+cat(paste("Study mapping saved to:", file.path(wd$outData, "Protein_Study_Number_Mapping.xlsx"), "\n"))
+
+# Save plots as PDF
+pdf(file.path(wd$out, "Protein_Biomarker_OncoPrint.pdf"),
+    width = 16, height = 12)
+print(onco_plot)
+dev.off()
+
+# Save as PNG
+png(file.path(wd$out, "Protein_Biomarker_OncoPrint.png"),
+    width = 16, height = 12, units = "in", res = 300)
+print(onco_plot)
+dev.off()
+
+cat("\n=== Plots saved successfully ===\n")
+cat(paste("PDF:", file.path(wd$out, "Protein_Biomarker_OncoPrint.pdf"), "\n"))
+cat(paste("PNG:", file.path(wd$out, "Protein_Biomarker_OncoPrint.png"), "\n"))
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```

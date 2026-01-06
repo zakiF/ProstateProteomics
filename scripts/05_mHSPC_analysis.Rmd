@@ -227,11 +227,11 @@ exp_mat_sub <- exp_mat_sub[b_stage_pro,]
 identical(colnames(exp_mat_sub), df_b_paired2$final_sample_id)
 
 # Create design matrix (no intercept, just Pre/Post)
-design <- model.matrix(~0 + txt_stat, data=df_b_paired2)
-colnames(design) <- c("Pre", "Post")
+design <- model.matrix(~0 + factor(df_b_paired2$txt_stat, levels=c("Pre","Post")))
+colnames(design) <- c("Pre","Post")
 
 # Patient/blocking factor
-block <- df_b_paired2$mrn
+block <- factor(df_b_paired2$mrn)
 
 # Estimate correlation between pairs
 corfit <- duplicateCorrelation(exp_mat_sub, design, block=block)
@@ -261,9 +261,7 @@ limma_b_pair <- topTable(fit2, number = Inf, sort.by = "none") %>%
 # Check numner of significant proteins
 limma_b_pair_sig <- limma_b_pair %>%
   filter(
-    Adjusted_pval <= cut_fdr,
-    log2FC > abs(cut_logFC)
-  )
+    Adjusted_pval <= 0.05)
 dim(limma_b_pair_sig)
 # Save the results
 save(limma_b_pair, file = file.path(wd$outCurr, "limma_b_pair.Rdata"))
@@ -283,7 +281,7 @@ sig_olink_ids <- limma_b_pair_sig
 
 # Arrange limma_b_pair_sig by descending log2FC and create a factor for Assay with desired order
 limma_b_pair_sig <- limma_b_pair_sig %>%
-  arrange(desc(log2FC)) %>%
+  arrange((log2FC)) %>%
   mutate(
     Assay = factor(Assay, levels = unique(Assay)),
     OlinkID = factor(OlinkID, levels = OlinkID) # OlinkID in descending logFC order
@@ -337,12 +335,208 @@ ggsave(p_viol_gene, file=file.path(wd$outCurr, "PrePost_violin.pdf"), height = 6
 
 ## Correlation
 
-We correlate PSA with KLK3
+### Full data
 
-> TO DO
+In all samples
 
 ```{r}
+# Get KLK3 OlinkID
+klk3_id <- df_id_pro %>%
+  filter(Assay == "KLK3") %>%
+  pull(OlinkID)
 
+# Link HCI_cID to final_sample_id for all mHSPC patients
+df_link <- df_meta_f5 %>%
+  select(HCI_cID, txt_stat_ordered) %>%
+  left_join(df_final_ids %>% select(HCI_cID, final_sample_id))
+
+# Use all mHSPC patients (df_b_final), not just paired
+psa_protein_data <- df_b_final %>%
+  filter(HCI_cID %in% df_meta_f5$HCI_cID) %>%
+  mutate(logPSA = log10(psa),
+         txt_stat = factor(updated_adt_early, levels = c("Pre", "Post"))) %>%
+  select(HCI_cID, mrn, logPSA, txt_stat, psa) %>%
+  left_join(df_link, by = "HCI_cID") %>%
+  filter(!is.na(final_sample_id)) %>%
+  filter(final_sample_id %in% colnames(exprMatrix_corrected_sub))
+
+# Extract KLK3 expression for these samples
+klk3_expression <- exprMatrix_corrected_sub[klk3_id, psa_protein_data$final_sample_id]
+psa_protein_data$KLK3_NPX <- as.numeric(klk3_expression)
+
+# Remove any rows with missing values
+psa_protein_data <- psa_protein_data %>% filter(!is.na(logPSA), !is.na(KLK3_NPX))
+
+# Calculate overall correlation
+cor_overall <- cor.test(psa_protein_data$logPSA, psa_protein_data$KLK3_NPX, method = "spearman")
+
+# Calculate correlation by treatment status
+cor_pre <- cor.test(
+  psa_protein_data %>% filter(txt_stat == "Pre") %>% pull(logPSA),
+  psa_protein_data %>% filter(txt_stat == "Pre") %>% pull(KLK3_NPX),
+  method = "spearman"
+)
+
+cor_post <- cor.test(
+  psa_protein_data %>% filter(txt_stat == "Post") %>% pull(logPSA),
+  psa_protein_data %>% filter(txt_stat == "Post") %>% pull(KLK3_NPX),
+  method = "spearman"
+)
+
+# Print results
+cat("=== Correlation between log(PSA) and KLK3 Protein Expression ===\n")
+cat("All mHSPC patients (not just paired samples)\n\n")
+cat("Overall (Pre + Post combined):\n")
+cat("  Spearman rho =", round(cor_overall$estimate, 3), "\n")
+cat("  P-value =", formatC(cor_overall$p.value, format = "e", digits = 2), "\n")
+cat("  N =", nrow(psa_protein_data), "\n\n")
+
+cat("Pre-treatment only:\n")
+cat("  Spearman rho =", round(cor_pre$estimate, 3), "\n")
+cat("  P-value =", formatC(cor_pre$p.value, format = "e", digits = 2), "\n")
+cat("  N =", sum(psa_protein_data$txt_stat == "Pre"), "\n\n")
+
+cat("Post-treatment only:\n")
+cat("  Spearman rho =", round(cor_post$estimate, 3), "\n")
+cat("  P-value =", formatC(cor_post$p.value, format = "e", digits = 2), "\n")
+cat("  N =", sum(psa_protein_data$txt_stat == "Post"), "\n")
+
+# Scatter plot
+p_psa_klk3 <- ggplot(psa_protein_data, aes(x = KLK3_NPX, y = logPSA)) +
+  geom_point(size = 5, alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE) +
+  #scale_color_manual(values = c("#ff7f0e", "gold4")) +
+  labs(
+    title = sprintf("log(PSA) vs KLK3 Expression (rho = %.2f, p = %.2e)",
+                    cor_overall$estimate, cor_overall$p.value),
+    x = "KLK3 NPX",
+    y = "log10(PSA)",
+    color = "Treatment Status"
+  ) +
+  theme_bw() +
+  theme_custom
+
+# Save plot
+ggsave(p_psa_klk3, file = file.path(wd$outCurr, "logPSA_vs_KLK3_allSamples.pdf"), height = 4, width = 6)
+print(p_psa_klk3)
+```
+
+### Paired
+
+We correlate PSA with KLK3 expression in the paried samples
+
+```{r}
+# Get KLK3 OlinkID
+klk3_id <- df_id_pro %>%
+  filter(Assay == "KLK3") %>%
+  pull(OlinkID)
+
+# Link HCI_cID to final_sample_id
+df_link <- df_meta_f5 %>%
+  select(HCI_cID, txt_stat_ordered) %>%
+  left_join(df_final_ids %>% select(HCI_cID, final_sample_id))
+
+# Merge PSA data with protein expression
+# df_plot2 has HCI_cID and logPSA
+# exprMatrix_corrected_sub has protein expression with final_sample_id as column names
+psa_protein_data <- df_plot2 %>%
+  select(HCI_cID, logPSA, txt_stat) %>%
+  left_join(df_link, by = "HCI_cID") %>%
+  filter(!is.na(final_sample_id)) %>%
+  filter(final_sample_id %in% colnames(exprMatrix_corrected_sub))
+
+# Extract KLK3 expression for these samples
+klk3_expression <- exprMatrix_corrected_sub[klk3_id, psa_protein_data$final_sample_id]
+psa_protein_data$KLK3_NPX <- as.numeric(klk3_expression)
+
+# Remove any rows with missing values
+psa_protein_data <- psa_protein_data %>% filter(!is.na(logPSA), !is.na(KLK3_NPX))
+
+# Calculate overall correlation
+cor_overall <- cor.test(psa_protein_data$logPSA, psa_protein_data$KLK3_NPX, method = "spearman")
+
+# Calculate correlation by treatment status
+cor_pre <- cor.test(
+  psa_protein_data %>% filter(txt_stat == "Pre") %>% pull(logPSA),
+  psa_protein_data %>% filter(txt_stat == "Pre") %>% pull(KLK3_NPX),
+  method = "spearman"
+)
+
+cor_post <- cor.test(
+  psa_protein_data %>% filter(txt_stat == "Post") %>% pull(logPSA),
+  psa_protein_data %>% filter(txt_stat == "Post") %>% pull(KLK3_NPX),
+  method = "spearman"
+)
+
+# Print results
+cat("=== Correlation between log(PSA) and KLK3 Protein Expression ===\n\n")
+cat("Overall (Pre + Post combined):\n")
+cat("  Spearman rho =", round(cor_overall$estimate, 3), "\n")
+cat("  P-value =", formatC(cor_overall$p.value, format = "e", digits = 2), "\n")
+cat("  N =", nrow(psa_protein_data), "\n\n")
+
+cat("Pre-treatment only:\n")
+cat("  Spearman rho =", round(cor_pre$estimate, 3), "\n")
+cat("  P-value =", formatC(cor_pre$p.value, format = "e", digits = 2), "\n")
+cat("  N =", sum(psa_protein_data$txt_stat == "Pre"), "\n\n")
+
+cat("Post-treatment only:\n")
+cat("  Spearman rho =", round(cor_post$estimate, 3), "\n")
+cat("  P-value =", formatC(cor_post$p.value, format = "e", digits = 2), "\n")
+cat("  N =", sum(psa_protein_data$txt_stat == "Post"), "\n")
+
+# Scatter plot
+p_psa_klk3 <- ggplot(psa_protein_data, aes(x = KLK3_NPX, y = logPSA)) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE) +
+  #scale_color_manual(values = c("#ff7f0e", "gold4")) +
+  labs(
+    title = sprintf("log(PSA) vs KLK3 Expression (rho = %.2f, p = %.2e)",
+                    cor_overall$estimate, cor_overall$p.value),
+    x = "KLK3 NPX",
+    y = "log10(PSA)",
+    color = "Treatment Status"
+  ) +
+  theme_bw() +
+  theme_custom
+
+# Save plot
+ggsave(p_psa_klk3, file = file.path(wd$outCurr, "logPSA_vs_KLK3.pdf"), height = 6, width = 8)
+print(p_psa_klk3)
+```
+
+
+
+
+Now plot KLK3 expression Pre vs Post for each patient (same style as PSA plot above).
+
+```{r}
+# Prepare data for KLK3 boxplot (matching df_plot2 structure)
+# Add mrn to psa_protein_data
+df_plot_klk3 <- psa_protein_data %>%
+  left_join(df_b_final %>% select(HCI_cID, mrn), by = "HCI_cID") %>%
+  filter(!is.na(mrn))
+
+# Create the plot with boxplot for txt_stat group (matching PSA plot style)
+p_box_klk3 <-
+  ggplot(df_plot_klk3, aes(x = txt_stat, y = KLK3_NPX, group = mrn)) +
+  geom_boxplot(aes(group = txt_stat, fill = txt_stat), outlier.alpha = 0, width = 0.3, coef = 0,
+               position = position_dodge(width = 0.9), alpha = 0.5) +
+  geom_line(aes(group = mrn), color = "grey40", alpha = 0.7, position = position_dodge(width = 0.0)) +
+  geom_point(aes(color = txt_stat), size = 2) +
+  theme_bw() +
+  labs(title = "KLK3 Pre and Post for Each Patient", x = "Treatment Status", y = "KLK3 NPX") +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = c("#ff7f0e", "gold4")) +
+  scale_colour_manual(values = c("#ff7f0e", "gold4")) +
+  theme_custom +
+  NULL
+
+p_box_klk3
+
+# Save plot
+pp <- p_box_psa + p_box_klk3
+ggsave(pp, file = file.path(wd$outCurr, "KLK3_boxplot.pdf"), height = 4, width = 9)
 ```
 
 
@@ -442,8 +636,6 @@ Get the median time of progression in the patients that progressed
 ```{r}
 df_b_cox %>% filter(progressed_to_crpc==1) %>% pull(time_to_crpc) %>% summary()
 ```
-
-
 
 Now we'll run the protein progression analysis on both datasets.
 
@@ -667,12 +859,12 @@ summary(meta_in_full$OS)
 Now lets generate a KM plot stratifying the protein expression to high and low (based on median),
 
 ```{r,eval=FALSE}
-protein_list <- unique(results_base$OlinkID)
+protein_list <- unique(results_base_5yr$OlinkID)
 km_plots <- list()
 
 # Merge with clinical data to get time to CRPC and event status
-df_base <- tmp_npx %>%
-  left_join(meta_in %>% select(mrn, OS, death, SampleID)) %>%
+df_base <- tmp_npx_5yr %>%
+  left_join(meta_in_5yr %>% select(mrn, OS, death, SampleID)) %>%
   filter(!is.na(NPX), !is.na(OS), !is.na(death)) %>% 
   left_join(df_id_pro)# %>% 
   # Remove outlier of patients with too long of a follow up
@@ -716,9 +908,10 @@ print(km_plots[[1]]$plot)
 Save significant plot
 
 ```{r,eval=FALSE}
-pdf(file.path(wd$outCurr, "KM_progression.pdf"), width=7, height = 6)
-km_plots[8] 
-km_plots[9] 
+pdf(file.path(wd$outCurr, "KM_progression.pdf"), width = 7, height = 6)
+for (p in km_plots) {
+  print(p)
+}
 dev.off()
 ```
 
@@ -942,7 +1135,9 @@ print(table(df_survival_mets_5yr$mets_volume))
 
 ```{r}
 # Create survival object and fit KM curve (5-year censored)
-surv_object_5yr <- Surv(time = df_survival_mets_5yr$time_to_crpc, event = df_survival_mets_5yr$progressed_to_crpc)
+df_survival_mets_5yr <- df_survival_mets_5yr %>% 
+  mutate(time_to_crpc_mnth = time_to_crpc / 30.417)
+surv_object_5yr <- Surv(time = df_survival_mets_5yr$time_to_crpc_mnth, event = df_survival_mets_5yr$progressed_to_crpc)
 fit_mets_5yr <- survfit(surv_object_5yr ~ mets_volume, data = df_survival_mets_5yr)
 
 # Generate KM plot (5-year censored)
@@ -954,7 +1149,7 @@ km_plot_mets_5yr <- ggsurvplot(
   conf.int = TRUE, 
   palette = c("#2E8B57", "#DC143C"),
   title = "Kaplan-Meier: Time to CRPC by Metastatic Load (5-Year Censored)",
-  xlab = "Time to CRPC (days)",
+  xlab = "Time to CRPC (months)",
   ylab = "Progression-free survival probability",
   legend.title = "Metastatic Load",
   legend.labs = c("Low", "High"),
@@ -1307,21 +1502,44 @@ if(exists("protein_hrs_full") && exists("protein_hrs_5yr")) {
 }
 ```
 
+### Final forest plot
+
 ```{r}
 # Combined Forest Plot: Univariate vs Metastatic-Controlled
 if(exists("results_base_5yr") && exists("protein_hrs_5yr")) {
-  
+
   # Add PSA analysis with log10 transformation for both univariate and metastatic-controlled
   # Univariate PSA analysis (5-year censored) with log10 transformation
-  meta_in_psa_5yr <- df_b_cox_5yr %>% 
+  meta_in_psa_5yr <- df_b_cox_5yr %>%
     rename(OS = time_to_crpc, death = progressed_to_crpc) %>%
     mutate(log10_psa = log10(psa))
-  
+
   clin_var_psa <- c("log10_psa")
   results_psa_univariate_5yr <- cox_extract(clin_var_psa, meta_in_psa_5yr)
   psa_univariate_5yr <- results_psa_univariate_5yr$log10_psa %>%
     mutate(OlinkID = "log10_psa", Assay = "log10(PSA)")
-  
+
+  # Add metastatic load univariate analysis
+  # Univariate analysis for metastatic load (High vs Low)
+  meta_in_mets_5yr <- df_b_cox_5yr %>%
+    rename(OS = time_to_crpc, death = progressed_to_crpc) %>%
+    left_join(df_b_final %>% select(HCI_cID, mets_volume), by = "HCI_cID") %>%
+    filter(!is.na(mets_volume)) %>%
+    mutate(mets_volume = factor(mets_volume, levels = c("Low", "High")))
+
+  cox_mets_univariate <- coxph(Surv(OS, death) ~ mets_volume, data = meta_in_mets_5yr)
+  cox_summary_mets <- summary(cox_mets_univariate)
+
+  mets_univariate_5yr <- data.frame(
+    OlinkID = "mets_volume",
+    Assay = "Metastatic Load",
+    HR = cox_summary_mets$conf.int["mets_volumeHigh", "exp(coef)"],
+    Lower_Bound = cox_summary_mets$conf.int["mets_volumeHigh", "lower .95"],
+    Upper_Bound = cox_summary_mets$conf.int["mets_volumeHigh", "upper .95"],
+    P_Value = cox_summary_mets$coefficients["mets_volumeHigh", "Pr(>|z|)"],
+    stringsAsFactors = FALSE
+  )
+
   # Metastatic-controlled PSA analysis using combined results structure
   # Get PSA data for metastatic load controlled analysis
   if(length(combined_results_5yr) > 0) {
@@ -1333,16 +1551,16 @@ if(exists("results_base_5yr") && exists("protein_hrs_5yr")) {
         protein_high = ifelse(protein_expr > median(protein_expr, na.rm = TRUE), "High", "Low"),
         protein_high = factor(protein_high, levels = c("Low", "High"))
       )
-    
+
     # Cox model with metastatic load control for PSA
-    cox_psa_controlled <- coxph(Surv(time_to_crpc, progressed_to_crpc) ~ mets_volume + protein_high, 
+    cox_psa_controlled <- coxph(Surv(time_to_crpc, progressed_to_crpc) ~ mets_volume + protein_high,
                                data = psa_combined_data)
-    
+
     # Extract PSA coefficient (protein effect adjusted for metastatic load)
     cox_summary_psa <- summary(cox_psa_controlled)
     protein_coef_psa <- cox_summary_psa$coefficients["protein_highHigh", , drop = FALSE]
     protein_confint_psa <- cox_summary_psa$conf.int["protein_highHigh", , drop = FALSE]
-    
+
     psa_controlled_5yr <- data.frame(
       OlinkID = "log10_psa",
       Assay = "log10(PSA)",
@@ -1352,27 +1570,51 @@ if(exists("results_base_5yr") && exists("protein_hrs_5yr")) {
       P_Value = protein_coef_psa[,"Pr(>|z|)"],
       stringsAsFactors = FALSE
     )
+
+    # Extract metastatic load coefficient from the multivariate model
+    # This shows the effect of metastatic load when controlling for protein expression
+    mets_coef_psa <- cox_summary_psa$coefficients["mets_volumeHigh", , drop = FALSE]
+    mets_confint_psa <- cox_summary_psa$conf.int["mets_volumeHigh", , drop = FALSE]
+
+    mets_controlled_5yr <- data.frame(
+      OlinkID = "mets_volume",
+      Assay = "Metastatic Load",
+      HR = mets_confint_psa[,"exp(coef)"],
+      Lower_Bound = mets_confint_psa[,"lower .95"],
+      Upper_Bound = mets_confint_psa[,"upper .95"],
+      P_Value = mets_coef_psa[,"Pr(>|z|)"],
+      stringsAsFactors = FALSE
+    )
   }
   
-  # Combine univariate and metastatic-controlled results for all 10 proteins + PSA
+  # Combine univariate and metastatic-controlled results for all 10 proteins + PSA + Metastatic Load
   combined_forest_data <- results_base_5yr %>%
-    select(OlinkID, Assay, 
-           HR_univariate = HR, 
-           Lower_univariate = Lower_Bound, 
-           Upper_univariate = Upper_Bound, 
+    select(OlinkID, Assay,
+           HR_univariate = HR,
+           Lower_univariate = Lower_Bound,
+           Upper_univariate = Upper_Bound,
            P_univariate = P_Value_FDR) %>%
-    # Add PSA univariate results
-    bind_rows(psa_univariate_5yr %>% 
-              select(OlinkID, Assay,
-                     HR_univariate = HR,
-                     Lower_univariate = Lower_Bound,
-                     Upper_univariate = Upper_Bound,
-                     P_univariate = P_Value) %>%
-              mutate(P_univariate = p.adjust(P_univariate, method = "fdr"))) %>%
+    # Add PSA and Metastatic Load univariate results
+    bind_rows(
+      psa_univariate_5yr %>%
+        select(OlinkID, Assay,
+               HR_univariate = HR,
+               Lower_univariate = Lower_Bound,
+               Upper_univariate = Upper_Bound,
+               P_univariate = P_Value) %>%
+        mutate(P_univariate = p.adjust(P_univariate, method = "fdr")),
+      mets_univariate_5yr %>%
+        select(OlinkID, Assay,
+               HR_univariate = HR,
+               Lower_univariate = Lower_Bound,
+               Upper_univariate = Upper_Bound,
+               P_univariate = P_Value) %>%
+        mutate(P_univariate = p.adjust(P_univariate, method = "fdr"))
+    ) %>%
     left_join(
-      # Combine protein and PSA controlled results
+      # Combine protein, PSA, and Metastatic Load controlled results
       bind_rows(
-        protein_hrs_5yr %>% select(OlinkID, 
+        protein_hrs_5yr %>% select(OlinkID,
                                   HR_controlled = HR,
                                   Lower_controlled = Lower_Bound,
                                   Upper_controlled = Upper_Bound,
@@ -1382,7 +1624,13 @@ if(exists("results_base_5yr") && exists("protein_hrs_5yr")) {
                                      Lower_controlled = Lower_Bound,
                                      Upper_controlled = Upper_Bound,
                                      P_controlled = P_Value) %>%
-                              mutate(P_controlled = p.adjust(P_controlled, method = "fdr"))
+                              mutate(P_controlled = p.adjust(P_controlled, method = "fdr")),
+        mets_controlled_5yr %>% select(OlinkID,
+                                      HR_controlled = HR,
+                                      Lower_controlled = Lower_Bound,
+                                      Upper_controlled = Upper_Bound,
+                                      P_controlled = P_Value) %>%
+                               mutate(P_controlled = p.adjust(P_controlled, method = "fdr"))
       ),
       by = "OlinkID"
     ) %>%
@@ -1411,16 +1659,27 @@ if(exists("results_base_5yr") && exists("protein_hrs_5yr")) {
     # Order by univariate HR for consistent plotting
     arrange(Assay, Analysis)
   
-  # Create ordering with log10(PSA) at the top, then proteins by descending HR
-  protein_hr_order <- combined_forest_data %>%
-    filter(Analysis == "Univariate", Assay != "log10(PSA)") %>%
-    arrange(desc(HR)) %>%
-    pull(Assay)
-  
-  protein_order <- c("log10(PSA)", protein_hr_order)
-  
+  # Create ordering matching limma_b_pair_sig order (by log2FC)
+  # Get the protein order from limma_b_pair_sig
+  limma_protein_order <- limma_b_pair_sig %>%
+    #left_join(df_id_pro, by = "OlinkID") %>%
+    arrange(log2FC) %>%  # Arrange by log2FC (most negative first)
+    pull(Assay) %>% as.character()
+
+  # Combine with PSA at top (and metastatic load - commented out)
+  protein_order <- c(# "Metastatic Load",  # Commented out - not shown in plot
+                     "log10(PSA)",
+                     limma_protein_order)
+
+  # Filter out Metastatic Load from the forest plot data
+  combined_forest_data_plot <- combined_forest_data %>%
+    filter(Assay != "Metastatic Load")
+
+  # Update protein_order to exclude Metastatic Load
+  protein_order <- protein_order[protein_order != "Metastatic Load"]
+
   # Apply ordering to combined data
-  combined_forest_data <- combined_forest_data %>%
+  combined_forest_data_plot <- combined_forest_data_plot %>%
     mutate(
       Assay = factor(Assay, levels = protein_order),
       # Create numeric position for y-axis (2 positions per protein)
@@ -1428,42 +1687,42 @@ if(exists("results_base_5yr") && exists("protein_hrs_5yr")) {
       y_position = protein_num * 2 + ifelse(Analysis == "Univariate", 0.25, -0.25)
     ) %>%
     arrange(desc(Assay), Analysis)
-  
+
   # Create data for protein labels (only show once per protein)
-  protein_labels <- combined_forest_data %>%
+  protein_labels <- combined_forest_data_plot %>%
     filter(Analysis == "Univariate") %>%
     mutate(y_label = y_position - 1)  # Center between the two analysis points (shift down)
-  
+
   # Create data for separation lines
   separation_lines <- data.frame(
     x_start = rep(0, length(protein_order)-1),
-    x_end = rep(max(combined_forest_data$Upper_Bound, na.rm = TRUE) * 1.1, length(protein_order)-1),
+    x_end = rep(max(combined_forest_data_plot$Upper_Bound, na.rm = TRUE) * 1.1, length(protein_order)-1),
     y_sep = seq(2.5, length(protein_order)*2 - 0.5, by = 2)
   )
   
   # Create forest plot
-  p1_combined <- ggplot(combined_forest_data, aes(x = HR, y = y_position, color = Analysis)) +
+  p1_combined <- ggplot(combined_forest_data_plot, aes(x = HR, y = y_position, color = Analysis)) +
     # Add separation lines between proteins
-    geom_segment(data = separation_lines, 
+    geom_segment(data = separation_lines,
                 aes(x = x_start, xend = x_end, y = y_sep, yend = y_sep),
                 color = "grey80", linetype = "dashed", alpha = 0.5, inherit.aes = FALSE) +
     # Add error bars and points
-    geom_errorbarh(aes(xmin = Lower_Bound, xmax = Upper_Bound), 
+    geom_errorbarh(aes(xmin = Lower_Bound, xmax = Upper_Bound),
                    height = 0.2, alpha = 0.8) +
     geom_point(size = 3, alpha = 0.9) +
     geom_vline(xintercept = 1, linetype = "dashed", color = "black") +
     # Add protein labels on the left
-    geom_text(data = protein_labels, 
-              aes(x = 0, y = y_label, label = Assay), 
-              hjust = 1, vjust = 0.5, size = 3.5, color = "black", 
+    geom_text(data = protein_labels,
+              aes(x = 0, y = y_label, label = Assay),
+              hjust = 1, vjust = 0.5, size = 3.5, color = "black",
               inherit.aes = FALSE) +
     theme_minimal(base_size = 11) +
     scale_color_manual(values = c("Univariate" = "#2E86AB", "Metastatic-Controlled" = "#A23B72")) +
-    scale_x_continuous(limits = c(0, max(combined_forest_data$Upper_Bound, na.rm = TRUE) * 1.1),
+    scale_x_continuous(limits = c(0, max(combined_forest_data_plot$Upper_Bound, na.rm = TRUE) * 1.1),
                        expand = expansion(mult = c(0.25, 0.05))) +
-    scale_y_continuous(breaks = protein_labels$y_label, 
+    scale_y_continuous(breaks = protein_labels$y_label,
                        labels = rep("", length(protein_labels$y_label))) +
-    labs(x = "Hazard Ratio", y = NULL, 
+    labs(x = "Hazard Ratio", y = NULL,
          title = "Protein Hazard Ratios: Univariate vs Metastatic Load-Controlled",
          color = "Analysis") +
     theme(
@@ -1474,16 +1733,16 @@ if(exists("results_base_5yr") && exists("protein_hrs_5yr")) {
       legend.position = "top",
       plot.margin = margin(5.5, 5.5, 5.5, 40)
     )
-  
+
   # Create table with HR and P-values
-  p2_combined <- ggplot(combined_forest_data, aes(y = y_position)) +
+  p2_combined <- ggplot(combined_forest_data_plot, aes(y = y_position)) +
     geom_text(aes(x = 1, label = HR_CI, color = Analysis), hjust = 0, size = 3) +
-    geom_text(aes(x = 2.8, label = P_Text, color = ifelse(P_Value < 0.05, Analysis, "black")), 
+    geom_text(aes(x = 2.8, label = P_Text, color = ifelse(P_Value < 0.05, Analysis, "black")),
               hjust = 0, size = 3, show.legend = FALSE) +
     scale_color_manual(values = c("Univariate" = "#2E86AB", "Metastatic-Controlled" = "#A23B72", "black" = "black"),
                        guide = "none") +
     scale_x_continuous(limits = c(0.95, 4), breaks = NULL) +
-    scale_y_continuous(limits = range(combined_forest_data$y_position)) +
+    scale_y_continuous(limits = range(combined_forest_data_plot$y_position)) +
     theme_void(base_size = 11) +
     theme(
       axis.text.y = element_blank(),
@@ -1497,13 +1756,16 @@ if(exists("results_base_5yr") && exists("protein_hrs_5yr")) {
   
   # Save plot
   ggsave(filename = file.path(wd$outCurr, "Forest_plot_univariate_vs_controlled.pdf"), 
-         plot = final_combined_plot, width = 7, height = 5)
+         plot = final_combined_plot, width = 7, height = 8)
   
   # Save data
   write.csv(combined_forest_data, file.path(wd$outCurr, "Combined_forest_data.csv"), row.names = FALSE)
   
   cat("=== Combined Forest Plot Created ===\n")
-  cat("Shows all 10 proteins + log10(PSA) with both univariate and metastatic-controlled HRs\n")
+  cat("Shows all 10 proteins + log10(PSA) with both univariate and multivariate HRs\n")
+  cat("Note: Proteins are ordered by log2FC from limma_b_pair_sig (most negative first)\n")
+  cat("      In the multivariate model, proteins/PSA are adjusted for metastatic load\n")
+  cat("      Metastatic Load data is calculated but not shown in the plot (commented out)\n")
 }
 ```
 
@@ -1603,6 +1865,7 @@ if(length(top_proteins_5yr) > 0 && length(combined_results_5yr) > 0) {
   dev.off()
 }
 ```
+
 ## Baseline mets expression
 
 We look at the protein expression in the 58 samples at baseline
@@ -1717,7 +1980,8 @@ p_viol_gene
 # ... existing code ...
 ```
 
-If we limit to the 10 genes
+
+If we limit to the 10 genes or KLK 3 only
 
 ```{r}
 # Prepare long-format NPX data for plotting
@@ -1732,7 +1996,8 @@ sig_olink_ids <- limma_b_pair_sig
 # Merge and filter for plotting
 df_plot <- df_npx_long %>% 
   left_join(df_id_pro, by = "OlinkID") %>% 
-  dplyr::filter(OlinkID %in% sig_olink_ids$OlinkID) %>% 
+  #dplyr::filter(OlinkID %in% sig_olink_ids$OlinkID) %>% 
+  dplyr::filter(Assay %in% "KLK3") %>% 
   left_join(df_final_ids %>% select(final_sample_id, HCI_cID, cohort, txt_stat), by = "final_sample_id") %>% 
   filter(final_sample_id %in% colnames(exp_mat_sub)) %>%
   mutate(
@@ -1762,10 +2027,10 @@ p_viol_gene <-
         panel.grid.minor = element_line(linetype = "blank"),
         axis.text.x = element_text(angle = 0)) +
   scale_y_continuous(limits=c(min_y, max_y+3)) +
-  # geom_signif(
-  #   comparisons = list(c("High", "Low")),
-  #   map_signif_level = FALSE,
-  #   test = "t.test") +
+  geom_signif(
+    comparisons = list(c("High", "Low")),
+    map_signif_level = FALSE,
+    test = "t.test") +
   facet_wrap(~Assay, ncol=10) +
   scale_fill_manual(values=c("#ff7f0e", "gold4")) +
   NULL
@@ -1974,6 +2239,141 @@ if(sum(protein_mets_results$P_Value_FDR < 0.2, na.rm = TRUE) > 0) {
   print(sig_list)
 }
 ```
+
+
+## Metastatic load vs PSA
+
+Lets look at PSA as well KLK3 NPX in high vs low metastatic load
+
+```{r}
+# Use all mHSPC patients (df_b_final), not just paired
+psa_protein_data <- df_b_final %>%
+  filter(HCI_cID %in% df_meta_f5$HCI_cID) %>%
+  mutate(logPSA = log10(psa),
+         txt_stat = factor(updated_adt_early, levels = c("Pre", "Post"))) %>%
+  select(HCI_cID, mrn, logPSA, txt_stat, psa, mets_volume) %>%
+  left_join(df_link, by = "HCI_cID") %>%
+  filter(!is.na(final_sample_id)) %>% 
+  filter(final_sample_id %in% df_baseline_mets$final_sample_id) %>% 
+  mutate(mets_volume= factor(mets_volume, levels=c("Low", "High")))
+
+# Get KLK3 OlinkID
+klk3_id <- df_id_pro %>%
+    filter(Assay == "KLK3") %>%
+    pull(OlinkID)
+
+# Extract KLK3 expression for these samples
+klk3_expression <- exprMatrix_corrected_sub[klk3_id, psa_protein_data$final_sample_id]
+psa_protein_data$KLK3_NPX <- as.numeric(klk3_expression)
+
+# Plot correlation
+# Scatter plot
+p_psa_klk3 <- ggplot(psa_protein_data, aes(x = KLK3_NPX, y = logPSA)) +
+  geom_point(size = 5, alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE) +
+  #scale_color_manual(values = c("#ff7f0e", "gold4")) +
+  labs(
+    title = sprintf("log(PSA) vs KLK3 Expression (rho = %.2f, p = %.2e)",
+                    cor_overall$estimate, cor_overall$p.value),
+    x = "KLK3 NPX",
+    y = "log10(PSA)",
+    color = "Treatment Status"
+  ) +
+  theme_bw() +
+  theme_custom
+
+
+
+# Plot KLK3 NPX by metastatic burden
+p_klk3_mets <- ggplot(psa_protein_data, aes(x = mets_volume, y = KLK3_NPX, fill = mets_volume)) +
+  geom_violin(alpha = 0.7, trim = FALSE) +
+  geom_boxplot(width = 0.2, outlier.shape = NA, alpha = 0.5) +
+  ggbeeswarm::geom_quasirandom(size = 2, alpha = 0.6) +
+  ggsignif::geom_signif(
+    comparisons = list(c("High", "Low")),
+    map_signif_level = FALSE,
+    test = "wilcox.test"
+  ) +
+  scale_fill_manual(values = c("Low" = "#2E8B57", "High" = "#DC143C")) +
+  labs(
+    title = "KLK3 Protein Expression by Metastatic Burden",
+    subtitle = "Baseline (Pre-treatment) samples",
+    x = "Metastatic Burden",
+    y = "KLK3 NPX",
+    fill = "Metastatic\nBurden"
+  ) +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank"),
+        axis.text.x = element_text(angle = 0))
+
+# Plot PSA by metastatic burden
+p_psa_mets <- ggplot(psa_protein_data, aes(x = mets_volume, y = logPSA, fill = mets_volume)) +
+  geom_violin(alpha = 0.7, trim = FALSE) +
+  geom_boxplot(width = 0.2, outlier.shape = NA, alpha = 0.5) +
+  ggbeeswarm::geom_quasirandom(size = 2, alpha = 0.6) +
+  ggsignif::geom_signif(
+    comparisons = list(c("High", "Low")),
+    map_signif_level = FALSE,
+    test = "wilcox.test"
+  ) +
+  scale_fill_manual(values = c("Low" = "#2E8B57", "High" = "#DC143C")) +
+  labs(
+    title = "PSA Clinical Values by Metastatic Burden",
+    subtitle = "Baseline (Pre-treatment) samples",
+    x = "Metastatic Burden",
+    y = "log10(PSA)",
+    fill = "Metastatic\nBurden"
+  ) +
+  theme_bw() +
+  theme(legend.position = "right",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank"),
+        axis.text.x = element_text(angle = 0)) 
+
+# Display plots
+print(p_klk3_mets)
+print(p_psa_mets)
+
+# Print summary statistics
+cat("\n=== KLK3 NPX by Metastatic Burden ===\n")
+print(plot_data %>%
+  group_by(mets_volume) %>%
+  summarise(
+    n = n(),
+    mean = mean(KLK3_NPX, na.rm = TRUE),
+    median = median(KLK3_NPX, na.rm = TRUE),
+    sd = sd(KLK3_NPX, na.rm = TRUE)
+  ))
+
+cat("\n=== PSA by Metastatic Burden ===\n")
+print(plot_data %>%
+  group_by(mets_volume) %>%
+  summarise(
+    n = sum(!is.na(psa)),
+    mean_psa = mean(psa, na.rm = TRUE),
+    median_psa = median(psa, na.rm = TRUE),
+    sd_psa = sd(psa, na.rm = TRUE)
+  ))
+
+# Perform statistical tests
+cat("\n=== Statistical Tests ===\n")
+cat("KLK3 NPX - Wilcoxon test:\n")
+wilcox_klk3 <- wilcox.test(KLK3_NPX ~ mets_volume, data = plot_data)
+print(wilcox_klk3)
+
+cat("\nPSA - Wilcoxon test:\n")
+wilcox_psa <- wilcox.test(logPSA ~ mets_volume, data = plot_data)
+print(wilcox_psa)
+
+# Save plots
+ggsave(p_klk3_mets, file = file.path(wd$outCurr, "KLK3_metastatic_burden_baseline.pdf"),
+       height = 6, width = 7)
+ggsave(p_psa_mets, file = file.path(wd$outCurr, "PSA_metastatic_burden_baseline.pdf"),
+       height = 6, width = 7)
+```
+
 
 ## Cox regression analysis for metastatic load-associated proteins
 

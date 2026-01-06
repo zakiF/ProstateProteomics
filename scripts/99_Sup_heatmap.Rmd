@@ -1,0 +1,754 @@
+---
+title: "Protein biomarker"
+date: "2026-01-05"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 3
+    number_sections: true
+    theme: lumen
+---
+
+# Background
+
+Generate summary heatmap of proteins alterations associated with prognosis / predictive in prostate cancer
+
+# Pre-processing
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyr)
+library(ggplot2)
+library(dplyr)
+library(here)
+library(readxl)
+library(writexl)
+library(patchwork)
+library(gridExtra)
+library(grid)
+library(cowplot)
+
+```
+
+File paths
+
+```{r}
+wd <- list()
+wd$main <- here()
+
+wd$data <- file.path(wd$main, "data")
+wd$out <- file.path(wd$main, "output")
+
+# out data (location to save future data)
+wd$outData <- file.path(wd$out, "out_data")
+```
+
+# Data Extraction
+
+Read the data and extract genes (same as heatmap script)
+
+```{r}
+# Read the supplementary table
+suppl_table <- read_excel(file.path(wd$data, "Suppl Table S1 mCRPC studies_v2.xlsx"))
+
+# Extract columns for study type classification
+biomarkers_col <- suppl_table$`ctDNA based  Biomarkers`
+focus_col <- suppl_table$focus
+predictive_col <- suppl_table$predictive
+
+# Classify study types (Prognostic, Predictive, Both)
+study_type <- character(nrow(suppl_table))
+study_design <- character(nrow(suppl_table))
+
+for (i in 1:nrow(suppl_table)) {
+  has_predictive_value <- !is.na(predictive_col[i])
+  focus_text <- focus_col[i]
+
+  # Check if both prognostic and predictive are mentioned in focus column OR if predictive column has value
+  has_prognostic <- grepl("Prognostic", focus_text, ignore.case = TRUE)
+  has_predictive_focus <- grepl("predictive", focus_text, ignore.case = TRUE)
+
+  if ((has_prognostic && has_predictive_focus) || (has_prognostic && has_predictive_value)) {
+    study_type[i] <- "Both"
+  } else if (has_predictive_focus || has_predictive_value) {
+    study_type[i] <- "Predictive"
+  } else if (has_prognostic) {
+    study_type[i] <- "Prognostic"
+  } else {
+    study_type[i] <- "Unknown"
+  }
+
+  # Extract study design (Prospective vs Retrospective)
+  if (grepl("Prospective", focus_text, ignore.case = TRUE)) {
+    study_design[i] <- "Prospective"
+  } else if (grepl("Retrospective", focus_text, ignore.case = TRUE)) {
+    study_design[i] <- "Retrospective"
+  } else {
+    study_design[i] <- "Unknown"
+  }
+}
+
+# Print summary of study types
+print("Study Type Distribution:")
+print(table(study_type))
+print("Study Design Distribution:")
+print(table(study_design))
+
+# Extract individual genes from the biomarkers column
+all_genes <- c()
+for (i in 1:nrow(suppl_table)) {
+  biomarker <- biomarkers_col[i]
+  if (!is.na(biomarker)) {
+    # Extract text within parentheses
+    genes_in_parens <- regmatches(biomarker, gregexpr("\\(([^)]+)\\)", biomarker))[[1]]
+    if (length(genes_in_parens) > 0) {
+      genes <- unlist(strsplit(gsub("[()]", "", genes_in_parens), ",\\s*"))
+      genes <- trimws(genes)
+      all_genes <- c(all_genes, genes)
+    }
+
+    # Extract genes not in parentheses
+    genes_outside <- gsub("\\([^)]+\\)", "", biomarker)
+    genes_outside <- unlist(strsplit(genes_outside, ",\\s*"))
+    genes_outside <- trimws(genes_outside)
+    genes_outside <- genes_outside[genes_outside != ""]
+
+    # Preserve special biomarkers
+    special_markers <- genes_outside[genes_outside %in% c("CNA burden", "cfDNA methylome")]
+
+    # Remove annotations
+    genes_outside <- gsub("\\s+(CN|copy number|gain|loss|amplification|deletion).*$", "", genes_outside, ignore.case = TRUE)
+    genes_outside <- trimws(genes_outside)
+    genes_outside <- gsub("^and\\s+", "", genes_outside, ignore.case = TRUE)
+    genes_outside <- trimws(genes_outside)
+
+    # Keep only gene-like names OR special biomarkers
+    genes_outside <- genes_outside[grepl("^[A-Z0-9-]{2,20}$", genes_outside) | genes_outside %in% c("CNA burden", "cfDNA methylome")]
+
+    if (length(special_markers) > 0) {
+      genes_outside <- c(genes_outside, special_markers)
+    }
+    all_genes <- c(all_genes, genes_outside)
+
+    # Extract embedded genes
+    embedded_genes <- regmatches(biomarker, gregexpr("\\b[A-Z][A-Z0-9]{1,9}(?=[\\s/]|and\\b|$)", biomarker, perl = TRUE))[[1]]
+    embedded_genes <- embedded_genes[grepl("^[A-Z]{2}[A-Z0-9]{0,8}$", embedded_genes)]
+    embedded_genes <- embedded_genes[!embedded_genes %in% c("CN", "DNA", "RNA", "PCR", "HRR")]
+    all_genes <- c(all_genes, embedded_genes)
+  }
+}
+
+# Harmonize gene names
+all_genes <- trimws(all_genes)
+all_genes <- gsub("^and\\s+", "", all_genes, ignore.case = TRUE)
+all_genes <- trimws(all_genes)
+all_genes <- all_genes[!grepl("etc", all_genes, ignore.case = TRUE)]
+all_genes <- all_genes[!grepl("amplification|rearrangement|intragenic", all_genes, ignore.case = TRUE)]
+
+# Remove AR mutations
+ar_mutations <- c("L702H", "T878A", "W742C", "W742L", "H875Y")
+all_genes <- all_genes[!all_genes %in% ar_mutations]
+
+# Standardize AR variants
+all_genes <- gsub("^AR-V\\d+.*", "AR", all_genes)
+all_genes <- gsub("^AR-E\\d+.*", "AR", all_genes)
+all_genes <- gsub("^AR\\d+.*", "AR", all_genes)
+
+# Standardize NKX3-1
+all_genes <- gsub("NKX3\\.1", "NKX3-1", all_genes)
+
+# Expand genes like CHEK1/2
+expanded_genes <- c()
+for (gene in all_genes) {
+  if (grepl("/", gene)) {
+    if (grepl("^([A-Z0-9-]+[A-Z]+)(\\d+)/(\\d+)$", gene)) {
+      base <- sub("(^[A-Z0-9-]+[A-Z]+)\\d+/\\d+$", "\\1", gene)
+      nums <- regmatches(gene, gregexpr("\\d+", gene))[[1]]
+      for (num in nums) {
+        expanded_genes <- c(expanded_genes, paste0(base, num))
+      }
+    } else {
+      expanded_genes <- c(expanded_genes, gene)
+    }
+  } else {
+    expanded_genes <- c(expanded_genes, gene)
+  }
+}
+
+unique_genes <- sort(unique(expanded_genes))
+print(paste("Total unique genes found:", length(unique_genes)))
+```
+
+# Create binary matrix
+
+```{r}
+# Create a binary matrix
+n_studies <- nrow(suppl_table)
+gene_matrix <- matrix(0, nrow = length(unique_genes), ncol = n_studies)
+rownames(gene_matrix) <- unique_genes
+colnames(gene_matrix) <- 1:n_studies
+
+# Fill in the matrix
+for (i in 1:n_studies) {
+  biomarker <- biomarkers_col[i]
+  if (!is.na(biomarker)) {
+    study_genes <- c()
+
+    # Genes in parentheses
+    genes_in_parens <- regmatches(biomarker, gregexpr("\\(([^)]+)\\)", biomarker))[[1]]
+    if (length(genes_in_parens) > 0) {
+      genes <- unlist(strsplit(gsub("[()]", "", genes_in_parens), ",\\s*"))
+      study_genes <- c(study_genes, genes)
+    }
+
+    # Genes outside parentheses
+    genes_outside <- gsub("\\([^)]+\\)", "", biomarker)
+    genes_outside <- unlist(strsplit(genes_outside, ",\\s*"))
+    genes_outside <- trimws(genes_outside)
+    genes_outside <- genes_outside[genes_outside != ""]
+
+    special_markers <- genes_outside[genes_outside %in% c("CNA burden", "cfDNA methylome")]
+    genes_outside <- gsub("\\s+(CN|copy number|gain|loss|amplification|deletion).*$", "", genes_outside, ignore.case = TRUE)
+    genes_outside <- trimws(genes_outside)
+    genes_outside <- gsub("^and\\s+", "", genes_outside, ignore.case = TRUE)
+    genes_outside <- trimws(genes_outside)
+    genes_outside <- genes_outside[grepl("^[A-Z0-9-]{2,20}$", genes_outside) | genes_outside %in% c("CNA burden", "cfDNA methylome")]
+
+    if (length(special_markers) > 0) {
+      genes_outside <- c(genes_outside, special_markers)
+    }
+    study_genes <- c(study_genes, genes_outside)
+
+    # Embedded genes
+    embedded_genes <- regmatches(biomarker, gregexpr("\\b[A-Z][A-Z0-9]{1,9}(?=[\\s/]|and\\b|$)", biomarker, perl = TRUE))[[1]]
+    embedded_genes <- embedded_genes[grepl("^[A-Z]{2}[A-Z0-9]{0,8}$", embedded_genes)]
+    embedded_genes <- embedded_genes[!embedded_genes %in% c("CN", "DNA", "RNA", "PCR", "HRR")]
+    study_genes <- c(study_genes, embedded_genes)
+
+    # Apply harmonization
+    study_genes <- trimws(study_genes)
+    study_genes <- gsub("^and\\s+", "", study_genes, ignore.case = TRUE)
+    study_genes <- trimws(study_genes)
+    study_genes <- study_genes[!grepl("etc", study_genes, ignore.case = TRUE)]
+    study_genes <- study_genes[!grepl("amplification|rearrangement|intragenic", study_genes, ignore.case = TRUE)]
+    ar_mutations <- c("L702H", "T878A", "W742C", "W742L", "H875Y")
+    study_genes <- study_genes[!study_genes %in% ar_mutations]
+    study_genes <- gsub("^AR-V\\d+.*", "AR", study_genes)
+    study_genes <- gsub("^AR-E\\d+.*", "AR", study_genes)
+    study_genes <- gsub("^AR\\d+.*", "AR", study_genes)
+    study_genes <- gsub("NKX3\\.1", "NKX3-1", study_genes)
+
+    # Expand genes like CHEK1/2
+    expanded_study_genes <- c()
+    for (gene in study_genes) {
+      if (grepl("/", gene)) {
+        if (grepl("^([A-Z0-9-]+[A-Z]+)(\\d+)/(\\d+)$", gene)) {
+          base <- sub("(^[A-Z0-9-]+[A-Z]+)\\d+/\\d+$", "\\1", gene)
+          nums <- regmatches(gene, gregexpr("\\d+", gene))[[1]]
+          for (num in nums) {
+            expanded_study_genes <- c(expanded_study_genes, paste0(base, num))
+          }
+        } else {
+          expanded_study_genes <- c(expanded_study_genes, gene)
+        }
+      } else {
+        expanded_study_genes <- c(expanded_study_genes, gene)
+      }
+    }
+
+    # Mark genes as present
+    for (gene in expanded_study_genes) {
+      if (gene %in% unique_genes) {
+        gene_matrix[gene, i] <- 1
+      }
+    }
+  }
+}
+
+print(paste("Matrix dimensions:", nrow(gene_matrix), "genes x", ncol(gene_matrix), "studies"))
+
+# Define special markers
+special_markers <- c("CNA burden", "cfDNA methylome")
+
+# Identify genes that appear only once
+gene_counts <- rowSums(gene_matrix)
+single_occurrence_genes <- names(gene_counts)[gene_counts == 1]
+
+# Identify special markers present in the matrix
+special_markers_to_group <- intersect(rownames(gene_matrix), special_markers)
+
+# Combine single occurrence genes and special markers into one group
+all_markers_to_group <- unique(c(single_occurrence_genes, special_markers_to_group))
+
+# Create new row for all other markers (single-occurrence genes + special markers)
+if (length(all_markers_to_group) > 0) {
+  # Create a combined row for all markers
+  other_markers_row <- apply(gene_matrix[all_markers_to_group, , drop = FALSE], 2, function(x) as.integer(any(x == 1)))
+
+  # Remove individual markers that are being grouped
+  genes_to_keep <- setdiff(rownames(gene_matrix), all_markers_to_group)
+  gene_matrix <- gene_matrix[genes_to_keep, , drop = FALSE]
+
+  # Add the grouped row with a descriptive name
+  #other_markers_row_name <- paste0("Other markers (n=", length(all_markers_to_group), ")")
+  other_markers_row_name <- "Other markers"
+  gene_matrix <- rbind(gene_matrix, other_markers_row)
+  rownames(gene_matrix)[nrow(gene_matrix)] <- other_markers_row_name
+
+  print(paste("Grouped", length(all_markers_to_group), "single-occurrence/special markers into 'Other markers'"))
+}
+
+print(paste("Updated matrix dimensions:", nrow(gene_matrix), "genes x", ncol(gene_matrix), "studies"))
+```
+
+# Prepare data for visualization
+
+```{r}
+# Load gene categories
+gene_categories <- read.csv(file.path(wd$data, "geneNames.csv"))
+colnames(gene_categories) <- c("Gene", "Amp_Gain", "Loss_deletion", "MUTATIONS_FUSIONS")
+
+# Function to determine gene category
+get_gene_category <- function(gene_name, gene_categories) {
+  # Check if this is the "Other markers" grouped row
+  if (grepl("^Other markers", gene_name)) {
+    return("Other")
+  }
+
+  match_row <- gene_categories[gene_categories$Gene == gene_name, ]
+  if (nrow(match_row) == 0) {
+    return("Other")
+  }
+
+  if (!is.na(match_row$Amp_Gain) && match_row$Amp_Gain == "Y") {
+    return("Amplification")
+  } else if (!is.na(match_row$Loss_deletion) && match_row$Loss_deletion == "Y") {
+    return("Deletion")
+  } else if (!is.na(match_row$MUTATIONS_FUSIONS) && match_row$MUTATIONS_FUSIONS == "Y") {
+    return("Mutation/Fusion")
+  } else {
+    return("Other")
+  }
+}
+
+# Calculate percentage and study counts for each gene
+gene_counts <- rowSums(gene_matrix)
+gene_percentage <- (gene_counts / ncol(gene_matrix)) * 100
+
+# Get study numbers for each gene
+get_study_numbers <- function(gene_name, gene_matrix) {
+  study_cols <- which(gene_matrix[gene_name, ] == 1)
+  return(paste(study_cols, collapse = ", "))
+}
+
+# Create data frame for plotting
+plot_data <- data.frame(
+  Gene = rownames(gene_matrix),
+  Count = gene_counts,
+  Percentage = gene_percentage,
+  StudyNumbers = sapply(rownames(gene_matrix), function(x) get_study_numbers(x, gene_matrix)),
+  stringsAsFactors = FALSE
+)
+
+# Add gene categories
+plot_data$Category <- sapply(plot_data$Gene, function(x) get_gene_category(x, gene_categories))
+
+# Filter out genes with 0 or 1 occurrence (optional - adjust as needed)
+# Keeping genes with at least 2 studies
+plot_data <- plot_data[plot_data$Count >= 2, ]
+
+# Order by category and then by percentage (descending)
+category_order <- c("Amplification", "Deletion", "Mutation/Fusion", "Other")
+plot_data$Category <- factor(plot_data$Category, levels = category_order)
+plot_data <- plot_data[order(plot_data$Category, -plot_data$Percentage), ]
+
+# Reorder gene factor levels for plotting
+plot_data$Gene <- factor(plot_data$Gene, levels = plot_data$Gene)
+
+print(head(plot_data))
+print(paste("Number of genes to plot:", nrow(plot_data)))
+```
+
+
+# Alternative: Triangle-Split Waffle Plot using ComplexHeatmap
+
+This approach uses triangular splits within each square to show both prognostic (lighter shade) and predictive (darker shade) studies simultaneously.
+
+```{r, warning=FALSE, message=FALSE}
+library(ComplexHeatmap)
+library(circlize)
+```
+
+## Prepare matrix for ComplexHeatmap
+
+```{r}
+# Create a matrix where each cell contains combined alteration type information
+# Format will be like "pred_Amplification;prog_Amplification" for studies with "Both"
+# Or just "pred_Amplification" for Predictive only, "prog_Amplification" for Prognostic only
+
+# Get genes that appear in at least 2 studies (matching the plot_data filter)
+genes_to_include <- plot_data$Gene
+
+# Create a character matrix to store alteration type combinations
+triangle_matrix <- matrix("", nrow = length(genes_to_include), ncol = ncol(gene_matrix))
+rownames(triangle_matrix) <- genes_to_include
+colnames(triangle_matrix) <- colnames(gene_matrix)
+
+# Fill the matrix with category and study type information
+for (i in 1:nrow(triangle_matrix)) {
+  gene <- rownames(triangle_matrix)[i]
+
+  for (j in 1:ncol(triangle_matrix)) {
+    # Check if gene is present in this study
+    if (gene_matrix[gene, j] == 1) {
+      # Get the category for this gene
+      category <- get_gene_category(gene, gene_categories)
+
+      # Get the study type for this study
+      study_type_j <- study_type[j]
+
+      # Create alteration strings based on study type
+      if (study_type_j == "Both") {
+        # Both prognostic and predictive - will show both triangles
+        triangle_matrix[i, j] <- paste0("pred_", category, ";prog_", category)
+      } else if (study_type_j == "Predictive") {
+        # Predictive only
+        triangle_matrix[i, j] <- paste0("pred_", category)
+      } else if (study_type_j == "Prognostic") {
+        # Prognostic only
+        triangle_matrix[i, j] <- paste0("prog_", category)
+      } else {
+        # Unknown - treat as prognostic (lighter shade)
+        triangle_matrix[i, j] <- paste0("prog_", category)
+      }
+    }
+  }
+}
+
+# Create ordering data frame for sorting
+# 1) Order by alteration type (category)
+# 2) Within each category, order by frequency (descending)
+gene_order_df <- data.frame(
+  Gene = rownames(triangle_matrix),
+  Category = sapply(rownames(triangle_matrix), function(x) get_gene_category(x, gene_categories)),
+  Frequency = rowSums(gene_matrix[rownames(triangle_matrix), ] > 0),
+  stringsAsFactors = FALSE
+)
+
+# Define category order
+category_order <- c("Amplification", "Deletion", "Mutation/Fusion", "Other")
+gene_order_df$Category <- factor(gene_order_df$Category, levels = category_order)
+
+# Sort by Category, then by Frequency (descending)
+gene_order_df <- gene_order_df[order(gene_order_df$Category, -gene_order_df$Frequency), ]
+
+# Reorder triangle_matrix rows
+triangle_matrix <- triangle_matrix[gene_order_df$Gene, ]
+
+print(paste("Triangle matrix dimensions:", nrow(triangle_matrix), "x", ncol(triangle_matrix)))
+print("Sample values:")
+print(triangle_matrix[1:5, 1:5])
+print("\nGene ordering (first 10):")
+print(head(gene_order_df, 10))
+```
+
+## Define color functions with triangular splits
+
+Following your approach with separate functions for predictive (pred_) and prognostic (prog_) triangles.
+
+```{r}
+# Define base colors for each category
+# Predictive = darker shades, Prognostic = lighter shades
+col <- c(
+  # Predictive (darker)
+  pred_Amplification = "#E41A1C",      # Dark red
+  pred_Deletion = "#377EB8",           # Dark blue
+  "pred_Mutation/Fusion" = "#4DAF4A",  # Dark green
+  pred_Other = "grey20",              # Dark grey
+
+  # Prognostic (lighter)
+  prog_Amplification = "#FFB3B3",      # Light red
+  prog_Deletion = "#B3D9FF",           # Light blue
+  "prog_Mutation/Fusion" = "#B3E6B3",  # Light green
+  prog_Other = "grey60"               # Light grey
+)
+
+# Create alter_fun list following your exact pattern
+alter_fun_list <- list(
+  # Background shows grey triangles when no alteration
+  background = function(x, y, w, h) {
+    # Bottom-left triangle
+    grid.polygon(
+      unit.c(x - 0.5*w, x - 0.5*w, x + 0.5*w),
+      unit.c(y - 0.5*h, y + 0.5*h, y - 0.5*h),
+      gp = gpar(fill = "grey95", col = "white"))
+    # Top-right triangle
+    grid.polygon(
+      unit.c(x + 0.5*w, x + 0.5*w, x - 0.5*w),
+      unit.c(y + 0.5*h, y - 0.5*h, y + 0.5*h),
+      gp = gpar(fill = "grey95", col = "white"))
+  },
+
+  # Predictive Amplification (bottom-left triangle, dark red)
+  pred_Amplification = function(x, y, w, h) {
+    grid.polygon(
+      unit.c(x - 0.5*w, x - 0.5*w, x + 0.5*w),
+      unit.c(y - 0.5*h, y + 0.5*h, y - 0.5*h),
+      gp = gpar(fill = col["pred_Amplification"], col = "white"))
+  },
+
+  # Prognostic Amplification (top-right triangle, light red)
+  prog_Amplification = function(x, y, w, h) {
+    grid.polygon(
+      unit.c(x + 0.5*w, x + 0.5*w, x - 0.5*w),
+      unit.c(y + 0.5*h, y - 0.5*h, y + 0.5*h),
+      gp = gpar(fill = col["prog_Amplification"], col = "white"))
+  },
+
+  # Predictive Deletion (bottom-left triangle, dark blue)
+  pred_Deletion = function(x, y, w, h) {
+    grid.polygon(
+      unit.c(x - 0.5*w, x - 0.5*w, x + 0.5*w),
+      unit.c(y - 0.5*h, y + 0.5*h, y - 0.5*h),
+      gp = gpar(fill = col["pred_Deletion"], col = "white"))
+  },
+
+  # Prognostic Deletion (top-right triangle, light blue)
+  prog_Deletion = function(x, y, w, h) {
+    grid.polygon(
+      unit.c(x + 0.5*w, x + 0.5*w, x - 0.5*w),
+      unit.c(y + 0.5*h, y - 0.5*h, y + 0.5*h),
+      gp = gpar(fill = col["prog_Deletion"], col = "white"))
+  },
+
+  # Predictive Mutation/Fusion (bottom-left triangle, dark green)
+  "pred_Mutation/Fusion" = function(x, y, w, h) {
+    grid.polygon(
+      unit.c(x - 0.5*w, x - 0.5*w, x + 0.5*w),
+      unit.c(y - 0.5*h, y + 0.5*h, y - 0.5*h),
+      gp = gpar(fill = col["pred_Mutation/Fusion"], col = "white"))
+  },
+
+  # Prognostic Mutation/Fusion (top-right triangle, light green)
+  "prog_Mutation/Fusion" = function(x, y, w, h) {
+    grid.polygon(
+      unit.c(x + 0.5*w, x + 0.5*w, x - 0.5*w),
+      unit.c(y + 0.5*h, y - 0.5*h, y + 0.5*h),
+      gp = gpar(fill = col["prog_Mutation/Fusion"], col = "white"))
+  },
+
+  # Predictive Other (bottom-left triangle, dark grey)
+  pred_Other = function(x, y, w, h) {
+    grid.polygon(
+      unit.c(x - 0.5*w, x - 0.5*w, x + 0.5*w),
+      unit.c(y - 0.5*h, y + 0.5*h, y - 0.5*h),
+      gp = gpar(fill = col["pred_Other"], col = "white"))
+  },
+
+  # Prognostic Other (top-right triangle, light grey)
+  prog_Other = function(x, y, w, h) {
+    grid.polygon(
+      unit.c(x + 0.5*w, x + 0.5*w, x - 0.5*w),
+      unit.c(y + 0.5*h, y - 0.5*h, y + 0.5*h),
+      gp = gpar(fill = col["prog_Other"], col = "white"))
+  }
+)
+
+print("Alter functions created for:")
+print(names(alter_fun_list))
+```
+
+## Create the OncoPrint-style plot
+
+```{r, fig.width=14, fig.height=10}
+# Calculate overall alteration percentage for each gene (not split by predictive/prognostic)
+gene_freq <- rowSums(gene_matrix[rownames(triangle_matrix), ] > 0)
+gene_pct <- round((gene_freq / ncol(gene_matrix)) * 100, 1)
+
+# Create row annotation with barplot showing percentage on the RIGHT
+row_ha_right <- rowAnnotation(
+  `Alteration %` = anno_barplot(gene_pct,
+                                 gp = gpar(fill = "#4DAF4A"),
+                                 border = FALSE,
+                                 bar_width = 0.8,
+                                 axis_param = list(side = "top",
+                                                   labels_rot = 0,
+                                                   gp = gpar(fontsize = 8)),
+                                 width = unit(3, "cm"))
+)
+
+# Create column ordering based on top 3 amplifications and top 3 deletions
+# Each gene gets a score: 3 = Both, 2 = Predictive, 1 = Prognostic, 0 = Not present
+
+# Identify top 3 amplifications
+amp_genes <- gene_order_df[gene_order_df$Category == "Amplification", ]
+top3_amp <- as.character(head(amp_genes$Gene, 3))
+print("Top 3 Amplifications for column ordering:")
+print(top3_amp)
+
+# Identify top 3 deletions
+del_genes <- gene_order_df[gene_order_df$Category == "Deletion", ]
+top3_del <- as.character(head(del_genes$Gene, 3))
+print("Top 3 Deletions for column ordering:")
+print(top3_del)
+
+# Create a sorting key for each column (study)
+col_order_df <- data.frame(
+  StudyIndex = 1:ncol(gene_matrix),
+  StudyType = study_type,
+  stringsAsFactors = FALSE
+)
+
+# Function to create gene score based on presence and study type
+create_gene_score <- function(gene_name, gene_matrix, study_type) {
+  score <- numeric(ncol(gene_matrix))
+
+  if (gene_name %in% rownames(gene_matrix)) {
+    for (i in 1:length(score)) {
+      if (gene_matrix[gene_name, i] == 1) {
+        if (study_type[i] == "Both") {
+          score[i] <- 3
+        } else if (study_type[i] == "Predictive") {
+          score[i] <- 2
+        } else if (study_type[i] == "Prognostic") {
+          score[i] <- 1
+        }
+      }
+    }
+  }
+
+  return(score)
+}
+
+# Add scores for top 3 amplifications
+for (gene in top3_amp) {
+  col_name <- paste0(gene, "_score")
+  col_order_df[[col_name]] <- create_gene_score(gene, gene_matrix, study_type)
+}
+
+# Add scores for top 3 deletions
+for (gene in top3_del) {
+  col_name <- paste0(gene, "_score")
+  col_order_df[[col_name]] <- create_gene_score(gene, gene_matrix, study_type)
+}
+
+# Create ordering: sort by all 6 genes in order (top 3 amp, then top 3 del)
+# Build the order expression dynamically
+score_cols <- c()
+for (gene in c(top3_amp, top3_del)) {
+  score_cols <- c(score_cols, paste0(gene, "_score"))
+}
+
+# Sort by all score columns in descending order
+order_expr <- lapply(score_cols, function(col) -col_order_df[[col]])
+col_order_df <- col_order_df[do.call(order, order_expr), ]
+
+# Get the column order indices
+column_order <- col_order_df$StudyIndex
+
+# Print ordering info
+print("\nColumn ordering summary (first 10 studies):")
+display_cols <- c("StudyIndex", "StudyType", score_cols)
+print(head(col_order_df[, display_cols], 10))
+
+# Reorder triangle_matrix columns
+triangle_matrix_ordered <- triangle_matrix[, column_order]
+
+# Create mapping from old study numbers to new study numbers
+study_mapping <- data.frame(
+  Original_Study_Number = column_order,
+  New_Study_Number = 1:length(column_order),
+  stringsAsFactors = FALSE
+)
+
+# Rename columns to new sequential numbers (1, 2, 3, ...)
+colnames(triangle_matrix_ordered) <- as.character(1:ncol(triangle_matrix_ordered))
+
+print("\nStudy number mapping (old -> new):")
+print(head(study_mapping, 15))
+
+# Create reordered supplementary table
+suppl_table_reordered <- suppl_table[column_order, ]
+suppl_table_reordered$New_Study_Number <- 1:nrow(suppl_table_reordered)
+suppl_table_reordered$Original_Study_Number <- column_order
+
+# Reorder columns to show new study number first
+suppl_table_reordered <- suppl_table_reordered[, c("New_Study_Number", "Original_Study_Number",
+                                                     setdiff(names(suppl_table_reordered),
+                                                            c("New_Study_Number", "Original_Study_Number")))]
+
+# Save the reordered supplementary table
+write_xlsx(suppl_table_reordered,
+           file.path(wd$outData, "Suppl_Table_S1_mCRPC_studies_REORDERED.xlsx"))
+
+print(paste("\nReordered supplementary table saved to:",
+            file.path(wd$outData, "Suppl_Table_S1_mCRPC_studies_REORDERED.xlsx")))
+
+# Also save the study mapping separately
+write_xlsx(study_mapping,
+           file.path(wd$outData, "Study_Number_Mapping.xlsx"))
+
+print(paste("Study mapping saved to:",
+            file.path(wd$outData, "Study_Number_Mapping.xlsx")))
+
+# Recalculate gene percentages (shouldn't change, but for consistency)
+gene_freq <- rowSums(gene_matrix[rownames(triangle_matrix_ordered), ] > 0)
+gene_pct <- round((gene_freq / ncol(gene_matrix)) * 100, 1)
+
+# Update row annotation
+row_ha_right <- rowAnnotation(
+  `Alteration %` = anno_barplot(gene_pct,
+                                 gp = gpar(fill = "#4DAF4A"),
+                                 border = FALSE,
+                                 bar_width = 0.8,
+                                 axis_param = list(side = "top",
+                                                   labels_rot = 0,
+                                                   gp = gpar(fontsize = 8)),
+                                 width = unit(3, "cm"))
+)
+
+# Create the oncoPrint following your pattern
+# IMPORTANT: Set row_order to maintain our custom ordering
+# Gene names on RIGHT (same side as barplot), no conflict
+onco_plot <- oncoPrint(triangle_matrix_ordered,
+          alter_fun = alter_fun_list,
+          col = col,
+          column_title = "Gene Alterations by Study (Triangle: ◣ Predictive, ◥ Prognostic)",
+          remove_empty_columns = FALSE,
+          show_column_names = TRUE,
+          column_names_gp = gpar(fontsize = 6),
+          row_names_gp = gpar(fontsize = 8),
+          row_names_side = "right",
+          right_annotation = row_ha_right,
+          row_order = 1:nrow(triangle_matrix_ordered),
+          column_order = 1:ncol(triangle_matrix_ordered),  # Maintain our custom column order
+          top_annotation = NULL)  # Remove top annotation (barplot)
+
+print(onco_plot)
+print(paste("Column order based on AR, PIK3CA, MYC presence"))
+```
+
+## Save OncoPrint-style plot
+
+```{r}
+# Save as PDF
+pdf(file.path(wd$out, "Triangle_Split_OncoPrint.pdf"),
+    width = 14, height = 15)
+print(onco_plot)
+dev.off()
+
+# Save as PNG
+png(file.path(wd$out, "Triangle_Split_OncoPrint.png"),
+    width = 14, height = 15, units = "in", res = 300)
+print(onco_plot)
+dev.off()
+
+print("Triangle-split OncoPrint saved successfully!")
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```

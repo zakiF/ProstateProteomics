@@ -13,15 +13,13 @@ output:
 
 # Background
 
-We have cohort of samples profiled for proteomics, genomics and metylation. We want to create a harmonized clinical file for all these patients.
+We have cohort of samples profiled for proteomics. 
 
 In regards to proteomics. Samples were profiled ;
 
 1) Psomagen cohort
 2) Olink 2023 cohort (Q-13356) - Also called Project 2
 3) Olink 2024 cohort (Q-15806) - Also called Project 4
-
-In addition, some patients were also profiled by genomics (KLK2 SNPs) and methylation.
 
 # Objectives
 
@@ -395,6 +393,7 @@ df_b <- data.frame(
   HCI_cID = c(dd$Sample1_HCI_Num, dd$Sample2_HCI_Num, dd$Sample3_HCI_Num),
   date = c(dd$Sample1_date, dd$`Sample 2 Start date`, dd$`sample3 date`),
   psa = c(dd$sample1_psa, dd$sample2_psa, dd$sample3_psa),
+  alk_phos = c(dd$sample1_alk_phos, dd$sample2_alk_phos, dd$sample3_alk_phos),
   testo = c(dd$sample1_testos, dd$`Sample 2 Testerone`, dd$`Sample 3 Testosterone`),
   hemoGlo = c(dd$`Hemoglobin at s1`, rep(NA, (length(HCI_cID) - length(dd$`Hemoglobin at s1`)  ) )),
   surgery_type = dd$Surgery_Type,
@@ -2252,16 +2251,35 @@ df_a2 <- df_a2 %>%
   
 # Display table with percentages for sur_or_rad
 tbl <- table(df_a2$sur_or_rad, useNA = "ifany")
+cat("  Treatment:", "\n")
 setNames(paste0(tbl, " [", round(prop.table(tbl) * 100, 1), "%]"), names(tbl))
 
 # Display table with percentages
+cat("  Gleason:", "\n")
 tbl <- table(case_when(is.na(df_a2$glsn_diag) ~ "Missing", df_a2$glsn_diag < 8 ~ "<8", df_a2$glsn_diag >= 8 ~ ">=8"))
 setNames(paste0(tbl, " [", round(prop.table(tbl) * 100, 1), "%]"), names(tbl))
 
-# 1st PSA
-summary(df_a2$psa)
+missing_n_pct <- function(x) {
+  n_patients <- length(x)
+  n_missing  <- sum(is.na(x))
+  pct_missing <- round(100 * n_missing / n_patients, 1)
 
+  paste0(n_missing, " (", pct_missing, "%)")
+}
 
+summary_with_missing <- function(x) {
+  s <- summary(x)
+  c(
+    s,
+    Missing = missing_n_pct(x)
+  )
+}
+
+cat("  PSA:\n")
+summary_with_missing(df_a2$psa)
+
+cat("  ALP:\n")
+summary_with_missing(df_a2$alk_phos)
 ```
 
 ## Cohort B
@@ -2297,7 +2315,21 @@ tbl <- table(case_when(is.na(d1$glsn_diag) ~ "Missing", d1$glsn_diag < 8 ~ "<8",
 setNames(paste0(tbl, " [", round(prop.table(tbl) * 100, 1), "%]"), names(tbl))
 
 # 1st PSA
-summary(d1$psa)
+cat("  PSA:\n")
+summary_with_missing(d1$psa)
+
+# 1st ALP
+cat("  ALP:\n")
+summary_with_missing(d1$alk_phos)
+
+# De novo mets stage
+tbl <- table(d1$mets_stage, useNA = "ifany")
+setNames(paste0(tbl, " [", round(prop.table(tbl) * 100, 1), "%]"), names(tbl))
+
+# Volumne at first mets
+tbl <- table(d1$mets_volume, useNA = "ifany")
+setNames(paste0(tbl, " [", round(prop.table(tbl) * 100, 1), "%]"), names(tbl))
+
 
 # Find PSA of those serially sampeled
 mrn_pre_post <- df_meta_f4 %>%
@@ -2317,16 +2349,23 @@ dim(paired_mrn)
 d2 <- df_meta_f4 %>% filter(mrn %in% paired_mrn$mrn) %>% 
   filter(cohort == "B" & txt_stat == "Pre")
 d3 <- df_b3 %>% filter(HCI_cID %in% d2$HCI_cID)
-summary(d3$psa)
+summary_with_missing(d3$psa)
 
 # PSA post
 d2 <- df_meta_f4 %>% filter(mrn %in% paired_mrn$mrn) %>% 
   filter(cohort == "B" & txt_stat == "Post")
-
-# Now get the PSA
 d3 <- df_b3 %>% filter(HCI_cID %in% d2$HCI_cID)
-summary(d3$psa)
+summary_with_missing(d3$psa)
 
+# Median time between pre and post
+med_time <- df_meta_f4 %>%
+  filter(mrn %in% paired_mrn$mrn) %>%
+  group_by(mrn, txt_stat) %>%
+  summarise(median_time = median(time2txt, na.rm = TRUE)) %>%
+  pivot_wider(names_from = txt_stat, values_from = median_time) %>%
+  mutate(diff = Post - Pre) %>%
+  arrange(desc(diff))
+summary_with_missing(med_time$diff)
 ```
 
 ## Cohort C
@@ -2335,7 +2374,7 @@ summary(d3$psa)
 # Age
 d1 <- df_c2 %>% dplyr::select(mrn, age) %>% distinct()
 dim(d1)
-summary(d1$age)
+summary_with_missing(d1$age)
 
 # Prostate treatment
 df_c2 <- df_c2 %>% 
@@ -2365,7 +2404,13 @@ tbl <- table(case_when(is.na(d1$glsn_diag) ~ "Missing", d1$glsn_diag < 8 ~ "<8",
 setNames(paste0(tbl, " [", round(prop.table(tbl) * 100, 1), "%]"), names(tbl))
 
 # 1st PSA
-summary(d1$psa)
+cat("  PSA:\n")
+summary_with_missing(d1$psa)
+
+# Mets stage
+tbl <- table(d1$mets_stage, useNA = "ifany")
+setNames(paste0(tbl, " [", round(prop.table(tbl) * 100, 1), "%]"), names(tbl))
+
 ```
 
 
