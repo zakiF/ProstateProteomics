@@ -337,6 +337,7 @@ df_a2 <- data.frame(
     date = c(dd$Sample1_date, dd$`Sample 2 Start date`),
     psa = c(dd$sample1_psa, dd$sample2_psa),
     alk_phos = c(dd$sample1_alk_phos, dd$sample2_alk_phos),
+    ldh = c(dd$sample1_ldh, dd$sample2_ldh),
     testo = NA,  # No testosterone data for Cohort A
     hemoGlo = c(dd$`Hemoglobin at s1`, rep(NA, length(dd$Sample1_HCI_Num))),  # Only sample 1 has hemoglobin data
     surgery_type = dd$Surgery_Type,
@@ -344,6 +345,7 @@ df_a2 <- data.frame(
     radiation_type = dd$Radiation_Type,
     radiation_date = dd$Radiation_date,
     glsn_diag = dd$diag_glsn,
+    death_date = c(dd$`Death date`),
     death_status = dd$`Deceased?`)  %>%
   filter(!is.na(HCI_cID)) %>%
   mutate(cohort = "A") %>%
@@ -394,6 +396,7 @@ df_b <- data.frame(
   date = c(dd$Sample1_date, dd$`Sample 2 Start date`, dd$`sample3 date`),
   psa = c(dd$sample1_psa, dd$sample2_psa, dd$sample3_psa),
   alk_phos = c(dd$sample1_alk_phos, dd$sample2_alk_phos, dd$sample3_alk_phos),
+  ldh = c(dd$sample1_ldh, dd$sample2_ldh, dd$sample3_ldh),
   testo = c(dd$sample1_testos, dd$`Sample 2 Testerone`, dd$`Sample 3 Testosterone`),
   hemoGlo = c(dd$`Hemoglobin at s1`, rep(NA, (length(HCI_cID) - length(dd$`Hemoglobin at s1`)  ) )),
   surgery_type = dd$Surgery_Type,
@@ -639,7 +642,7 @@ df_c <- data.frame(
   alk_phos = c(dd$sample1_alk_phos, dd$sample2_alk_phos, dd$sample3_alk_phos),
   testo = c(dd$sample1_testos, dd$`Sample 2 Testos`, rep(NA, (length(HCI_cID) - length(c(dd$`sample1_testos`, dd$`Sample 2 Testos`)  ) ) )),
   hemoGlo = c(dd$`Hemoglobin at s1`, rep(NA, (length(HCI_cID) - length(dd$`Hemoglobin at s1`)  ) )),
-    surgery_type = dd$Surgery_Type,
+  surgery_type = dd$Surgery_Type,
   surgery_date = dd$Surgery_date,
   radiation_type = dd$Radiation_Type,
   radiation_date = dd$Radiation_date,
@@ -652,7 +655,11 @@ df_c <- data.frame(
   txt_mcrpc_1st_type = dd$`1st_mcrpc_rx`,
   txt_mcrpc_1st_date = dd$`1st_mcrpc_rx_date`,
   txt_mcrpc_2nd_type = dd$`2nd_mcrpc_rx`,
-  txt_mcrpc_2nd_date = dd$`2nd_mcrpc_rx_date`
+  txt_mcrpc_2nd_date = dd$`2nd_mcrpc_rx_date`,
+  txt_mhspc_1st_type = dd$`1st_mhspc_rx`,
+  txt_mhspc_1st_date = dd$`1st_mhspc_rx_date`,
+  txt_mhspc_2nd_type = dd$`2nd_mhspc_rx`,
+  txt_mhspc_2nd_date = dd$`2nd_mhspc_rx_date`
 ) %>%
   filter(!is.na(HCI_cID)) %>%
   mutate(
@@ -741,6 +748,56 @@ df_c2 <- df_c2 %>%
   )
 ```
 
+Now do the same for mHSPC treatments
+
+```{r}
+# Cohort C: Find earliest and latest mHSPC treatment date
+df_c2 <- df_c2 %>%
+  mutate(
+    # Convert mHSPC treatment dates to Date type
+    mhspc1_date = as.Date(txt_mhspc_1st_date),
+    mhspc2_date = as.Date(txt_mhspc_2nd_date)
+  ) %>%
+  rowwise() %>%
+  mutate(
+    # Find the earliest and latest date of mHSPC treatment
+    mhspc_earliest_date = min(c(mhspc1_date, mhspc2_date), na.rm = TRUE),
+    mhspc_latest_date   = max(c(mhspc1_date, mhspc2_date), na.rm = TRUE),
+    # Was any mHSPC treatment given?
+    mhspc_treatment_given = any(!is.na(c(mhspc1_date, mhspc2_date)))
+  ) %>%
+  ungroup() %>%
+  mutate(
+    # If no treatment was given, set dates to NA
+    mhspc_earliest_date = if_else(mhspc_treatment_given, mhspc_earliest_date, as.Date(NA)),
+    mhspc_latest_date   = if_else(mhspc_treatment_given, mhspc_latest_date, as.Date(NA))
+  )
+```
+
+Calculate days from sample collection to mHSPC treatment
+
+```{r}
+df_c2 <- df_c2 %>%
+  mutate(
+    # Calculate days from sample collection to earliest and latest mHSPC treatment
+    days_to_mhspc_early = as.numeric(difftime(date, mhspc_earliest_date, units = "days")),
+    days_to_mhspc_late  = as.numeric(difftime(date, mhspc_latest_date, units = "days")),
+    # Label as Pre if sample is within 30 days before/after earliest mHSPC treatment, Post if >30 days after
+    mhspc_status_early = case_when(
+      is.na(mhspc_earliest_date) ~ "Pre",                # No mHSPC treatment date available
+      days_to_mhspc_early >= -30 & days_to_mhspc_early <= 30 ~ "Pre",  # Within 30 days before/after earliest mHSPC treatment
+      days_to_mhspc_early > 30 ~ "Post",                       # More than 30 days after earliest mHSPC treatment
+      days_to_mhspc_early < -30 ~ "Pre",                       # More than 30 days before earliest mHSPC treatment
+      TRUE ~ NA_character_),
+    mhspc_status_late = case_when(
+      is.na(mhspc_latest_date) ~ "Pre",                # No mHSPC treatment date available
+      days_to_mhspc_late >= -30 & days_to_mhspc_late <= 30 ~ "Pre",  # Within 30 days before/after latest mHSPC treatment
+      days_to_mhspc_late > 30 ~ "Post",                       # More than 30 days after latest mHSPC treatment
+      days_to_mhspc_late < -30 ~ "Pre",                       # More than 30 days before latest mHSPC treatment
+      TRUE ~ NA_character_)
+  )
+```
+
 Number of samples in pre- or post-
 
 ```{r}
@@ -759,9 +816,65 @@ mrn_pre_post <- df_c2 %>%
 
 # View only those with both Pre and Post
 mrn_pre_post %>%
-  filter(has_pre == 1 & has_post == 1) %>% 
+  filter(has_pre == 1 & has_post == 1) %>%
   dim()
 ```
+
+### Simplify treatment types for Cohort C
+
+Load the treatment simplification mapping and add simplified treatment column
+
+```{r}
+# Load treatment simplification mapping
+treatment_map <- read_xlsx("/Users/zakiwilmot/Desktop/ZW_004_ProstateProteomics/data/updated_2024/clinical_data/mCRPC_treatment.xlsx")
+colnames(treatment_map) <- c("original", "simplified")
+
+# Create a named vector for easy lookup
+treatment_lookup <- setNames(treatment_map$simplified, treatment_map$original)
+
+# Add earliest mHSPC treatment type and simplified version to df_c2
+df_c2 <- df_c2 %>%
+  rowwise() %>%
+  mutate(
+    # Determine which mHSPC treatment is earliest based on earliest date
+    earliest_mhspc_treatment_type = case_when(
+      mhspc_earliest_date == mhspc1_date ~ txt_mhspc_1st_type,
+      mhspc_earliest_date == mhspc2_date ~ txt_mhspc_2nd_type,
+      TRUE ~ NA_character_
+    ),
+    # Map to simplified name using the lookup table
+    earliest_mhspc_treatment_simplified = treatment_lookup[earliest_mhspc_treatment_type]
+  ) %>%
+  ungroup()
+```
+
+Check the simplified treatment types:
+
+```{r}
+# View the mHSPC mapping for all samples
+df_c2 %>%
+  select(mrn, HCI_cID, earliest_mhspc_treatment_type, earliest_mhspc_treatment_simplified, mhspc_status_early) %>%
+  arrange(earliest_mhspc_treatment_simplified)
+```
+
+Check for unmapped mHSPC treatments:
+
+```{r}
+# Get all unique mHSPC treatment types from your data
+all_mhspc_treatments <- df_c2 %>%
+  select(txt_mhspc_1st_type, txt_mhspc_2nd_type) %>%
+  pivot_longer(everything(), values_to = 'treatment') %>%
+  filter(!is.na(treatment)) %>%
+  distinct(treatment) %>%
+  pull(treatment)
+
+# Find which ones are NOT in the mapping
+unmapped_mhspc <- setdiff(all_mhspc_treatments, treatment_map$original)
+cat('Unmapped mHSPC treatments (need to be added to Excel file):\n')
+print(sort(unmapped_mhspc))
+cat('\nNumber of unmapped mHSPC treatment types:', length(unmapped_mhspc), '\n')
+```
+
 
 # Objective 3
 
@@ -1032,9 +1145,9 @@ df_pre_post_tmp <- df_pre_post %>%
   mutate(SampleID = as.character(SampleID)) %>% 
   distinct()
 
-data2 <- data %>% group_by(group, cohort, txt_stat) %>% 
+data2 <- data %>% dplyr::group_by(group, cohort, txt_stat) %>% 
   arrange(group) %>% 
-  summarize(count = n()) %>% 
+  dplyr::summarize(count = n()) %>% 
   mutate(group = factor(group, levels = (unique(group))))
 
 
@@ -2168,7 +2281,124 @@ ggsave(
 
 ```
 
+## A heatmap like-style plot
 
+```{r}
+pattern_order_edited <- c(
+  "A",
+
+  "B_Pre_Only", 
+  "B_Serial_PrePost",
+  "B_Post_Only",
+  "B_Pre_to_C_Pre",
+  "B_Post_to_C_Post",
+  "B_Post_to_C_Pre_to_C_Post",
+  "B_Post_to_C_Pre",
+  
+  
+  "C_Pre_Only",
+  "C_Serial_PrePost",
+  "C_Post_Only",
+  "C_Post1_to_C_Post2"
+  
+)
+
+
+# Create pattern factor with desired order
+swimmers_data$pattern <- factor(swimmers_data$pattern, levels = pattern_order_edited)
+
+patient_x_order <- swimmers_data %>%
+  distinct(mrn, pattern) %>%
+  arrange(pattern, mrn) %>%
+  mutate(x_pos_new = row_number())
+
+# Create new y-positions grouped by pattern with more spacing
+
+plot_df <- swimmers_data %>%
+  mutate(
+    fill_key = case_when(
+      cohort == "A" & txt_stat_ordered == "Pre1"  ~ "A_Pre",
+      cohort == "B" & txt_stat_ordered == "Pre1"  ~ "B_Pre",
+      cohort == "C" & txt_stat_ordered == "Pre1"  ~ "C_Pre",
+      
+      cohort == "A" & txt_stat_ordered == "Post1" ~ "A_Post",
+      cohort == "B" & txt_stat_ordered == "Post1" ~ "B_Post",
+      cohort == "C" & txt_stat_ordered == "Post1" ~ "C_Post",
+      cohort == "C" & txt_stat_ordered == "Post2" ~ "C_Post2"
+    )
+  ) %>%
+  filter(!is.na(fill_key))
+
+
+plot_df <- plot_df %>%
+  left_join(
+    patient_x_order %>% select(mrn, x_pos_new),
+    by = "mrn"
+  )
+
+# Reverese the order
+x_levels <- sort(unique(plot_df$x_pos))
+spacing_factor <- 1.5  # try 1.5, 2, or 2.5
+
+x_map <- setNames(
+  rev(x_levels),
+  x_levels
+)
+
+plot_df <- plot_df %>%
+  mutate(x_pos_rev = x_map[as.character(x_pos)],
+         x_pos_spaced = x_pos_rev * spacing_factor,
+         x_pos_rev = gsub("-0.25", "0.5", x_pos_rev))
+
+
+p_simple <- ggplot(
+  plot_df,
+  aes(x = x_pos_new, y = x_pos_rev)
+) +
+  geom_point(
+    aes(fill = fill_key),
+    shape = 21,
+    size = 3,
+    stroke = 0.25,
+    color = "black"
+  ) +
+  scale_fill_manual(
+    values = pal.all,
+    name = "Cohort / Treatment"
+  ) +
+  labs(
+    x = "Patients",
+    y = "",
+    title = "Sample availability by patient and disease stage"
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.y = element_text(size = 10, face = "bold"),
+    plot.title = element_text(face = "bold"),
+    legend.position = "right"
+  ) +
+  geom_line(
+    aes(group = mrn),
+    color = "grey50",
+    alpha = 0.5
+  ) +
+  NULL
+
+p_simple
+
+# Save the combined plot
+ggsave(
+  p_simple,
+  file=file.path(wd$outCurr, "heatmap_style.pdf"),
+  height = 4,  # Increased height for better spacing
+  width = 20,
+  limitsize = FALSE
+)
+
+```
 
 ## Sample number 
 
@@ -2233,6 +2463,9 @@ cat("  Post patients:", n_post_c_patients, "\n")
 ```
 
 # Objective 4: Table 
+
+## One df with all cohorts
+
 
 We want to get additional information about the cohorts to make a supplemental table. But we only select those that pass the final selection
 
@@ -2411,6 +2644,17 @@ summary_with_missing(d1$psa)
 tbl <- table(d1$mets_stage, useNA = "ifany")
 setNames(paste0(tbl, " [", round(prop.table(tbl) * 100, 1), "%]"), names(tbl))
 
+# Count by simplified mHSPC treatment for Pre (baseline) patients only
+d1 <- df_c2 %>%
+  dplyr::select(mrn, mcrpc_status_early, earliest_mhspc_treatment_simplified) %>% distinct() %>% 
+  filter(mcrpc_status_early == "Pre")
+
+tbl <- table(d1$earliest_mhspc_treatment_simplified, useNA = "ifany")
+result <- setNames(paste0(tbl, " [", round(prop.table(tbl) * 100, 1), "%]"), names(tbl))
+
+cat("Baseline (Pre) patients by simplified mHSPC treatment type:\n")
+print(result)
+cat("\nTotal Pre (baseline) patients:", sum(tbl), "\n")
 ```
 
 
@@ -2418,14 +2662,158 @@ setNames(paste0(tbl, " [", round(prop.table(tbl) * 100, 1), "%]"), names(tbl))
 # Save objects
 
 ```{r}
-df_a_final <- df_a
-df_b_final <- df_b3
-df_c_final <- df_c2
+df_a_final <- df_a2 %>% 
+  mutate(mrn = as.character(mrn))
+df_b_final <- df_b3 %>% 
+  mutate(mrn = as.character(mrn))
+df_c_final <- df_c2 %>% 
+  mutate(mrn = as.character(mrn))
+```
+
+
+For all cohorts
+
+## Simplify all cohorts
+
+We extract info from all cohorts
+
+```{r}
+# 1st - Create fake mrn 
+mrn_key <- df_meta_f2 %>%
+  distinct(mrn) %>%
+  arrange(mrn) %>%
+  mutate(fake_mrn = sprintf("mrn_%03d", row_number()))
+
+
+# Add treatment info
+df_txt <- df_meta_f2 %>% 
+  mutate(mrn = as.character(mrn)) %>% 
+  left_join(mrn_key, by = "mrn") %>%
+  select(HCI_cID, cohort, txt_stat_ordered) %>% 
+  dplyr::rename(txt_stat = txt_stat_ordered) %>% 
+  mutate(txt_stat = case_when(txt_stat == "Pre1" ~ "Pre",
+                              TRUE ~ txt_stat))
+
+
+# 2nd - Metadata of clinical values
+
+## Cohort A
+df_meta_cohort_a <- df_a_final %>% 
+  left_join(mrn_key, by = "mrn") %>%
+  dplyr::select(-cohort) %>% 
+  left_join(df_txt) %>% 
+  mutate(
+    death_status = ifelse(death_status == "Yes", "y", "n"),
+    event_date = dplyr::case_when(
+      !is.na(death_date) ~ death_date,
+      TRUE ~ as.Date(censor_date)
+    )
+  ) %>% 
+  mutate(OS = as.numeric(difftime(event_date, date, units = "days")),
+         OS = round(OS/30.417, digit=2)) %>% 
+  select(fake_mrn, HCI_cID, cohort, txt_stat, death_status, OS, age, glsn_diag, psa, alk_phos, ldh, hemoGlo)
+  
+## Cohort B
+df_meta_cohort_b <- df_b_final %>%
+  left_join(mrn_key, by = "mrn") %>%
+  dplyr::select(-cohort) %>% 
+  left_join(df_txt) %>% 
+  mutate(
+    death_status = ifelse(death_status == "Yes", "y", "n"),
+    event_date = dplyr::case_when(
+      !is.na(death_date) ~ death_date,
+      TRUE ~ as.Date(censor_date)
+    )
+  ) %>% 
+  mutate(OS = as.numeric(difftime(event_date, date, units = "days")),
+         OS = round(OS/30.417, digit=2)) %>% 
+  select(fake_mrn, HCI_cID, cohort, txt_stat, death_status, OS, age, glsn_diag, psa, alk_phos, ldh, hemoGlo)
+
+
+## Cohort C
+df_meta_cohort_c <- df_c_final %>%
+  left_join(mrn_key, by = "mrn") %>%
+  dplyr::select(-cohort) %>% 
+  left_join(df_txt) %>% 
+  mutate(
+    death_status = ifelse(death_status == "Yes", "y", "n"),
+    event_date = dplyr::case_when(
+      !is.na(death_date) ~ death_date,
+      TRUE ~ as.Date(censor_date)
+    )
+  ) %>% 
+  mutate(OS = as.numeric(difftime(event_date, date, units = "days")),
+         OS = round(OS/30.417, digit=2)) %>% 
+  select(fake_mrn, HCI_cID, cohort, txt_stat, death_status, OS, age, glsn_diag, psa, alk_phos, ldh, hemoGlo)
+```
+
+## Per-batch NPX
+
+We want to save the De-identified NPX, with the sample names listed sawpped with the HCI ID
+
+
+```{r}
+dat_NPX_save <- dat_NPX %>%
+  left_join(
+    df_hci_id %>%
+      mutate(sample_id_psom = as.character(sample_id_psom)) %>%
+      select(sample_id_psom, HCI_cID),
+    by = c("SampleID" = "sample_id_psom")
+  ) %>%
+  mutate(SampleID = if_else(
+    !is.na(HCI_cID),
+    HCI_cID,
+    SampleID
+  )) %>%
+  select(-HCI_cID)
+
+  
+# For data2, we exclude the repeated measurement
+dat_NPX2_save <- dat_NPX2 %>%
+  # Remove the duplciated sampels
+  dplyr::filter(!SampleID == 78) %>% 
+  left_join(
+    df_hci_id %>%
+      mutate(sample_id_Q13356 = as.character(sample_id_Q13356)) %>%
+      select(sample_id_Q13356, HCI_cID),
+    by = c("SampleID" = "sample_id_Q13356")
+  ) %>%
+  mutate(SampleID = if_else(!is.na(HCI_cID), HCI_cID, SampleID)) %>%
+  select(-HCI_cID)
+
+
+dat_NPX3_save <- dat_NPX3 %>%
+  left_join(
+    df_hci_id %>%
+      mutate(sample_id_Q15806 = as.character(sample_id_Q15806)) %>%
+      select(sample_id_Q15806, HCI_cID),
+    by = c("SampleID" = "sample_id_Q15806")
+  ) %>%
+  mutate(SampleID = if_else(!is.na(HCI_cID), HCI_cID, SampleID)) %>%
+  select(-HCI_cID)
+```
+
+
+## Final meta
+
+```{r}
+df_meta_all <- rbind(df_meta_cohort_a, df_meta_cohort_b, df_meta_cohort_c)
+
+write.csv(df_meta_all, file.path(wd$outCurr, "proteomics_metadata.csv"))
+```
+
+> TO DO - add the cohort B timing to mCRPC ...etc
+
+## Save objects
+
+Save items for future analysis
+
+```{r}
 save(
   dat_NPX, dat_NPX2, dat_NPX3, 
   meta_file, df_meta_f2, df_meta_f4, df_id_pro,
   df_a_final, df_b_final, df_c_final,
+  df_meta_all, 
   file = file.path(wd$outData, "01_Metadata.Rdata"))
 ```
-
 

@@ -251,6 +251,7 @@ df_cat_a <- limma_df %>%
   #filter(Cat %in% c("c_b_vs_a", "c_cd_vs_a") & Adjusted_pval <= cut_fdr)
   filter(Contrast %in% c("A_vs_B", "A_vs_CD") & Adjusted_pval <= cut_fdr & log2FC <= -cut_logFC)
 
+# Specfic to B
 df_cat_b_1 <- limma_df %>%
   filter(Contrast %in% c("B_vs_CD") & Adjusted_pval <= cut_fdr & log2FC <= -cut_logFC)
 df_cat_b_2 <- limma_df %>%
@@ -258,6 +259,7 @@ df_cat_b_2 <- limma_df %>%
 
 df_cat_b <- rbind(df_cat_b_1, df_cat_b_2)
 
+# Specific to C
 df_cat_cd <- limma_df %>%
   #filter(Cat %in% c("c_a_vs_cd", "c_b_vs_cd") & Adjusted_pval <= cut_fdr)
   filter(Contrast %in% c("A_vs_CD", "B_vs_CD") & Adjusted_pval <= cut_fdr & log2FC >= cut_logFC)

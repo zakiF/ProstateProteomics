@@ -1162,7 +1162,7 @@ topx_proteins <- res_all %>%
   filter(Multi_Sig == "Yes") %>%
   #arrange(Multi_FDR, desc(Multi_HR)) %>%
   arrange(desc(Multi_HR)) %>%
-  slice_head(n = 10) %>%
+  slice_head(n = 3) %>%
   select(OlinkID, Assay, Multi_HR, Multi_FDR)
 
 cat("=== Top 3 Proteins by Hazard Ratio ===\n")
@@ -1307,7 +1307,7 @@ cat("Plots will be combined into a single PDF file\n")
 
 ### Summary of KM analysis results
 
-```{r}
+```{r,eval=FALSE}
 # Create summary table
 if(length(km_results) > 0) {
   km_summary <- data.frame(
@@ -1327,7 +1327,7 @@ if(length(km_results) > 0) {
     arrange(KM_p_value) %>%
     mutate(
       HR = round(HR, 2),
-      #FDR = round(FDR, 3),
+      FDR = round(FDR, 3),
       KM_p_value = round(KM_p_value, 4)
     )
   
@@ -1410,7 +1410,7 @@ cat("Specified proteins:", paste(custom_proteins_of_interest, collapse = ", "), 
 # Check which proteins are available in the data
 available_proteins <- res_all %>% 
   distinct(OlinkID, Assay) %>%
-  filter(Assay %in% custom_proteins_of_interest)
+  filter(Assay %in% custom_proteins_of_interest$Assay)
 
 if(nrow(available_proteins) > 0) {
   cat("Available proteins in dataset:\n")
@@ -1813,11 +1813,7 @@ top_cpps <- res_all2 %>%
   filter(Multi_Sig == "Yes") %>%
   #arrange(Multi_FDR, desc(Multi_HR)) %>%
   arrange(desc(Multi_HR)) %>%
-  slice_head(n = 10) 
-
-# genes <- c("LMNB2", "COX5B", "SDC1", "CKAP4", "WFDC2", "HMOX2", "LETM1", "DFFA", "DPY30", "HIP1R", "RBP2", "SDHB")
-
-# filter(Assay %in% genes)
+  slice_head(n = 10)
 
 # # Manually picked drug targets (top 10)
 # t1 <- res_all %>%
@@ -1938,13 +1934,10 @@ cat("Continuous CPPS:\n")
 summary(cpps_cox)
 cat("\nBinary CPPS (High vs Low):\n")
 summary(cpps_cox_binary)
-cpps_fit <- survfit(Surv(time_to_death, death) ~ CPPS_risk, data = df_cpps)
-summary(cpps_fit)$table
-with(df_cpps, tapply(time_to_death, CPPS_risk, range, na.rm = TRUE))
 ```
 
-### CPPS HR comparison
 
+### CPPS Survival Analysis
 
 ```{r}
 df_cpps_complete <- df_cpps %>% 
@@ -1956,140 +1949,241 @@ forest_data <- data.frame(
   Lower_CI = c(top_cpps$Multi_Lower, NA, NA, NA),
   Upper_CI = c(top_cpps$Multi_Upper, NA, NA, NA),
   P_value = c(top_cpps$Multi_Pval, NA, NA, NA),
-  Type = c(rep("Protein", nrow(top_cpps)), 
+  Type = c(rep("Protein", nrow(top_cpps)),
            rep("Clinical", 2),
-           "CPPS")
-)
-
-# Get clinical variable HRs from a multivariable model
-clinical_model <- coxph(Surv(time_to_death, death) ~ log10_psa + log10_alp, data = df_cpps_complete)
-clinical_summary <- summary(clinical_model)
-
-cpps_summary <- summary(cpps_cox_binary)
-
-# Add clinical variable results
-forest_data$HR[forest_data$Variable == "log10_psa"] <- clinical_summary$conf.int[1,1]
-forest_data$Lower_CI[forest_data$Variable == "log10_psa"] <- clinical_summary$conf.int[1,3]
-forest_data$Upper_CI[forest_data$Variable == "log10_psa"] <- clinical_summary$conf.int[1,4]
-forest_data$P_value[forest_data$Variable == "log10_psa"] <- clinical_summary$coefficients[1,5]
-
-forest_data$HR[forest_data$Variable == "log10_alp"] <- clinical_summary$conf.int[2,1]
-forest_data$Lower_CI[forest_data$Variable == "log10_alp"] <- clinical_summary$conf.int[2,3]
-forest_data$Upper_CI[forest_data$Variable == "log10_alp"] <- clinical_summary$conf.int[2,4]
-forest_data$P_value[forest_data$Variable == "log10_alp"] <- clinical_summary$coefficients[2,5]
-
-forest_data$HR[forest_data$Variable == "CPPS"] <- cpps_summary$conf.int[,1]
-forest_data$Lower_CI[forest_data$Variable == "CPPS"] <- cpps_summary$conf.int[,3]
-forest_data$Upper_CI[forest_data$Variable == "CPPS"] <- cpps_summary$conf.int[,4]
-forest_data$P_value[forest_data$Variable == "CPPS"] <- cpps_summary$coefficients[,5]
+           "CPPS"))
 ```
 
-Because the risk score is from dichotomous between high and low. In generating the HR plots for the proteins, lets plot the cox of the high and low
+## Function: Generate CPPS KM Plot from Custom Protein Set
 
+```{r}
+#' Generate CPPS Score and KM Plot for Custom Protein Set
+#'
+#' @param proteins Character vector of protein identifiers (either Assay names or OlinkIDs starting with OID)
+#' @param protein_data Data frame containing protein information with Multi_Coefficient column (default: res_all2)
+#' @param expression_data Long-format expression data (default: df_npx_long)
+#' @param metadata Sample metadata with survival information (default: meta_in)
+#' @param plot_title Optional custom plot title
+#' @param save_plot Logical, whether to save plot as PDF (default: FALSE)
+#' @param output_dir Directory to save plot if save_plot=TRUE (default: wd$outCurr)
+#' @param verbose Logical, whether to print detailed output (default: TRUE)
+#'
+#' @return A list containing:
+#'   - km_plot: ggsurvplot object
+#'   - cpps_data: data frame with CPPS scores and survival data
+#'   - statistics: list with HR, p-values, and other stats
+#'   - protein_info: data frame with protein details and coefficients
+#'
+#' @details Uses multivariable Cox coefficients (Multi_Coefficient) from protein_data
+#'   to calculate risk scores, matching the CPPS calculation approach.
+#'
+generate_cpps_km_plot <- function(proteins,
+                                   protein_data = res_all2,
+                                   expression_data = df_npx_long,
+                                   metadata = meta_in,
+                                   plot_title = NULL,
+                                   save_plot = FALSE,
+                                   output_dir = wd$outCurr,
+                                   verbose = TRUE) {
 
-```{r,eval=FALSE}
-res_pre_multi_top10 <- res_pre_multi %>% 
-  filter(OlinkID %in% top_cpps$OlinkID)
+  # Determine if input is Assay names or OlinkIDs
+  is_olinkid <- all(grepl("^OID", proteins))
 
-# Create forest plot data for top 10 proteins using the binarized clinical values
-forest_data2 <- data.frame(
-  Variable = c(res_pre_multi_top10$Assay),
-  HR = c(res_pre_multi_top10$bin_HR),
-  Lower_CI = c(res_pre_multi_top10$bin_Lower_Bound),
-  Upper_CI = c(res_pre_multi_top10$bin_Upper_Bound),
-  P_value = c(res_pre_multi_top10$bin_P_Value),
-  Type = c(rep("Protein", nrow(res_pre_multi_top10)))
-) %>%
-  # Add CPPS binary results
-  add_row(
-    Variable = "CPPS_risk",
-    HR = cpps_summary$conf.int[,1],
-    Lower_CI = cpps_summary$conf.int[,3],
-    Upper_CI = cpps_summary$conf.int[,4],
-    P_value = cpps_summary$coefficients[,5],
-    Type = "CPPS"
-  ) %>%
-  arrange(desc(HR))
+  if(verbose) {
+    cat("\n===========================================\n")
+    cat("Generating CPPS KM Plot\n")
+    cat("===========================================\n")
+    cat("Number of proteins:", length(proteins), "\n")
+    cat("Input type:", ifelse(is_olinkid, "OlinkID", "Assay names"), "\n")
+  }
 
-# Add significance categories and formatting
-forest_data2 <- forest_data2 %>%
-  mutate(
-    Significance = case_when(
-      P_value < 0.001 ~ "p < 0.001",
-      P_value < 0.01 ~ "p < 0.01", 
-      P_value < 0.05 ~ "p < 0.05",
-      P_value >= 0.05 ~ "NS",
-      TRUE ~ "NS"
-    ),
-    Variable_Label = case_when(
-      Variable == "CPPS_risk" ~ "CPPS (High vs Low)",
-      TRUE ~ paste0(Variable, " (High vs Low)")
+  # Get protein information
+  if(is_olinkid) {
+    protein_info <- protein_data %>%
+      filter(OlinkID %in% proteins)
+  } else {
+    protein_info <- protein_data %>%
+      filter(Assay %in% proteins)
+  }
+
+  if(nrow(protein_info) == 0) {
+    stop("No matching proteins found in protein_data!")
+  }
+
+  if(nrow(protein_info) < length(proteins)) {
+    missing_count <- length(proteins) - nrow(protein_info)
+    warning(paste(missing_count, "proteins not found in protein_data"))
+  }
+
+  if(verbose) {
+    cat("\nMatched proteins:\n")
+    print(protein_info %>% select(Assay, OlinkID, Multi_Coefficient, Multi_HR))
+  }
+
+  # Calculate CPPS score using multivariable coefficients
+  cpps_scores <- expression_data %>%
+    filter(OlinkID %in% protein_info$OlinkID) %>%
+    select(final_sample_id, OlinkID, NPX) %>%
+    left_join(protein_info %>% select(OlinkID, Multi_Coefficient), by = "OlinkID") %>%
+    group_by(final_sample_id) %>%
+    mutate(RS = Multi_Coefficient * NPX,
+           Sum_rs = sum(RS, na.rm = TRUE)) %>%
+    select(final_sample_id, Sum_rs) %>%
+    distinct() %>%
+    rename(sample_id = final_sample_id,
+           CPPS = Sum_rs)
+
+  # Merge with survival data
+  cpps_data <- cpps_scores %>%
+    left_join(metadata %>% select(sample_id, death, OS), by = "sample_id") %>%
+    rename(SampleID = sample_id,
+           time_to_death = OS) %>%
+    na.omit()
+
+  if(nrow(cpps_data) == 0) {
+    stop("No samples with complete CPPS and survival data!")
+  }
+
+  # Create risk groups using median split
+  cpps_median <- median(cpps_data$CPPS, na.rm = TRUE)
+  cpps_data <- cpps_data %>%
+    mutate(
+      CPPS_risk = ifelse(CPPS >= cpps_median, "High", "Low"),
+      CPPS_risk = factor(CPPS_risk, levels = c("Low", "High"))
     )
+
+  if(verbose) {
+    cat("\nRisk Group Distribution:\n")
+    print(table(cpps_data$CPPS_risk))
+    cat("\nCPPS Statistics:\n")
+    cat("  Median CPPS:", round(cpps_median, 3), "\n")
+    cat("  Range:", round(min(cpps_data$CPPS), 3), "to", round(max(cpps_data$CPPS), 3), "\n")
+  }
+
+  # Log-rank test
+  survdiff_result <- survdiff(Surv(time_to_death, death) ~ CPPS_risk, data = cpps_data)
+  logrank_p <- 1 - pchisq(survdiff_result$chisq, length(survdiff_result$n) - 1)
+
+  if(verbose) {
+    cat("\nLog-rank Test:\n")
+    print(survdiff_result)
+    cat("Log-rank p-value:", formatC(logrank_p, format = "e", digits = 3), "\n")
+  }
+
+  # Fit Cox proportional hazards model
+  cox_model <- coxph(Surv(time_to_death, death) ~ CPPS_risk, data = cpps_data)
+  cox_summary <- summary(cox_model)
+
+  # Extract HR and CI
+  hr_value <- cox_summary$conf.int[1, "exp(coef)"]
+  hr_lower <- cox_summary$conf.int[1, "lower .95"]
+  hr_upper <- cox_summary$conf.int[1, "upper .95"]
+  hr_p <- cox_summary$coefficients[1, "Pr(>|z|)"]
+
+  if(verbose) {
+    cat("\nCox Regression Results:\n")
+    cat("HR:", round(hr_value, 2), "[", round(hr_lower, 2), "-", round(hr_upper, 2), "]\n")
+    cat("P-value:", formatC(hr_p, format = "e", digits = 3), "\n")
+  }
+
+  # Kaplan-Meier analysis
+  survfit_result <- survfit(Surv(time_to_death, death) ~ CPPS_risk, data = cpps_data)
+
+  if(verbose) {
+    cat("\nMedian Survival Times:\n")
+    print(summary(survfit_result)$table)
+  }
+
+  # Create plot title
+  if(is.null(plot_title)) {
+    plot_title <- paste0("CPPS from ", length(proteins), " Proteins\n",
+                        "HR = ", round(hr_value, 2),
+                        " [", round(hr_lower, 2), "-", round(hr_upper, 2), "]")
+  }
+
+  # Create KM plot
+  km_plot <- ggsurvplot(
+    fit = survfit_result,
+    data = cpps_data,
+    pval = TRUE,
+    conf.int = TRUE,
+    risk.table = TRUE,
+    risk.table.height = 0.3,
+    title = plot_title,
+    xlab = "Time to Death (months)",
+    ylab = "Overall Survival Probability",
+    palette = c("grey", "#e41a1c"),
+    legend.labs = c("Low Risk", "High Risk"),
+    break.time.by = 12,
+    ggtheme = theme_custom,
+    surv.median.line = "hv"
   )
 
-# Create forest plot data with proper formatting
-df_forest2 <- forest_data2 %>%
-  mutate(
-    Variable_Label = factor(Variable_Label, levels = rev(Variable_Label)),
-    HR_CI = sprintf("%.2f [%.2f, %.2f]", HR, Lower_CI, Upper_CI),
-    P_Text = case_when(
-      P_value < 0.001 ~ formatC(P_value, format = "e", digits = 2),
-      TRUE ~ sprintf("%.3f", P_value)
+  # Save plot if requested
+  if(save_plot) {
+    protein_string <- paste(proteins, collapse = "_")
+    if(nchar(protein_string) > 50) {
+      protein_string <- paste0(length(proteins), "proteins")
+    }
+    filename <- file.path(output_dir, paste0("CPPS_KM_custom_", protein_string, ".pdf"))
+
+    pdf(filename, width = 10, height = 8)
+    print(km_plot)
+    dev.off()
+
+    if(verbose) {
+      cat("\nPlot saved to:", filename, "\n")
+    }
+  }
+
+  # Return results
+  results <- list(
+    km_plot = km_plot,
+    cpps_data = cpps_data,
+    statistics = list(
+      hr = hr_value,
+      hr_lower = hr_lower,
+      hr_upper = hr_upper,
+      hr_p = hr_p,
+      logrank_p = logrank_p,
+      n_samples = nrow(cpps_data),
+      n_events = sum(cpps_data$death),
+      cpps_median = cpps_median
     ),
-    P_Color = ifelse(P_value < 0.05, "red", "black")
+    protein_info = protein_info
   )
 
-# Forest Plot (left panel) - Binary High vs Low
-p1_forest_binary <- ggplot(df_forest2, aes(x = HR, y = Variable_Label)) +
-  geom_errorbarh(aes(xmin = Lower_CI, xmax = Upper_CI, color = Type), 
-                 height = 0.3, size = 0.8) +
-  geom_point(aes(color = Type), size = 3, alpha = 1) +
-  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50") +
-  scale_color_manual(values = c("Protein" = "#2E86AB", "CPPS" = "#E74C3C")) +
-  scale_x_continuous(limits = c(0, max(df_forest2$Upper_CI, na.rm = TRUE) * 1.1)) +
-  theme_minimal(base_size = 12) +
-  labs(x = "Hazard Ratio (High vs Low)", y = NULL, 
-       title = "CPPS Components: Binary Risk Analysis (High vs Low)",
-       color = "Variable Type") +
-  theme(
-    axis.text.y = element_text(face = "bold"),
-    panel.grid.major = element_blank(),
-    panel.grid.minor = element_blank(),
-    legend.position = "bottom"
-  )
+  if(verbose) {
+    cat("\n===========================================\n")
+    cat("Analysis Complete\n")
+    cat("===========================================\n")
+  }
 
-# Table with HR and P-values (right panel)
-p2_forest_binary <- ggplot(df_forest2, aes(y = Variable_Label)) +
-  geom_text(aes(x = 1, label = HR_CI), hjust = 0, size = 3.5, fontface = "bold") +
-  geom_text(aes(x = 2, label = P_Text, color = P_Color), hjust = 0, size = 3.5, fontface = "bold") +
-  scale_color_identity() +
-  scale_x_continuous(limits = c(0.95, 2.9), breaks = NULL) +
-  theme_void(base_size = 12) +
-  theme(
-    axis.text.y = element_blank(),
-    plot.margin = margin(5.5, 20, 5.5, 5.5)
-  ) +
-  annotate("text", x = 1, y = nrow(df_forest2) + 1, label = "HR [95% CI]", 
-           hjust = 0, size = 4, fontface = "bold") +
-  annotate("text", x = 2, y = nrow(df_forest2) + 1, label = "P-value", 
-           hjust = 0, size = 4, fontface = "bold")
-
-# Combine plots
-forest_plot_binary <- p1_forest_binary + p2_forest_binary + plot_layout(widths = c(2, 1))
-print(forest_plot_binary)
-
-# Save forest plot
-ggsave(file.path(wd$outCurr, "CPPS_forest_plot_binary_combined.pdf"), 
-       plot = forest_plot_binary, width = 12, height = 8, dpi = 300)
-
-# Display summary table
-cat("=== Binary Forest Plot Data Summary (High vs Low) ===\n")
-print(forest_data2 %>% 
-      select(Variable_Label, HR, Lower_CI, Upper_CI, P_value, Significance) %>%
-      mutate(across(HR:P_value, ~round(.x, 3))))
+  return(results)
+}
 ```
 
-### CPPS Survival Analysis
+### Example Usage
+
+```{r}
+# Example 1: Using Assay names
+# example_proteins_assay <- c("KLK3", "FOLR1", "CRISP3", "MSMB", "WFDC2")
+# result1 <- generate_cpps_km_plot(example_proteins_assay)
+# print(result1$km_plot)
+
+# Example 2: Using OlinkIDs
+example_proteins_oid <- c("OID21319"	, "OID31356", "OID21144",	 "OID20272"	 ,"OID31062")
+result2 <- generate_cpps_km_plot(example_proteins_oid, save_plot = FALSE)
+
+# Example 3: Custom plot title and less verbose
+# result3 <- generate_cpps_km_plot(
+#   proteins = c("KLK3", "FOLR1", "CRISP3"),
+#   plot_title = "Custom Protein Signature\nHR = X.XX [X.XX-X.XX]",
+#   verbose = FALSE
+# )
+```
+
+
 
 ```{r}
 # Generate KM plots for different protein counts (5, 10, 15, 20)
@@ -2251,15 +2345,10 @@ comparison_results <- data.frame(
 for(n_proteins in protein_counts) {
   results <- km_plots_list[[paste0("Top_", n_proteins)]]
 
-  # Calculate C-index (concordance index) for discrimination using continuous CPPS
-  # Fit Cox model on continuous CPPS score for C-index calculation
-  cox_model_continuous <- coxph(Surv(time_to_death, death) ~ CPPS, data = results$data)
-
-  # Calculate C-index using concordance function
-  cindex_obj <- concordance(cox_model_continuous)
-
+  # Calculate C-index (concordance index) for discrimination
+  cindex_obj <- concordance(results$cox_model)
   cindex_value <- cindex_obj$concordance
-  cindex_se <- sqrt(cindex_obj$var)  # SE from variance
+  cindex_se <- sqrt(cindex_obj$var)
 
   # Get AIC and BIC (lower is better)
   model_aic <- AIC(results$cox_model)
@@ -2333,7 +2422,7 @@ p_cindex <- ggplot(comparison_results, aes(x = factor(N_Proteins), y = C_Index))
   geom_text(aes(label = round(C_Index, 3)), vjust = -0.5, size = 3) +
   theme_bw() +
   labs(title = "C-Index by Protein Count",
-       subtitle = "Higher is better (error bars show SE)",
+       subtitle = "Higher is better",
        x = "Number of Proteins",
        y = "C-Index") +
   ylim(0, max(comparison_results$C_Index + comparison_results$C_Index_SE) * 1.1)
@@ -2405,17 +2494,10 @@ Let's test the performance of risk scores created from randomly selected non-pro
 ```{r}
 set.seed(123)  # For reproducibility
 
-# # Get list of non-prognostic proteins (Multi_FDR > 0.2)
-# non_prognostic_proteins <- res_all2 %>%
-#   filter(Multi_FDR > 0.2) %>%
-#   pull(OlinkID)
-
 # Get list of non-prognostic proteins (Multi_FDR > 0.2)
-non_CD <- res_all2 %>%  pull(OlinkID)
-non_prognostic_proteins <- limma_df %>%
-  filter(!OlinkID %in% non_CD) %>%
+non_prognostic_proteins <- res_all2 %>%
+  filter(Multi_FDR_num > 0.2) %>%
   pull(OlinkID)
-
 
 cat("=== Non-prognostic Proteins Available ===\n")
 cat("Total non-prognostic proteins (Multi_FDR > 0.2):", length(non_prognostic_proteins), "\n")
@@ -2429,31 +2511,50 @@ simulation_results <- list()
 
 for(n_proteins in protein_counts) {
   cat("\n=== Simulating with", n_proteins, "random non-prognostic proteins ===\n")
-  
+
   # Store results for this protein count
   sim_cindex <- numeric(n_simulations)
-  sim_cindex_se <- numeric(n_simulations)
   sim_logrank_p <- numeric(n_simulations)
   sim_hr <- numeric(n_simulations)
   sim_hr_lower <- numeric(n_simulations)
   sim_hr_upper <- numeric(n_simulations)
+  sim_proteins <- vector("list", n_simulations)  # Store selected proteins
 
   for(sim in 1:n_simulations) {
     # Randomly sample n_proteins from non-prognostic list
     selected_proteins <- sample(non_prognostic_proteins, n_proteins, replace = FALSE)
+    sim_proteins[[sim]] <- selected_proteins  # Save the selected proteins
 
-    # Get expression data for selected proteins
-    selected_expr <- mat_in[selected_proteins, meta_pre2$final_sample_id]
+    # Get protein info with multivariable coefficients from res_all2
+    selected_protein_info <- res_all2 %>%
+      filter(OlinkID %in% selected_proteins)
 
-    # Calculate mean expression across selected proteins for each sample
-    mean_expr <- colMeans(selected_expr, na.rm = TRUE)
+    # Calculate CPPS-style risk score using multivariable coefficients
+    # This matches the CPPS calculation approach
+    risk_score_df <- df_npx_long %>%
+      filter(OlinkID %in% selected_proteins) %>%
+      select(final_sample_id, OlinkID, NPX) %>%
+      left_join(selected_protein_info %>% select(OlinkID, Multi_Coefficient), by = "OlinkID") %>%
+      group_by(final_sample_id) %>%
+      mutate(RS = Multi_Coefficient * NPX,
+             Sum_rs = sum(RS, na.rm = TRUE)) %>%
+      select(final_sample_id, Sum_rs) %>%
+      distinct() %>%
+      rename(sample_id = final_sample_id,
+             risk_score = Sum_rs)
 
-    # Create risk score (higher expression = higher risk)
-    risk_scores <- mean_expr
+    # Merge with survival data
+    sim_df_temp <- risk_score_df %>%
+      left_join(meta_in %>% select(sample_id, OS, death), by = "sample_id") %>%
+      filter(!is.na(OS) & !is.na(death))
+
+    # Extract risk scores for binarization
+    risk_scores <- sim_df_temp$risk_score
+    names(risk_scores) <- sim_df_temp$sample_id
 
     # Binarize into high/low risk using median split
     risk_median <- median(risk_scores, na.rm = TRUE)
-    risk_groups <- ifelse(risk_scores > risk_median, "High", "Low")
+    risk_groups <- ifelse(risk_scores >= risk_median, "High", "Low")
 
     # Create survival data frame
     sim_df <- data.frame(
@@ -2472,17 +2573,13 @@ for(n_proteins in protein_counts) {
 
     # Calculate C-index and HR
     if(nrow(sim_df) > 10 && sum(sim_df$death) > 2) {
-      # C-index using continuous risk_score
-      # Fit Cox model on continuous risk_score for C-index calculation
-      cox_model_continuous <- coxph(Surv(time_to_death, death) ~ risk_score, data = sim_df)
+      # C-index
+      cindex_result <- rcorr.cens(sim_df$risk_score, Surv(sim_df$time_to_death, sim_df$death))
+      sim_cindex[sim] <- cindex_result[1]
 
-      # Calculate C-index using concordance function
-      cindex_obj <- concordance(cox_model_continuous)
-
-      sim_cindex[sim] <- cindex_obj$concordance
-      sim_cindex_se[sim] <- sqrt(cindex_obj$var)  # SE from variance
-
-      # Log-rank test
+      # Log-rank test using survminer's approach (same as ggsurvplot)
+      # Create survival fit and use survminer's .get_pvalue function
+      temp_survfit <- survfit(Surv(time_to_death, death) ~ risk_group, data = sim_df)
       survdiff_result <- survdiff(Surv(time_to_death, death) ~ risk_group, data = sim_df)
       sim_logrank_p[sim] <- 1 - pchisq(survdiff_result$chisq, length(survdiff_result$n) - 1)
 
@@ -2505,7 +2602,6 @@ for(n_proteins in protein_counts) {
       })
     } else {
       sim_cindex[sim] <- NA
-      sim_cindex_se[sim] <- NA
       sim_logrank_p[sim] <- NA
       sim_hr[sim] <- NA
       sim_hr_lower[sim] <- NA
@@ -2518,11 +2614,12 @@ for(n_proteins in protein_counts) {
     n_proteins = n_proteins,
     simulation = 1:n_simulations,
     c_index = sim_cindex,
-    c_index_se = sim_cindex_se,
     logrank_p = sim_logrank_p,
     hr = sim_hr,
     hr_lower = sim_hr_lower,
-    hr_upper = sim_hr_upper
+    hr_upper = sim_hr_upper,
+    proteins = I(sim_proteins),  # Store as list column
+    stringsAsFactors = FALSE
   )
   
   # Print summary statistics
@@ -2576,10 +2673,70 @@ sim_summary <- all_sim_results %>%
     prop_sig = mean(logrank_p < 0.05, na.rm = TRUE),
     n_valid = n(),
     .groups = 'drop'
-  ) %>%
-  mutate(
-    mean_cindex_se = sd_cindex / sqrt(n_valid)  # SE of the mean
   )
+
+# Identify representative simulations (closest to mean_logrank_p) and show their proteins
+cat("\n=== Representative Simulations (Closest to Mean Log-rank P-value) ===\n")
+
+representative_sims <- data.frame()
+
+for(n_prot in protein_counts) {
+  # Get mean logrank_p for this protein count
+  mean_logrank_p_val <- sim_summary %>%
+    filter(n_proteins == n_prot) %>%
+    pull(mean_logrank_p)
+
+  # Find simulation closest to mean logrank_p
+  sim_subset <- all_sim_results %>%
+    filter(n_proteins == n_prot & !is.na(logrank_p))
+
+  if(nrow(sim_subset) > 0) {
+    closest_idx <- which.min(abs(sim_subset$logrank_p - mean_logrank_p_val))
+    closest_sim <- sim_subset[closest_idx, ]
+
+    # Get the proteins used in this simulation
+    protein_list <- closest_sim$proteins[[1]]
+
+    # Get protein names if available
+    if(exists("df_id_pro")) {
+      protein_names <- df_id_pro %>%
+        filter(OlinkID %in% protein_list) %>%
+        pull(Assay)
+      protein_display <- paste(protein_names, collapse = ", ")
+    } else {
+      protein_display <- paste(protein_list, collapse = ", ")
+    }
+
+    cat("\n", n_prot, "proteins:\n", sep = "")
+    cat("  Simulation ID:", closest_sim$simulation, "\n")
+    cat("  Log-rank p-value:", round(closest_sim$logrank_p, 4),
+        "(Mean:", round(mean_logrank_p_val, 4), ")\n")
+    cat("  HR:", round(closest_sim$hr, 3),
+        "[", round(closest_sim$hr_lower, 3), "-", round(closest_sim$hr_upper, 3), "]\n")
+    cat("  C-index:", round(closest_sim$c_index, 3), "\n")
+    cat("  Proteins:", protein_display, "\n")
+
+    # Store for potential export
+    representative_sims <- rbind(representative_sims, data.frame(
+      n_proteins = n_prot,
+      simulation = closest_sim$simulation,
+      logrank_p = closest_sim$logrank_p,
+      mean_logrank_p = mean_logrank_p_val,
+      hr = closest_sim$hr,
+      hr_lower = closest_sim$hr_lower,
+      hr_upper = closest_sim$hr_upper,
+      c_index = closest_sim$c_index,
+      proteins_list = I(list(protein_list))
+    ))
+  }
+}
+
+# Save representative simulations info
+write.csv(representative_sims %>% select(-proteins_list),
+          file.path(wd$outCurr, "representative_simulations_summary.csv"),
+          row.names = FALSE)
+
+cat("\n=== Representative simulations summary saved ===\n")
 
 # Plot C-index distribution
 p_cindex <- ggplot(all_sim_results %>% filter(!is.na(c_index)), 
@@ -2801,6 +2958,173 @@ write.csv(all_sim_results, file.path(wd$outCurr, "random_protein_simulation_resu
 write.csv(sim_summary, file.path(wd$outCurr, "random_protein_simulation_summary.csv"), row.names = FALSE)
 ```
 
+### Simulation with Truly Null Proteins (Weak Coefficients)
+
+To provide a more stringent negative control, we test proteins that are both non-prognostic (Multi_FDR > 0.2) AND have weak effect sizes (|coefficient| < 0.15, below median for non-prognostic proteins). These represent proteins with minimal association to mCRPC survival.
+
+```{r}
+set.seed(456)  # Different seed from main simulation
+
+# Get list of truly null proteins (non-prognostic AND weak coefficients)
+truly_null_proteins <- res_all2 %>%
+  filter(Multi_FDR_num > 0.2 & abs(Multi_Coefficient) < 0.15) %>%
+  pull(OlinkID)
+
+cat("=== Truly Null Proteins Available ===\n")
+cat("Total truly null proteins (Multi_FDR > 0.2 & |coef| < 0.15):", length(truly_null_proteins), "\n")
+cat("\nCoefficient comparison:\n")
+cat("  Prognostic mean |coef|:",
+    round(mean(abs(res_all2$Multi_Coefficient[res_all2$Multi_FDR_num <= 0.2])), 3), "\n")
+cat("  Non-prognostic mean |coef|:",
+    round(mean(abs(res_all2$Multi_Coefficient[res_all2$Multi_FDR_num > 0.2])), 3), "\n")
+cat("  Truly null mean |coef|:",
+    round(mean(abs(res_all2$Multi_Coefficient[res_all2$OlinkID %in% truly_null_proteins])), 3), "\n")
+
+# Run simulations with truly null proteins
+n_simulations_null <- 100
+null_simulation_results <- list()
+
+for(n_proteins in protein_counts) {
+  cat("\n=== Simulating with", n_proteins, "truly null proteins ===\n")
+
+  sim_cindex <- numeric(n_simulations_null)
+  sim_logrank_p <- numeric(n_simulations_null)
+  sim_hr <- numeric(n_simulations_null)
+  sim_hr_lower <- numeric(n_simulations_null)
+  sim_hr_upper <- numeric(n_simulations_null)
+  sim_proteins <- vector("list", n_simulations_null)
+
+  for(sim in 1:n_simulations_null) {
+    selected_proteins <- sample(truly_null_proteins, n_proteins, replace = FALSE)
+    sim_proteins[[sim]] <- selected_proteins
+
+    # Calculate CPPS-style risk score using multivariable coefficients
+    selected_protein_info <- res_all2 %>%
+      filter(OlinkID %in% selected_proteins)
+
+    risk_score_df <- df_npx_long %>%
+      filter(OlinkID %in% selected_proteins) %>%
+      select(final_sample_id, OlinkID, NPX) %>%
+      left_join(selected_protein_info %>% select(OlinkID, Multi_Coefficient), by = "OlinkID") %>%
+      group_by(final_sample_id) %>%
+      mutate(RS = Multi_Coefficient * NPX,
+             Sum_rs = sum(RS, na.rm = TRUE)) %>%
+      select(final_sample_id, Sum_rs) %>%
+      distinct() %>%
+      rename(sample_id = final_sample_id,
+             risk_score = Sum_rs)
+
+    sim_df_temp <- risk_score_df %>%
+      left_join(meta_in %>% select(sample_id, OS, death), by = "sample_id") %>%
+      filter(!is.na(OS) & !is.na(death))
+
+    risk_scores <- sim_df_temp$risk_score
+    names(risk_scores) <- sim_df_temp$sample_id
+
+    risk_median <- median(risk_scores, na.rm = TRUE)
+    risk_groups <- ifelse(risk_scores > risk_median, "High", "Low")
+
+    sim_df <- data.frame(
+      SampleID = names(risk_scores),
+      risk_score = risk_scores,
+      risk_group = factor(risk_groups, levels = c("Low", "High")),
+      stringsAsFactors = FALSE
+    )
+
+    sim_df <- sim_df %>%
+      left_join(meta_in %>% select(sample_id, OS, death) %>% rename(SampleID = sample_id),
+                by = "SampleID") %>%
+      rename(time_to_death = OS) %>%
+      filter(!is.na(time_to_death) & !is.na(death))
+
+    # Calculate C-index and HR
+    if(nrow(sim_df) > 10 && sum(sim_df$death) > 2) {
+      cindex_result <- rcorr.cens(sim_df$risk_score, Surv(sim_df$time_to_death, sim_df$death))
+      sim_cindex[sim] <- cindex_result[1]
+
+      survdiff_result <- survdiff(Surv(time_to_death, death) ~ risk_group, data = sim_df)
+      sim_logrank_p[sim] <- 1 - pchisq(survdiff_result$chisq, length(survdiff_result$n) - 1)
+
+      tryCatch({
+        cox_model <- coxph(Surv(time_to_death, death) ~ risk_group, data = sim_df)
+        if(!is.null(summary(cox_model)$conf.int) && nrow(summary(cox_model)$conf.int) > 0) {
+          sim_hr[sim] <- summary(cox_model)$conf.int[1, 1]
+          sim_hr_lower[sim] <- summary(cox_model)$conf.int[1, 3]
+          sim_hr_upper[sim] <- summary(cox_model)$conf.int[1, 4]
+        } else {
+          sim_hr[sim] <- NA
+          sim_hr_lower[sim] <- NA
+          sim_hr_upper[sim] <- NA
+        }
+      }, error = function(e) {
+        sim_hr[sim] <<- NA
+        sim_hr_lower[sim] <<- NA
+        sim_hr_upper[sim] <<- NA
+      })
+    } else {
+      sim_cindex[sim] <- NA
+      sim_logrank_p[sim] <- NA
+      sim_hr[sim] <- NA
+      sim_hr_lower[sim] <- NA
+      sim_hr_upper[sim] <- NA
+    }
+  }
+
+  null_simulation_results[[as.character(n_proteins)]] <- data.frame(
+    n_proteins = n_proteins,
+    simulation = 1:n_simulations_null,
+    c_index = sim_cindex,
+    logrank_p = sim_logrank_p,
+    hr = sim_hr,
+    hr_lower = sim_hr_lower,
+    hr_upper = sim_hr_upper,
+    proteins = I(sim_proteins),
+    stringsAsFactors = FALSE
+  )
+
+  valid_sims <- sum(!is.na(sim_cindex))
+  valid_hr <- sum(!is.na(sim_hr))
+  cat("Valid simulations:", valid_sims, "out of", n_simulations_null, "\n")
+  cat("Valid HR calculations:", valid_hr, "out of", n_simulations_null, "\n")
+  if(valid_sims > 0) {
+    cat("Mean C-index:", round(mean(sim_cindex, na.rm = TRUE), 3),
+        "(SD:", round(sd(sim_cindex, na.rm = TRUE), 3), ")\n")
+    cat("Mean HR:", round(mean(sim_hr, na.rm = TRUE), 3),
+        "(SD:", round(sd(sim_hr, na.rm = TRUE), 3), ")\n")
+    cat("HR range:", round(min(sim_hr, na.rm = TRUE), 3), "-",
+        round(max(sim_hr, na.rm = TRUE), 3), "\n")
+    cat("Mean log-rank p-value:", round(mean(sim_logrank_p, na.rm = TRUE), 3),
+        "(SD:", round(sd(sim_logrank_p, na.rm = TRUE), 3), ")\n")
+    cat("Proportion with p < 0.05:", round(mean(sim_logrank_p < 0.05, na.rm = TRUE), 2), "\n")
+  }
+}
+
+# Combine all results
+all_null_results <- do.call(rbind, null_simulation_results)
+
+# Create summary statistics
+null_summary <- all_null_results %>%
+  filter(!is.na(c_index)) %>%
+  group_by(n_proteins) %>%
+  summarise(
+    mean_cindex = mean(c_index, na.rm = TRUE),
+    sd_cindex = sd(c_index, na.rm = TRUE),
+    mean_hr = mean(hr, na.rm = TRUE),
+    sd_hr = sd(hr, na.rm = TRUE),
+    mean_logrank_p = mean(logrank_p, na.rm = TRUE),
+    sd_logrank_p = sd(logrank_p, na.rm = TRUE),
+    prop_sig = mean(logrank_p < 0.05, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+cat("\n=== Truly Null Protein Simulation Summary ===\n")
+print(null_summary)
+
+# Save results
+write.csv(all_null_results, file.path(wd$outCurr, "truly_null_protein_simulation_results.csv"), row.names = FALSE)
+write.csv(null_summary, file.path(wd$outCurr, "truly_null_protein_simulation_summary.csv"), row.names = FALSE)
+```
+
 ### Combined Model Comparison: CPPS vs Random Proteins
 
 Compare CPPS (top prognostic proteins) with random non-prognostic proteins using the same metrics and shared axes.
@@ -2811,7 +3135,8 @@ library(patchwork)
 # Prepare CPPS data for combined plots - use the comparison_results from the CPPS model comparison
 cpps_plot_data <- comparison_results %>%
   mutate(
-    Model = "CPPS (Top Prognostic)"
+    Model = "CPPS (Top Prognostic)",
+    C_Index_SE = C_Index_SE  # Already has SE from concordance calculation
   ) %>%
   select(N_Proteins, Model, C_Index, C_Index_SE, HR, HR_Lower, HR_Upper, Cox_P)
 
@@ -2821,7 +3146,7 @@ random_plot_data <- sim_summary %>%
   mutate(
     Model = "Random (Non-prognostic)",
     C_Index = mean_cindex,
-    C_Index_SE = mean_cindex_se,
+    C_Index_SE = sd_cindex / sqrt(n_valid),
     HR = mean_hr,
     HR_Lower = q25_hr,
     HR_Upper = q75_hr,
@@ -2852,7 +3177,7 @@ p_combined_cindex <- ggplot(combined_plot_data, aes(x = factor(N_Proteins), y = 
                                 "Random (Non-prognostic)" = "lightcoral")) +
   theme_bw() +
   labs(title = "C-Index by Protein Count",
-       subtitle = "Higher is better; error bars show SE; dashed line = random chance (0.5)",
+       subtitle = "Higher is better; dashed line = random chance (0.5)",
        x = "Number of Proteins",
        y = "C-Index",
        fill = "Model Type") +
@@ -2946,46 +3271,55 @@ cpps_vs_random_km_plots <- list()
 for(n_proteins in protein_counts) {
   cat("\n=== Creating KM plots for", n_proteins, "proteins ===\n")
 
-  # Get all simulation results for this protein count
-  sim_results_n <- all_sim_results %>%
-    filter(n_proteins == !!n_proteins & !is.na(hr))
+  # Get representative simulation info from representative_sims
+  rep_sim_info <- representative_sims %>%
+    filter(n_proteins == !!n_proteins)
 
-  # Find the simulation with median HR
-  if(nrow(sim_results_n) > 0) {
-    median_hr <- median(sim_results_n$hr, na.rm = TRUE)
-    # Find the simulation closest to median HR
-    median_sim_idx <- which.min(abs(sim_results_n$hr - median_hr))
-    median_sim_id <- sim_results_n$simulation[median_sim_idx]
+  if(nrow(rep_sim_info) > 0) {
+    # Extract information from representative_sims
+    mean_sim_id <- rep_sim_info$simulation
+    mean_logrank_p_val <- rep_sim_info$mean_logrank_p
+    rep_logrank_p <- rep_sim_info$logrank_p
+    rep_hr <- rep_sim_info$hr
 
-    cat("Median HR for", n_proteins, "proteins:", round(median_hr, 3), "\n")
-    cat("Selected simulation", median_sim_id, "with HR =", round(sim_results_n$hr[median_sim_idx], 3), "\n")
+    cat("Mean logrank_p for", n_proteins, "proteins:", round(mean_logrank_p_val, 3), "\n")
+    cat("Selected simulation", mean_sim_id, "with logrank_p =", round(rep_logrank_p, 3), "\n")
+    cat("  HR =", round(rep_hr, 3), "\n")
 
-    # Recreate the "median" random protein selection
-    set.seed(123 + median_sim_id)  # Use same seed structure as original simulation
-    selected_proteins <- sample(non_prognostic_proteins, n_proteins, replace = FALSE)
+    # Get the exact proteins used in the representative simulation
+    selected_proteins <- rep_sim_info$proteins_list[[1]]
+    cat("  Using", length(selected_proteins), "proteins from representative simulation\n")
 
-    # Get expression data
-    selected_expr <- mat_in[selected_proteins, meta_pre2$final_sample_id]
-    mean_expr <- colMeans(selected_expr, na.rm = TRUE)
+    # Get protein info with multivariable coefficients from res_all2
+    selected_protein_info <- res_all2 %>%
+      filter(OlinkID %in% selected_proteins)
+
+    # Calculate CPPS-style risk score using multivariable coefficients
+    # This matches the CPPS calculation approach
+    random_km_df <- df_npx_long %>%
+      filter(OlinkID %in% selected_proteins) %>%
+      select(final_sample_id, OlinkID, NPX) %>%
+      left_join(selected_protein_info %>% select(OlinkID, Multi_Coefficient), by = "OlinkID") %>%
+      group_by(final_sample_id) %>%
+      mutate(RS = Multi_Coefficient * NPX,
+             Sum_rs = sum(RS, na.rm = TRUE)) %>%
+      select(final_sample_id, Sum_rs) %>%
+      distinct() %>%
+      rename(sample_id = final_sample_id,
+             risk_score = Sum_rs) %>%
+      # Add survival data
+      left_join(meta_in %>% select(sample_id, OS, death), by = "sample_id") %>%
+      rename(SampleID = sample_id,
+             time_to_death = OS) %>%
+      filter(!is.na(time_to_death) & !is.na(death))
 
     # Create risk score and binarize
-    risk_median <- median(mean_expr, na.rm = TRUE)
-    risk_groups <- ifelse(mean_expr > risk_median, "High", "Low")
-
-    # Create survival data frame
-    random_km_df <- data.frame(
-      SampleID = names(mean_expr),
-      risk_score = mean_expr,
-      risk_group = factor(risk_groups, levels = c("Low", "High")),
-      stringsAsFactors = FALSE
-    )
-
-    # Add survival data
+    risk_median <- median(random_km_df$risk_score, na.rm = TRUE)
     random_km_df <- random_km_df %>%
-      left_join(meta_in %>% select(sample_id, OS, death) %>% rename(SampleID = sample_id),
-                by = "SampleID") %>%
-      rename(time_to_death = OS) %>%
-      filter(!is.na(time_to_death) & !is.na(death))
+      mutate(
+        risk_group = ifelse(risk_score >= risk_median, "High", "Low"),
+        risk_group = factor(risk_group, levels = c("Low", "High"))
+      )
 
     # Calculate HR and survival stats for random proteins
     random_cox <- coxph(Surv(time_to_death, death) ~ risk_group, data = random_km_df)
@@ -2995,6 +3329,16 @@ for(n_proteins in protein_counts) {
 
     # Fit survival curves
     random_survfit <- survfit(Surv(time_to_death, death) ~ risk_group, data = random_km_df)
+
+    # Calculate log-rank p-value for verification (should match stored value)
+    survdiff_check <- survdiff(Surv(time_to_death, death) ~ risk_group, data = random_km_df)
+    recalc_logrank_p <- 1 - pchisq(survdiff_check$chisq, length(survdiff_check$n) - 1)
+
+    cat("  Stored logrank_p from simulation:", round(rep_logrank_p, 4), "\n")
+    cat("  Recalculated logrank_p:", round(recalc_logrank_p, 4), "\n")
+    if(abs(rep_logrank_p - recalc_logrank_p) > 0.01) {
+      cat("  WARNING: P-values differ by more than 0.01!\n")
+    }
 
     # Create plot title
     random_plot_title <- paste0("Random Non-prognostic (", n_proteins, " proteins)\n",
@@ -3043,7 +3387,7 @@ for(n_proteins in protein_counts) {
 }
 
 # Create single PDF with 4 plots arranged vertically (4 rows x 1 column)
-pdf(file.path(wd$outCurr, "Random_median_KM_plots.pdf"), width = 4, height = 20)
+pdf(file.path(wd$outCurr, "Random_mean_logrank_KM_plots.pdf"), width = 4, height = 20)
 
 # Arrange all 4 KM plots vertically
 # Each plot will have its survival curve and risk table stacked
@@ -3059,7 +3403,7 @@ gridExtra::grid.arrange(
   ncol = 1,
   nrow = 8,
   heights = c(0.7, 0.3, 0.7, 0.3, 0.7, 0.3, 0.7, 0.3),
-  top = grid::textGrob("Kaplan-Meier Plots for Median-Performing Random Non-prognostic Protein Sets",
+  top = grid::textGrob("Kaplan-Meier Plots for Representative Random Non-prognostic Protein Sets\n(Based on Mean Log-rank P-value)",
                       gp = grid::gpar(fontsize = 14, fontface = "bold"))
 )
 
@@ -3067,8 +3411,9 @@ dev.off()
 
 cat("\n===========================================\n")
 cat("Random protein KM plots saved to:\n")
-cat("- Random_median_KM_plots.pdf\n")
+cat("- Random_mean_logrank_KM_plots.pdf\n")
 cat("4 plots arranged vertically: 5, 10, 15, 20 proteins\n")
+cat("Representative simulations selected based on mean log-rank p-value\n")
 cat("===========================================\n")
 ```
 

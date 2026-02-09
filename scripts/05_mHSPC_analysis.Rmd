@@ -194,6 +194,10 @@ p_viol_psa <-
   labs(title = "PSA Pre and Post (Violin)", x = "Treatment Status", y = "log10(PSA)") +
   scale_fill_manual(values=c("#ff7f0e", "gold4")) +
   theme_custom +
+  geom_signif(
+    comparisons = list(c("Pre", "Post")),
+    map_signif_level = FALSE,
+    test = "t.test") +
   NULL
 p_viol_psa
 
@@ -530,6 +534,10 @@ p_box_klk3 <-
   scale_fill_manual(values = c("#ff7f0e", "gold4")) +
   scale_colour_manual(values = c("#ff7f0e", "gold4")) +
   theme_custom +
+  geom_signif(
+    comparisons = list(c("Pre", "Post")),
+    map_signif_level = FALSE,
+    test = "t.test") +
   NULL
 
 p_box_klk3

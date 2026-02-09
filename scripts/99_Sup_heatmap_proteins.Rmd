@@ -43,6 +43,15 @@ wd$out <- file.path(wd$main, "output")
 
 # out data (location to save future data)
 wd$outData <- file.path(wd$out, "out_data")
+
+# Current output folder for heatmaps
+wd$outCurr <- file.path(wd$out, "99_Heatmap")
+
+# Create output directory if it doesn't exist
+if (!dir.exists(wd$outCurr)) {
+  dir.create(wd$outCurr, recursive = TRUE)
+  cat("Created output directory:", wd$outCurr, "\n")
+}
 ```
 
 # Data Extraction
@@ -62,7 +71,8 @@ cat("\nDataset dimensions:\n")
 cat(paste("Total studies:", nrow(protein_table), "\n"))
 
 # Extract relevant columns
-protein_markers_col <- protein_table$`Protein markers`
+# Use Edited_name column for protein names (cleaner version)
+protein_markers_col <- protein_table$`Edited_name`
 focus_col <- protein_table$`Prognostic and/or Predictive focus`
 predictive_col <- protein_table$`If predictive, then drug target`
 sample_type_col <- protein_table$`Tissue-based or Plasma or Urine-based`
@@ -119,31 +129,117 @@ print(table(study_design))
 # Extract protein names
 
 ```{r}
-# Extract individual proteins from the protein markers column
-all_proteins <- c()
-for (i in 1:nrow(protein_table)) {
-  markers <- protein_markers_col[i]
-  if (!is.na(markers)) {
-    # Split by comma
-    proteins <- unlist(strsplit(markers, ",\\s*"))
-    proteins <- trimws(proteins)
+# Function to parse sample-type-specific proteins
+# Handles formats like "Tissue-based (DST, COL3A1) Urine-based (COL1A1, COL3A1)"
+parse_proteins_with_sample_type <- function(markers_text, study_index) {
+  proteins_list <- list()
 
-    # Clean up protein names
-    # Remove "and" prefix
+  if (is.na(markers_text) || markers_text == "") {
+    return(proteins_list)
+  }
+
+  # Check if the text contains sample type markers
+  has_tissue <- grepl("Tissue-based\\s*\\(", markers_text, ignore.case = TRUE)
+  has_plasma <- grepl("Plasma-based\\s*\\(", markers_text, ignore.case = TRUE)
+  has_urine <- grepl("Urine-based\\s*\\(", markers_text, ignore.case = TRUE)
+
+  if (has_tissue || has_plasma || has_urine) {
+    # Parse each sample type separately
+
+    # Extract Tissue-based proteins
+    if (has_tissue) {
+      tissue_match <- regmatches(markers_text, gregexpr("Tissue-based\\s*\\(([^)]+)\\)", markers_text, ignore.case = TRUE, perl = TRUE))[[1]]
+      if (length(tissue_match) > 0) {
+        tissue_proteins <- gsub(".*\\(([^)]+)\\).*", "\\1", tissue_match)
+        tissue_proteins <- unlist(strsplit(tissue_proteins, ",\\s*"))
+        tissue_proteins <- trimws(tissue_proteins)
+        tissue_proteins <- gsub("^and\\s+", "", tissue_proteins, ignore.case = TRUE)
+        tissue_proteins <- trimws(tissue_proteins)
+        tissue_proteins <- tissue_proteins[tissue_proteins != ""]
+
+        for (p in tissue_proteins) {
+          proteins_list[[length(proteins_list) + 1]] <- list(name = p, sample_type = "Tissue")
+        }
+      }
+    }
+
+    # Extract Plasma-based proteins
+    if (has_plasma) {
+      plasma_match <- regmatches(markers_text, gregexpr("Plasma-based\\s*\\(([^)]+)\\)", markers_text, ignore.case = TRUE, perl = TRUE))[[1]]
+      if (length(plasma_match) > 0) {
+        plasma_proteins <- gsub(".*\\(([^)]+)\\).*", "\\1", plasma_match)
+        plasma_proteins <- unlist(strsplit(plasma_proteins, ",\\s*"))
+        plasma_proteins <- trimws(plasma_proteins)
+        plasma_proteins <- gsub("^and\\s+", "", plasma_proteins, ignore.case = TRUE)
+        plasma_proteins <- trimws(plasma_proteins)
+        plasma_proteins <- plasma_proteins[plasma_proteins != ""]
+
+        for (p in plasma_proteins) {
+          proteins_list[[length(proteins_list) + 1]] <- list(name = p, sample_type = "Plasma")
+        }
+      }
+    }
+
+    # Extract Urine-based proteins
+    if (has_urine) {
+      urine_match <- regmatches(markers_text, gregexpr("Urine-based\\s*\\(([^)]+)\\)", markers_text, ignore.case = TRUE, perl = TRUE))[[1]]
+      if (length(urine_match) > 0) {
+        urine_proteins <- gsub(".*\\(([^)]+)\\).*", "\\1", urine_match)
+        urine_proteins <- unlist(strsplit(urine_proteins, ",\\s*"))
+        urine_proteins <- trimws(urine_proteins)
+        urine_proteins <- gsub("^and\\s+", "", urine_proteins, ignore.case = TRUE)
+        urine_proteins <- trimws(urine_proteins)
+        urine_proteins <- urine_proteins[urine_proteins != ""]
+
+        for (p in urine_proteins) {
+          proteins_list[[length(proteins_list) + 1]] <- list(name = p, sample_type = "Urine")
+        }
+      }
+    }
+  } else {
+    # No sample type specified - parse normally
+    proteins <- unlist(strsplit(markers_text, ",\\s*"))
+    proteins <- trimws(proteins)
     proteins <- gsub("^and\\s+", "", proteins, ignore.case = TRUE)
     proteins <- trimws(proteins)
-
-    # Remove empty strings
     proteins <- proteins[proteins != ""]
 
-    all_proteins <- c(all_proteins, proteins)
+    for (p in proteins) {
+      proteins_list[[length(proteins_list) + 1]] <- list(name = p, sample_type = NA)
+    }
   }
+
+  return(proteins_list)
 }
 
-# Get unique proteins
-unique_proteins <- sort(unique(all_proteins))
+# Extract all proteins with their sample types
+all_protein_entries <- list()
+for (i in 1:nrow(protein_table)) {
+  markers <- protein_markers_col[i]
+  proteins_in_study <- parse_proteins_with_sample_type(markers, i)
+  all_protein_entries[[i]] <- proteins_in_study
+}
+
+# Create unique protein identifiers
+# Just use protein names without sample type suffix
+all_proteins_raw <- lapply(all_protein_entries, function(study) {
+  sapply(study, function(p) p$name)
+}) %>% unlist()
+
+# Capitalize first letter of each protein name
+# capitalize_first <- function(x) {
+#   if (is.na(x) || x == "") return(x)
+#   # Handle special cases like "sE-Cadherin" - keep lowercase s
+#   # For most proteins, capitalize first letter
+#   paste0(toupper(substring(x, 1, 1)), substring(x, 2))
+# }
+
+#all_proteins_raw <- sapply(all_proteins_raw, capitalize_first)
+
+unique_proteins <- sort(unique(all_proteins_raw))
+
 cat("\n=== Protein Extraction Summary ===\n")
-cat(paste("Total unique proteins found:", length(unique_proteins), "\n"))
+cat(paste("Total unique proteins:", length(unique_proteins), "\n"))
 cat("\nFirst 20 proteins:\n")
 print(head(unique_proteins, 20))
 ```
@@ -157,24 +253,19 @@ protein_matrix <- matrix(0, nrow = length(unique_proteins), ncol = n_studies)
 rownames(protein_matrix) <- unique_proteins
 colnames(protein_matrix) <- 1:n_studies
 
-# Fill in the matrix
+# Fill in the matrix using the parsed protein entries
 for (i in 1:n_studies) {
-  markers <- protein_markers_col[i]
-  if (!is.na(markers)) {
-    # Split by comma
-    study_proteins <- unlist(strsplit(markers, ",\\s*"))
-    study_proteins <- trimws(study_proteins)
+  proteins_in_study <- all_protein_entries[[i]]
 
-    # Clean up protein names
-    study_proteins <- gsub("^and\\s+", "", study_proteins, ignore.case = TRUE)
-    study_proteins <- trimws(study_proteins)
-    study_proteins <- study_proteins[study_proteins != ""]
+  for (protein_entry in proteins_in_study) {
+    # Use just the protein name (no sample type suffix)
+    # Capitalize first letter to match unique_proteins
+    #protein_id <- capitalize_first(protein_entry$name)
+    protein_id <- protein_entry$name
 
-    # Mark proteins as present
-    for (protein in study_proteins) {
-      if (protein %in% unique_proteins) {
-        protein_matrix[protein, i] <- 1
-      }
+    # Mark protein as present in this study
+    if (protein_id %in% unique_proteins) {
+      protein_matrix[protein_id, i] <- 1
     }
   }
 }
@@ -187,26 +278,10 @@ protein_counts <- rowSums(protein_matrix)
 single_occurrence_proteins <- names(protein_counts)[protein_counts == 1]
 
 cat(paste("\nProteins appearing in only one study:", length(single_occurrence_proteins), "\n"))
+cat("Note: Keeping ALL proteins in the heatmap, including single-occurrence proteins\n")
 
-# Group single occurrence proteins
-if (length(single_occurrence_proteins) > 0) {
-  # Create a combined row for all single-occurrence proteins
-  other_proteins_row <- apply(protein_matrix[single_occurrence_proteins, , drop = FALSE], 2,
-                               function(x) as.integer(any(x == 1)))
-
-  # Remove individual proteins that are being grouped
-  proteins_to_keep <- setdiff(rownames(protein_matrix), single_occurrence_proteins)
-  protein_matrix <- protein_matrix[proteins_to_keep, , drop = FALSE]
-
-  # Add the grouped row
-  other_proteins_row_name <- "Other proteins"
-  protein_matrix <- rbind(protein_matrix, other_proteins_row)
-  rownames(protein_matrix)[nrow(protein_matrix)] <- other_proteins_row_name
-
-  cat(paste("Grouped", length(single_occurrence_proteins), "single-occurrence proteins into 'Other proteins'\n"))
-}
-
-cat(paste("\nUpdated matrix dimensions:", nrow(protein_matrix), "proteins x", ncol(protein_matrix), "studies\n"))
+# Do NOT group single occurrence proteins - keep them all
+cat(paste("\nFinal matrix dimensions:", nrow(protein_matrix), "proteins x", ncol(protein_matrix), "studies\n"))
 ```
 
 # Prepare data for visualization
@@ -231,11 +306,22 @@ plot_data <- data.frame(
   stringsAsFactors = FALSE
 )
 
-# Filter proteins appearing in at least 2 studies
-plot_data <- plot_data[plot_data$Count >= 2, ]
+# Keep ALL proteins (including single occurrence)
+# Order by percentage (descending), but move "Other proteins" to the bottom
 
-# Order by percentage (descending)
-plot_data <- plot_data[order(-plot_data$Percentage), ]
+# Separate "Other proteins" from the rest
+other_proteins_rows <- plot_data[grepl("^Other", plot_data$Protein, ignore.case = TRUE), ]
+regular_proteins <- plot_data[!grepl("^Other", plot_data$Protein, ignore.case = TRUE), ]
+
+# Order regular proteins by percentage (descending)
+regular_proteins <- regular_proteins[order(-regular_proteins$Percentage), ]
+
+# Combine: regular proteins first, then "Other proteins" at the bottom
+if (nrow(other_proteins_rows) > 0) {
+  plot_data <- rbind(regular_proteins, other_proteins_rows)
+} else {
+  plot_data <- regular_proteins
+}
 
 # Reorder protein factor levels for plotting
 plot_data$Protein <- factor(plot_data$Protein, levels = plot_data$Protein)
@@ -244,12 +330,14 @@ cat("\n=== Plotting Data Summary ===\n")
 cat(paste("Number of proteins to plot:", nrow(plot_data), "\n"))
 cat("\nTop 10 proteins by frequency:\n")
 print(head(plot_data, 10))
+cat("\nBottom 5 proteins:\n")
+print(tail(plot_data, 5))
 ```
 
 # Create matrix for ComplexHeatmap
 
 ```{r}
-# Get proteins that appear in at least 2 studies
+# Get all proteins (including single occurrence)
 proteins_to_include <- plot_data$Protein
 
 # Create a character matrix to store study type information
@@ -290,8 +378,19 @@ protein_order_df <- data.frame(
   stringsAsFactors = FALSE
 )
 
-# Sort by Frequency (descending)
-protein_order_df <- protein_order_df[order(-protein_order_df$Frequency), ]
+# Separate "Other proteins" from the rest
+other_proteins_heatmap <- protein_order_df[grepl("^Other", protein_order_df$Protein, ignore.case = TRUE), ]
+regular_proteins_heatmap <- protein_order_df[!grepl("^Other", protein_order_df$Protein, ignore.case = TRUE), ]
+
+# Sort regular proteins by Frequency (descending)
+regular_proteins_heatmap <- regular_proteins_heatmap[order(-regular_proteins_heatmap$Frequency), ]
+
+# Combine: regular proteins first, then "Other proteins" at the bottom
+if (nrow(other_proteins_heatmap) > 0) {
+  protein_order_df <- rbind(regular_proteins_heatmap, other_proteins_heatmap)
+} else {
+  protein_order_df <- regular_proteins_heatmap
+}
 
 # Reorder heatmap_matrix rows
 heatmap_matrix <- heatmap_matrix[protein_order_df$Protein, ]
@@ -318,10 +417,11 @@ col_order_df <- data.frame(
 # Clean up sample type values
 col_order_df$SampleType <- trimws(col_order_df$SampleType)
 
-# Classify each study as Plasma, Tissue, or Urine
+# Classify each study as Plasma, Tissue, or Urine (primary category)
 col_order_df$SampleCategory <- sapply(col_order_df$SampleType, function(x) {
   if (is.na(x)) return("Unknown")
   x_lower <- tolower(x)
+  # Priority order: Plasma > Tissue > Urine
   if (grepl("plasma", x_lower)) return("Plasma")
   else if (grepl("tissue", x_lower)) return("Tissue")
   else if (grepl("urine", x_lower)) return("Urine")
@@ -332,11 +432,68 @@ col_order_df$SampleCategory <- sapply(col_order_df$SampleType, function(x) {
 cat("\n=== Sample Category Distribution ===\n")
 print(table(col_order_df$SampleCategory))
 
-# Sort by sample category, then by study type
-col_order_df <- col_order_df[order(col_order_df$SampleCategory, col_order_df$StudyType), ]
+# Create scoring system for ordering columns
+# Order by: 1) Sample type (Plasma, Tissue, Urine), 2) PSA presence, 3) ALP presence, 4) Hb presence
+
+# Function to create protein presence score
+create_protein_score <- function(protein_name, protein_matrix, study_type) {
+  score <- numeric(ncol(protein_matrix))
+
+  if (protein_name %in% rownames(protein_matrix)) {
+    for (i in 1:length(score)) {
+      if (protein_matrix[protein_name, i] == 1) {
+        score[i] <- 1
+      }
+    }
+  }
+
+  return(score)
+}
+
+# Add scores for PSA, ALP, and Hb
+col_order_df$PSA_score <- create_protein_score("PSA", protein_matrix, study_type)
+col_order_df$ALP_score <- create_protein_score("ALP", protein_matrix, study_type)
+col_order_df$Hb_score <- create_protein_score("Hb", protein_matrix, study_type)
+
+# Add flag for studies with multiple sample types (like study 66 with Tissue + Urine)
+col_order_df$MultiSampleType <- FALSE
+for (i in 1:nrow(col_order_df)) {
+  study_idx <- col_order_df$StudyIndex[i]
+  proteins_in_study <- all_protein_entries[[study_idx]]
+  sample_types_in_study <- unique(sapply(proteins_in_study, function(p) p$sample_type))
+  sample_types_in_study <- sample_types_in_study[!is.na(sample_types_in_study)]
+
+  # Mark as multi-sample if it has more than one sample type
+  if (length(sample_types_in_study) > 1) {
+    col_order_df$MultiSampleType[i] <- TRUE
+  }
+}
+
+# Define sample category order (Plasma first, then Tissue, then Urine)
+sample_category_order <- c("Plasma", "Tissue", "Urine", "Other", "Unknown")
+col_order_df$SampleCategory <- factor(col_order_df$SampleCategory, levels = sample_category_order)
+
+# Sort by: Sample category, then MultiSampleType (FALSE first, TRUE last to push multi-sample studies to end),
+# then PSA (desc), then ALP (desc), then Hb (desc)
+col_order_df <- col_order_df[order(col_order_df$SampleCategory,
+                                     col_order_df$MultiSampleType,
+                                     -col_order_df$PSA_score,
+                                     -col_order_df$ALP_score,
+                                     -col_order_df$Hb_score), ]
 
 # Get the column order indices
 column_order <- col_order_df$StudyIndex
+
+cat("\n=== Column Ordering Summary ===\n")
+cat("Ordered by:\n")
+cat("  1. Sample type (Plasma > Tissue > Urine)\n")
+cat("  2. Multi-sample studies placed at END of their category\n")
+cat("  3. Within category: PSA, ALP, Hb presence\n")
+cat(paste("\nStudies with multiple sample types:", sum(col_order_df$MultiSampleType), "\n"))
+cat("\nFirst 15 studies in new order:\n")
+print(head(col_order_df[, c("StudyIndex", "SampleCategory", "MultiSampleType", "PSA_score", "ALP_score", "Hb_score")], 15))
+cat("\nLast 5 studies in new order:\n")
+print(tail(col_order_df[, c("StudyIndex", "SampleCategory", "MultiSampleType", "PSA_score", "ALP_score", "Hb_score")], 5))
 
 # Reorder heatmap_matrix columns
 heatmap_matrix_ordered <- heatmap_matrix[, column_order]
@@ -350,10 +507,6 @@ study_mapping <- data.frame(
 
 # Rename columns to new sequential numbers
 colnames(heatmap_matrix_ordered) <- as.character(1:ncol(heatmap_matrix_ordered))
-
-cat("\n=== Column Ordering Summary ===\n")
-cat("First 10 studies in new order:\n")
-print(head(col_order_df[, c("StudyIndex", "StudyType", "SampleCategory")], 10))
 ```
 
 # Define color functions for heatmap
@@ -410,12 +563,45 @@ print(names(alter_fun_list))
 
 ```{r}
 # Reorder sample type data to match column ordering
-sample_types_ordered <- col_order_df$SampleCategory
+# Need to check each study for multiple sample types based on the parsed protein entries
+sample_types_reordered <- col_order_df$SampleType[match(column_order, col_order_df$StudyIndex)]
 
-# Create binary vectors for each sample type
-plasma_vec <- ifelse(sample_types_ordered == "Plasma", 1, 0)
-tissue_vec <- ifelse(sample_types_ordered == "Tissue", 1, 0)
-urine_vec <- ifelse(sample_types_ordered == "Urine", 1, 0)
+# Create binary vectors based on actual proteins parsed (not just the summary column)
+# This will properly handle studies like #66 that have both Tissue and Urine
+plasma_vec <- rep("no", length(column_order))
+tissue_vec <- rep("no", length(column_order))
+urine_vec <- rep("no", length(column_order))
+
+for (i in 1:length(column_order)) {
+  original_study_idx <- column_order[i]
+  proteins_in_study <- all_protein_entries[[original_study_idx]]
+
+  # Check what sample types are present in this study
+  sample_types_in_study <- unique(sapply(proteins_in_study, function(p) p$sample_type))
+  sample_types_in_study <- sample_types_in_study[!is.na(sample_types_in_study)]
+
+  # If no specific sample types found, fall back to the summary column
+  if (length(sample_types_in_study) == 0) {
+    sample_type_text <- sample_types_reordered[i]
+    if (!is.na(sample_type_text)) {
+      sample_type_lower <- tolower(sample_type_text)
+      if (grepl("plasma", sample_type_lower)) plasma_vec[i] <- "yes"
+      if (grepl("tissue", sample_type_lower)) tissue_vec[i] <- "yes"
+      if (grepl("urine", sample_type_lower)) urine_vec[i] <- "yes"
+    }
+  } else {
+    # Mark based on parsed sample types
+    if ("Plasma" %in% sample_types_in_study) plasma_vec[i] <- "yes"
+    if ("Tissue" %in% sample_types_in_study) tissue_vec[i] <- "yes"
+    if ("Urine" %in% sample_types_in_study) urine_vec[i] <- "yes"
+  }
+}
+
+cat("\n=== Sample Type Annotation Summary ===\n")
+cat(paste("Studies with Plasma:", sum(plasma_vec == "yes"), "\n"))
+cat(paste("Studies with Tissue:", sum(tissue_vec == "yes"), "\n"))
+cat(paste("Studies with Urine:", sum(urine_vec == "yes"), "\n"))
+cat(paste("Studies with multiple sample types:", sum((plasma_vec == "yes") + (tissue_vec == "yes") + (urine_vec == "yes") > 1), "\n"))
 
 # Define colors for sample type annotations
 sample_type_colors <- c(
@@ -427,15 +613,15 @@ sample_type_colors <- c(
 # Create column annotation showing sample types
 column_ha <- HeatmapAnnotation(
   Plasma = anno_simple(plasma_vec,
-                       col = c("0" = "white", "1" = sample_type_colors["Plasma"]),
+                       col = c("no" = "white", "yes" = "#377EB8"),
                        height = unit(5, "mm"),
                        border = TRUE),
   Tissue = anno_simple(tissue_vec,
-                       col = c("0" = "white", "1" = sample_type_colors["Tissue"]),
+                       col = c("no" = "white", "yes" = "#4DAF4A"),
                        height = unit(5, "mm"),
                        border = TRUE),
   Urine = anno_simple(urine_vec,
-                      col = c("0" = "white", "1" = sample_type_colors["Urine"]),
+                      col = c("no" = "white", "yes" = "#FF7F00"),
                       height = unit(5, "mm"),
                       border = TRUE),
   annotation_name_side = "left",
@@ -443,13 +629,11 @@ column_ha <- HeatmapAnnotation(
 )
 
 cat("\n=== Column Annotations Created ===\n")
-cat("Sample type distribution in ordered matrix:\n")
-print(table(sample_types_ordered))
 ```
 
 # Create the OncoPrint-style plot
 
-```{r, fig.width=16, fig.height=12}
+```{r, fig.width=16, fig.height=12, eval=TRUE}
 # Calculate protein frequency percentage
 protein_freq <- rowSums(protein_matrix[rownames(heatmap_matrix_ordered), ] > 0)
 protein_pct <- round((protein_freq / ncol(protein_matrix)) * 100, 1)
@@ -466,7 +650,40 @@ row_ha_right <- rowAnnotation(
                                 width = unit(3, "cm"))
 )
 
-# Create the oncoPrint
+# Calculate column split positions to add gaps between sample types
+# Find where Plasma ends and Tissue starts, and where Tissue ends and Urine starts
+sample_categories_ordered <- col_order_df$SampleCategory
+
+# Find the last position of each category
+plasma_end <- max(which(sample_categories_ordered == "Plasma"))
+tissue_end <- max(which(sample_categories_ordered == "Tissue"))
+
+# Create column splits vector
+column_splits <- rep("Other", ncol(heatmap_matrix_ordered))
+column_splits[1:plasma_end] <- "Plasma"
+if (tissue_end > plasma_end) {
+  column_splits[(plasma_end + 1):tissue_end] <- "Tissue"
+}
+if (tissue_end < ncol(heatmap_matrix_ordered)) {
+  # Check if there are Urine samples
+  urine_exists <- any(sample_categories_ordered == "Urine")
+  if (urine_exists) {
+    urine_start <- min(which(sample_categories_ordered == "Urine"))
+    urine_end <- max(which(sample_categories_ordered == "Urine"))
+    column_splits[urine_start:urine_end] <- "Urine"
+  }
+}
+
+cat("\n=== Column Split Summary ===\n")
+cat(paste("Plasma studies: 1 -", plasma_end, "\n"))
+cat(paste("Tissue studies:", plasma_end + 1, "-", tissue_end, "\n"))
+if (any(sample_categories_ordered == "Urine")) {
+  urine_start <- min(which(sample_categories_ordered == "Urine"))
+  urine_end <- max(which(sample_categories_ordered == "Urine"))
+  cat(paste("Urine studies:", urine_start, "-", urine_end, "\n"))
+}
+
+# Create the oncoPrint with column splits and bigger gaps
 onco_plot <- oncoPrint(heatmap_matrix_ordered,
           alter_fun = alter_fun_list,
           col = col,
@@ -479,6 +696,8 @@ onco_plot <- oncoPrint(heatmap_matrix_ordered,
           right_annotation = row_ha_right,
           row_order = 1:nrow(heatmap_matrix_ordered),
           column_order = 1:ncol(heatmap_matrix_ordered),
+          column_split = column_splits,
+          column_gap = unit(5, "mm"),
           top_annotation = column_ha)
 
 print(onco_plot)
@@ -512,20 +731,161 @@ write_xlsx(study_mapping,
 cat(paste("Study mapping saved to:", file.path(wd$outData, "Protein_Study_Number_Mapping.xlsx"), "\n"))
 
 # Save plots as PDF
-pdf(file.path(wd$out, "Protein_Biomarker_OncoPrint.pdf"),
-    width = 16, height = 12)
+pdf(file.path(wd$outCurr, "Protein_Biomarker_OncoPrint.pdf"),
+    width = 16, height = 18)
 print(onco_plot)
 dev.off()
 
 # Save as PNG
-png(file.path(wd$out, "Protein_Biomarker_OncoPrint.png"),
+png(file.path(wd$outCurr, "Protein_Biomarker_OncoPrint.png"),
     width = 16, height = 12, units = "in", res = 300)
 print(onco_plot)
 dev.off()
 
 cat("\n=== Plots saved successfully ===\n")
-cat(paste("PDF:", file.path(wd$out, "Protein_Biomarker_OncoPrint.pdf"), "\n"))
-cat(paste("PNG:", file.path(wd$out, "Protein_Biomarker_OncoPrint.png"), "\n"))
+cat(paste("PDF:", file.path(wd$outCurr, "Protein_Biomarker_OncoPrint.pdf"), "\n"))
+cat(paste("PNG:", file.path(wd$outCurr, "Protein_Biomarker_OncoPrint.png"), "\n"))
+```
+
+# Simple Binary Heatmap (Presence/Absence)
+
+This section creates a simpler heatmap showing only protein presence (black) vs absence (white), without distinguishing between prognostic and predictive studies.
+
+```{r, fig.width=16, fig.height=12}
+# Use the ordered protein matrix (same ordering as OncoPrint)
+binary_matrix <- protein_matrix[rownames(heatmap_matrix_ordered), column_order]
+
+# Rename columns to match new study numbers
+colnames(binary_matrix) <- as.character(1:ncol(binary_matrix))
+
+# Convert to numeric matrix (0 = white/absent, 1 = black/present)
+binary_matrix_numeric <- apply(binary_matrix, c(1, 2), as.numeric)
+
+# Recalculate protein frequency for row annotation
+protein_freq_binary <- rowSums(binary_matrix_numeric)
+protein_pct_binary <- round((protein_freq_binary / ncol(binary_matrix_numeric)) * 100, 1)
+
+# Create row annotation with barplot for RIGHT side
+row_ha_binary_right <- rowAnnotation(
+  `Frequency %` = anno_barplot(protein_pct_binary,
+                                gp = gpar(fill = "grey50"),
+                                border = FALSE,
+                                bar_width = 0.8,
+                                axis_param = list(side = "top",
+                                                  labels_rot = 0,
+                                                  gp = gpar(fontsize = 8)),
+                                width = unit(3, "cm"))
+)
+
+# Create row annotation with text for LEFT side (just the percentage numbers)
+# Use anno_empty with custom drawing function
+row_ha_binary_left <- rowAnnotation(
+  `Freq %` = anno_empty(border = FALSE, width = unit(2.5, "cm")),
+  annotation_name_side = "top",
+  annotation_name_gp = gpar(fontsize = 8)
+)
+
+# Draw the text using decorate_annotation
+# This will be done after drawing the heatmap
+
+# Use the same column annotations and column splits as before (Plasma, Tissue, Urine)
+# Create simple binary heatmap with ComplexHeatmap and bigger gaps
+simple_heatmap <- Heatmap(
+  binary_matrix_numeric,
+  name = "Protein",
+  col = c("0" = "white", "1" = "firebrick3"),
+
+  # Column settings
+  column_title = "Protein Biomarkers by Study (Simple Binary)",
+  show_column_names = TRUE,
+  column_names_gp = gpar(fontsize = 6),
+  cluster_columns = FALSE,
+  column_order = 1:ncol(binary_matrix_numeric),
+  column_split = column_splits,
+  column_gap = unit(5, "mm"),
+  top_annotation = column_ha,
+
+  # Row settings
+  show_row_names = TRUE,
+  row_names_gp = gpar(fontsize = 8),
+  row_names_side = "right",
+  cluster_rows = FALSE,
+  row_order = 1:nrow(binary_matrix_numeric),
+  left_annotation = row_ha_binary_left,
+  right_annotation = row_ha_binary_right,
+
+  # Heatmap settings
+  rect_gp = gpar(col = "grey90", lwd = 0.5),
+  border = TRUE,
+
+  # Legend settings
+  show_heatmap_legend = TRUE,
+  heatmap_legend_param = list(
+    title = "Protein Status",
+    at = c(0, 1),
+    labels = c("Absent", "Present"),
+    legend_gp = gpar(fill = c("white", "black"))
+  )
+)
+
+# Draw the heatmap
+draw(simple_heatmap)
+
+# Add percentage text to the left annotation
+decorate_annotation("Freq %", {
+  n = length(protein_pct_binary)
+  for(i in 1:n) {
+    grid.text(sprintf("%.0f%%", protein_pct_binary[i]),
+              x = unit(0.9, "npc"),
+              y = unit(1 - (i - 0.5)/n, "npc"),
+              gp = gpar(fontsize = 7),
+              just = "right")
+  }
+})
+
+cat("\n=== Simple Binary Heatmap Created Successfully ===\n")
+```
+
+# Save Simple Binary Heatmap
+
+```{r}
+# Save as PDF
+pdf(file.path(wd$outCurr, "Protein_Biomarker_Simple_Heatmap.pdf"),
+    width = 16, height = 30)
+draw(simple_heatmap)
+# Add percentage text to the left annotation
+decorate_annotation("Freq %", {
+  n = length(protein_pct_binary)
+  for(i in 1:n) {
+    grid.text(sprintf("%.0f%%", protein_pct_binary[i]),
+              x = unit(0.9, "npc"),
+              y = unit(1 - (i - 0.5)/n, "npc"),
+              gp = gpar(fontsize = 7),
+              just = "right")
+  }
+})
+dev.off()
+
+# Save as PNG
+png(file.path(wd$outCurr, "Protein_Biomarker_Simple_Heatmap.png"),
+    width = 16, height = 18, units = "in", res = 300)
+draw(simple_heatmap)
+# Add percentage text to the left annotation
+decorate_annotation("Freq %", {
+  n = length(protein_pct_binary)
+  for(i in 1:n) {
+    grid.text(sprintf("%.0f%%", protein_pct_binary[i]),
+              x = unit(0.9, "npc"),
+              y = unit(1 - (i - 0.5)/n, "npc"),
+              gp = gpar(fontsize = 7),
+              just = "right")
+  }
+})
+dev.off()
+
+cat("\n=== Simple heatmap saved successfully ===\n")
+cat(paste("PDF:", file.path(wd$outCurr, "Protein_Biomarker_Simple_Heatmap.pdf"), "\n"))
+cat(paste("PNG:", file.path(wd$outCurr, "Protein_Biomarker_Simple_Heatmap.png"), "\n"))
 ```
 
 # Session Info

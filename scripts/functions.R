@@ -48,11 +48,31 @@ pal.study <- df.pal.study$pal
 pal.cohort <- paletteer::paletteer_d("ggthemes::Tableau_10",10)
 pal.cohort <- (pal.cohort[c(2,1,3)])
 
-
+# Pre-treatment colors (A, B, C)
 pal.cohort.n <- c("#AEC7E8", "#FFBB78", "#98DF8A")
 pal.cohort.n2 <- c("#1f77b4", "#ff7f0e", "#2ca02c")
 pal.cond3 <- paletteer::paletteer_d("futurevisions::atomic_orange", 3)
 pal.txt_stat <- c("lightblue", "orange")
+
+
+
+# Pre-treatment colors (A, B, C)
+pal.cohort.n3 <- c(
+  "A_Pre" = "#AEC7E8",
+  "B_Pre" = "#FFBB78",
+  "C_Pre" = "#98DF8A"
+)
+
+
+# Post-treatment colors
+pal.cohort.n4 <- c(
+  "A_Post"  = "#1f77b4",
+  "B_Post"  = "#ff7f0e",
+  "C_Post"  = "#2ca02c",
+  "C_Post2" = "#0e340e"
+)
+
+pal.all <- c(pal.cohort.n3, pal.cohort.n4)
 
 
 

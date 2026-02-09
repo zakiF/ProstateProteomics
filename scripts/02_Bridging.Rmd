@@ -701,6 +701,61 @@ write.csv(protein_presence, file.path(wd$outCurr, "Protein_presence_table.csv"),
 
 > We filtered the samples and proteins. We will bridge the data using these proteins
 
+## Sample overlap
+
+Lets get a Venn diagram of the number of samples in each batch
+
+```{r}
+un_1 <- df_meta_f4 %>% filter(sample_id_psom %in% dat1_final$SampleID) %>% filter(Psomagen == "Y") %>% pull(HCI_cID)
+un_2 <- df_meta_f4 %>% filter(sample_id_Q13356 %in% dat2_final$SampleID) %>% filter(Q_13356 == "Y") %>% pull(HCI_cID)
+un_3 <- df_meta_f4 %>% filter(sample_id_Q15806 %in% dat3_final$SampleID) %>% filter(Q_15806 == "Y") %>% pull(HCI_cID)
+
+l_all <- list(
+  Psomagen = un_1,
+  Q_13356 = un_2,
+  Q_15806 = un_3
+)
+
+overlap <- calculate.overlap(
+x <- list("Psomagen"=un_1, 
+          "Q_13356"=un_2,
+          "Q_15806"=un_3))
+
+pdf(file=file.path(wd$outCurr, "Samples_venn_overlap_filtered.pdf"), width = 5, height = 5)
+ggvenn(
+  x, 
+  fill_color = pal.study,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+dev.off()
+
+un_1 <- df_meta_f4 %>% filter(sample_id_psom %in% dat1_final$SampleID) %>% filter(Psomagen == "Y") %>% pull(mrn)
+un_2 <- df_meta_f4 %>% filter(sample_id_Q13356 %in% dat2_final$SampleID) %>% filter(Q_13356 == "Y") %>% pull(mrn)
+un_3 <- df_meta_f4 %>% filter(sample_id_Q15806 %in% dat3_final$SampleID) %>% filter(Q_15806 == "Y") %>% pull(mrn)
+
+l_all <- list(
+  Psomagen = un_1,
+  Q_13356 = un_2,
+  Q_15806 = un_3
+)
+
+overlap <- calculate.overlap(
+x <- list("Psomagen"=un_1, 
+          "Q_13356"=un_2,
+          "Q_15806"=un_3))
+
+pdf(file=file.path(wd$outCurr, "Patient_venn_overlap_filtered.pdf"), width = 5, height = 5)
+ggvenn(
+  x, 
+  fill_color = pal.study,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+dev.off()
+```
+
+
 # Obj 2: Limma correction
 
 We explore limma to integrate these data
@@ -865,7 +920,10 @@ Vizualise the result before and after correlation
 pt_sz <- 2
 # PCA before
 # PCA before batch correction
-pca_before <- prcomp(t(m_all), scale. = TRUE)
+vars <- apply(m_all, 1, var, na.rm = TRUE)
+top_features <- names(sort(vars, decreasing = TRUE))[1:1000]
+m_top <- m_all[top_features, ]
+pca_before <- prcomp(t(m_top), scale. = TRUE)
 meta_data$PC1_before <- pca_before$x[,1]
 meta_data$PC2_before <- pca_before$x[,2]
 
@@ -1174,14 +1232,19 @@ Re-do PCA after batch correction
 
 ```{r}
 # PCA after batch correction
-pca_after <- prcomp(t(exprMatrix_corrected_sub), scale. = TRUE)
-df_pca <- pca_after$x %>% as.data.frame() %>% 
+mat_in <- exprMatrix_corrected_sub
+vars <- apply(mat_in, 1, var, na.rm = TRUE)
+top_features <- names(sort(vars, decreasing = TRUE))[1:1000]
+m_top <- mat_in[top_features, ]
+pca_after <- prcomp(t(m_top), scale. = TRUE)
+df_pca2 <- pca_after$x %>% as.data.frame() %>% 
   tibble::rownames_to_column(var = "SampleID") %>% 
   select(SampleID, PC1, PC2, PC3) %>% 
   rename(PC1_after = PC1,
          PC2_after = PC2,
          PC3_after = PC3) %>% 
   left_join(meta_data_sub)
+
 
 # Calculate variance explained
 pc_variances <- pca_after$sdev^2
@@ -1193,17 +1256,17 @@ pc1_variance <- percent_variance_explained[1]
 pc2_variance <- percent_variance_explained[2]
 
 # Create labels for plotting
-pc1_labe_a <- paste0("PC1 (", round(pc1_variance, 2), "%)")
-pc2_label_a <- paste0("PC2 (", round(pc2_variance, 2), "%)")
+pc1_labe_a2 <- paste0("PC1 (", round(pc1_variance, 2), "%)")
+pc2_label_a2 <- paste0("PC2 (", round(pc2_variance, 2), "%)")
 
 
 p2.1 <- 
-ggplot(df_pca, aes(x = PC1_after, y = PC2_after, color = Batch)) +
+ggplot(df_pca2, aes(x = PC1_after, y = PC2_after, color = Batch)) +
   geom_point(size = pt_sz) +
   labs(
     title = "PCA After Limma Batch Correction",
-    x = pc1_labe_a,
-    y = pc2_label_a) +
+    x = pc1_labe_a2,
+    y = pc2_label_a2) +
   theme_bw() +
   theme_custom +
   theme(legend.position = "bottom") +
@@ -1211,12 +1274,12 @@ ggplot(df_pca, aes(x = PC1_after, y = PC2_after, color = Batch)) +
   NULL
 
 p2.2 <- 
-ggplot(df_pca, aes(x = PC1_after, y = PC2_after, color = cohort)) +
+ggplot(df_pca2, aes(x = PC1_after, y = PC2_after, color = cohort)) +
   geom_point(size = pt_sz) +
   labs(
     title = "PCA After Limma Batch Correction",
-    x = pc1_labe_a,
-    y = pc2_label_a) +
+    x = pc1_labe_a2,
+    y = pc2_label_a2) +
   theme_bw() +
   theme_custom +
   theme(legend.position = "bottom") +
@@ -1231,6 +1294,8 @@ p_all <- p1.1 + p1.2 + p2.1 + p2.2 + plot_layout(ncol=2)
 p_all
 ggsave(filename=file.path(wd$outCurr, "PCA_beforeAfter.pdf"), device="pdf", width=9, height=8)
 ```
+## Batch assesment
+
 
 ## Keeping all proteins
 
@@ -1294,7 +1359,12 @@ expr_corrc_allGenes <- m_all_corrected_sub
 ```{r}
 # PCA after batch correction
 mat_in <- m_all_corrected_sub[complete.cases(m_all_corrected_sub), ]
-pca_after <- prcomp(t(mat_in), scale. = TRUE)
+
+# PCA before batch correction
+vars <- apply(mat_in, 1, var, na.rm = TRUE)
+top_features <- names(sort(vars, decreasing = TRUE))[1:1000]
+m_top <- mat_in[top_features, ]
+pca_after <- prcomp(t(m_top), scale. = TRUE)
 df_pca <- pca_after$x %>% as.data.frame() %>% 
   tibble::rownames_to_column(var = "SampleID") %>% 
   select(SampleID, PC1, PC2, PC3) %>% 
