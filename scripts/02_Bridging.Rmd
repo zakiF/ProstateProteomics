@@ -1782,3 +1782,25 @@ save(
   file = file.path(wd$outData, "02_data.Rdata"))
 ```
 
+
+Save a corrected matrix, renamed according to the HCI_cID
+
+```{r}
+mat_exp <- exp_mat_sub
+# Add letter to the sample name so R does not have potential errors
+meta_olink <- df_final_ids %>%
+  mutate(
+    HCI_cID = paste0("c", gsub("-", "_", HCI_cID))
+  )
+
+lookup <- meta_olink %>%
+  select(HCI_cID, final_sample_id) %>%
+  deframe()
+
+colnames(mat_exp) <- lookup[colnames(mat_exp)]
+
+saveRDS(mat_exp, file.path(wd$outData, "Olink_expMat.RDS"))
+saveRDS(meta_olink, file.path(wd$outData, "Olink_Meta.RDS"))
+```
+
+

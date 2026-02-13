@@ -48,8 +48,8 @@ library(survival)
 library(ggsurvfit)
 library(survminer)
 # Network analysis
-library(STRINGdb)
-library(igraph)
+#library(STRINGdb)
+#library(igraph)
 library(ggraph)
 library(RColorBrewer)
 # pathway analysis
@@ -130,9 +130,18 @@ We also have genes that are druggable from DrugBank https://go.drugbank.com/rele
 
 ```{r}
 # Downloaded the file from DrugBank
-df_target <- read.csv(file.path(wd$data, "DrugBank/drugbank_all_target_polypeptide_ids.csv/all.csv"))
+df_target <- read.csv(file.path(wd$data, "DrugBank/drugbank_all_target_polypeptide_ids.csv/pharmacologically_active.csv"))
 df_vocab <- read.csv(file.path(wd$data, "DrugBank/drugbank vocabulary.csv"))
 ```
+
+Manual addition of drug targets
+
+```{r}
+df_target_manual <- read.delim(file.path(wd$data, "Drug_review/protein_drug_associations.tsv"),
+                               sep = "\t", 
+                               stringsAsFactors = FALSE)
+```
+
 
 Set cut-offs
 
@@ -168,7 +177,7 @@ meta_c <- meta_c %>%
          OS = round(OS/30.417, digit=2),
          death = case_when(death_status == "n" ~ 0,
                            death_status == "y" ~ 1)) %>% 
-  select(HCI_cID, OS, death, psa, ldh, alk_phos)
+  select(HCI_cID, OS, death, psa, ldh, alk_phos, hemoGlo, alb)
 
 # Save this 
 meta_c_tmp <- meta_c %>% 
@@ -232,7 +241,10 @@ meta_in <- meta_pre2 %>%
   rename(sample_id = final_sample_id) %>%
   mutate(
     log10_psa = log10(psa + 0.1),  # Add small constant to avoid log10(0)
-    log10_alp = log10(alk_phos)
+    log10_alp = log10(alk_phos),
+    log10_ldh = log10(ldh),
+    log10_hemo = log10(hemoGlo),
+    log10_alb = log10(alb)
   )
 tmp_npx <- df_npx_long %>% rename(SampleID = final_sample_id)
 results <- analyze_proteins_highest(c_stage_pro, npx_in=tmp_npx, meta_in=meta_in)
@@ -319,19 +331,32 @@ First, let's examine the univariate associations of our clinical covariates with
 ```{r}
 # Univariate Cox regression for clinical variables
 # Using meta_c data frame with correct variable names
-clinical_vars <- c("psa", "ldh", "alk_phos")
+clinical_vars <- c("psa", "ldh", "alk_phos", "hemoGlo", "alb")
 clinical_results <- data.frame()
 
 # Create survival data from meta_c with log10-transformed clinical variables
 meta_c_surv <- meta_c %>%
+  filter(HCI_cID %in% meta_pre2$HCI_cID) %>% 
+  #filter(psa <= 100) %>% 
+  mutate(psa = case_when(psa >100 ~ NA,
+                         TRUE  ~ psa)) %>% 
   rename(time_to_death = OS, death_event = death) %>%
   mutate(
     log10_psa = log10(psa + 0.1),  # Add small constant to avoid log10(0)
-    log10_alp = log10(alk_phos)
+    log10_alp = log10(alk_phos),
+    log10_ldh = log10(ldh),
+    log10_hemo = log10(hemoGlo),
+    log10_alb = log10(alb)
   )
 
 # Test both raw and log-transformed variables (excluding problematic LDH)
-clinical_vars <- c("psa", "alk_phos", "log10_psa", "log10_alp")
+clinical_vars <- c("psa", "log10_psa", "alk_phos", "log10_alp",
+                   "ldh", "log10_ldh", "hemoGlo", "log10_hemo",
+                   "alb", "log10_alb")
+clinical_vars <- c("psa", "alk_phos",
+                   "ldh", "hemoGlo",
+                   "alb")
+
 
 for(var in clinical_vars) {
   if(var %in% colnames(meta_c_surv)) {
@@ -378,7 +403,13 @@ To simplify analysis on all proteins, we wrote a function.
 
 ```{r, warning=FALSE, message=FALSE}
 # Run function on multivariate analysis
-results <- analyze_proteins_multi(uni_sig, npx_in=tmp_npx, meta_in=meta_in)
+# Complete case of PSA, LDH and ALP
+complete_ids <- meta_c_surv %>%
+  filter(complete.cases(psa, ldh, alk_phos)) %>%
+  pull(HCI_cID)
+
+meta_in2 <- meta_in %>% filter(HCI_cID %in% complete_ids)
+results <- analyze_proteins_multi(uni_sig, npx_in=tmp_npx, meta_in=meta_in2)
 results <- left_join(results, df_id_pro)
 res_pre_multi <- results
 ```
@@ -505,18 +536,76 @@ res_all2 <- res_all2 %>%
 write.csv(res_all2, file.path(wd$outCurr, "HR_values_mCRPC_specific_multivariate_cell_surface.csv"))
 ```
 
+We include additional annotations of drug that was done through manual curations
+
+```{r}
+# Proteins that are drug target from manual curations
+dt_manual <- df_target_manual %>% filter(Drug_Association == "Yes") %>% pull (Protein)
+# Add a new column called is_Dx (is Drug Target) to indicate if records was noted
+res_all2 <- res_all2 %>% 
+  mutate(is_Dx = case_when(!is.na(DrugBank.ID) | Assay %in% dt_manual ~ "Yes",
+                           TRUE ~ "No"))
+
+write.csv(res_all2, file.path(wd$outCurr, "HR_values_mCRPC_specific_multivariate_cell_surface.csv"))
+```
+
+How many are drug associated
+
+```{r}
+res_all2 %>%
+  count(is_Dx, Multi_Sig) %>%
+  mutate(percent = n / sum(n) * 100)
+
+# Plot the pie chart
+# Create pie data from your table
+pie_data <- res_all2 %>%
+  count(is_Dx, Multi_Sig) %>%
+  mutate(
+    is_Dx = case_when(is_Dx == "No" ~ "Dx.No",
+                      is_Dx == "Yes" ~ "Dx.Yes"),
+    Multi_Sig = case_when(Multi_Sig == "No" ~ "Prg.No",
+                      Multi_Sig == "Yes" ~ "Prg.Yes"),
+    Category = paste(is_Dx, Multi_Sig, sep = " / "),
+    Category = factor(Category, levels=c("Dx.No / Prg.No", "Dx.Yes / Prg.No",
+                                         "Dx.No / Prg.Yes", "Dx.Yes / Prg.Yes")),
+    Percentage = round(n / sum(n) * 100, 1)
+  ) %>%
+  mutate(Label = paste0(Category, "\n", n, " (", Percentage, "%)"))
+
+# Pie chart
+p_pie <- ggplot(pie_data, aes(x = "", y = n, fill = Category)) +
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  coord_polar("y", start = 0) +
+  geom_text(aes(label = Label),
+            position = position_stack(vjust = 0.5),
+            size = 4, fontface = "bold") +
+  labs(title = "Distribution of is_Dx and Multi_Sig") +
+  theme_void() +
+  theme(legend.position = "none",
+        plot.title = element_text(size = 14, face = "bold", hjust = 0.5)) +
+  scale_fill_manual(values=c("#CBCBCB", "black", "#E7AB9C", "#C73E1D"))
+
+p_pie
+
+ggsave(file.path(wd$outCurr, "Drug_Pie.pdf"),
+         plot = p_pie, width = 5, height = 5)
+
+```
+
+
+
 ### Volcano plot v2
 
 Lets plot the data again, this time add shape to the proteins with drug target
 
 ```{r}
 df_plot <- res_all2 %>%
-  select(Assay, OlinkID, Multi_HR, Multi_FDR_num, DrugBank.ID, is_CS) %>% 
+  select(Assay, OlinkID, Multi_HR, Multi_FDR_num, is_Dx, is_CS) %>% 
   mutate(log2HR = log2(Multi_HR),
          negLogFDR = -log10(Multi_FDR_num),
          Sig = Multi_FDR_num < cut_fdr,
          Category = case_when(
-           Sig & !is.na(DrugBank.ID) ~ "Significant + Drug Target",
+           Sig & is_Dx == "Yes" ~ "Significant + Drug Target",
            Sig & is_CS == "Yes" ~ "Significant + Cell Surface", 
            Sig ~ "Significant",
            TRUE ~ "Non-significant"
@@ -565,7 +654,7 @@ p1.1 <- ggplot(df_plot, aes(x = log2HR, y = negLogFDR, color = ifelse(Sig, "Sign
     x = "log2(Multivariable Hazard Ratio)",
     y = "-log10(FDR)",
     title = "Multivariable HR Volcano Plot - mCRPC Overall Survival",
-    subtitle = "523 proteins adjusted for PSA, and ALP",
+    subtitle = "523 proteins adjusted for PSA, LDH and ALP",
     color = "Significance"
   ) +
   theme_custom +
@@ -615,9 +704,6 @@ hr_summary <- df_plot %>%
 write.csv(hr_summary, file.path(wd$outCurr, "All_523_proteins_summary.csv"), row.names = FALSE)
 print(hr_summary)
 ```
-### Viz as pie and bar chart
-
-
 
 
 ## Drug related proteins
@@ -626,7 +712,7 @@ print(hr_summary)
 
 Let's analyze the protein-protein interaction network among our drug-targetable proteins to identify potential combination therapy targets.
 
-```{r}
+```{r,eval=FALSE}
 # Get drug-targetable proteins that are significant
 drug_targets <- df_plot %>%
   filter(Sig == TRUE & !is.na(DrugBank.ID)) %>%
@@ -866,7 +952,7 @@ if(nrow(drug_target_mapped) >= 3) {
 
 This generates protein-protein network. 
 
-```{r}
+```{r,eval=FALSE}
 library(httr)
 library(jsonlite)
 library(igraph)
@@ -879,6 +965,8 @@ genes <- c("MSLN","CKB","CALCB","TNFRSF10B","COX5B","DHPS","NECTIN4",
            "DDAH1","IL4R","HMOX2","CIT","DDR1","L3HYPDH","TFF1",
            "RRM2","CRYM","CEACAM5","VEGFA")
 genes <- unique(drug_targets$Assay)
+
+
 
 
 all_ppi <- lapply(genes, function(g) {
@@ -997,7 +1085,7 @@ pp <- ggraph(tg, layout = "kk") +
   scale_color_manual(values = c("grey70", "tomato")) +
   theme_void()
 
-ggsave(file.path(wd$outCurr, "Drug_targets_BioGRRID.pdf"),
+ggsave(file.path(wd$outCurr, "Drug_targets_BioGRRID_zoom.pdf"),
        plot = pp, width = 14, height = 12)
 
 
@@ -1058,7 +1146,7 @@ ggsave(file.path(wd$outCurr, "Drug_targets_BioGRRID.pdf"),
 
 ### Drug Target Prioritization
 
-```{r}
+```{r,eval=FALSE}
 # Create comprehensive drug target summary
 drug_summary <- drug_targets %>%
   mutate(
@@ -1117,7 +1205,6 @@ write.csv(drug_summary,
 ```
 
 
-
 ## Multivariable Analysis: Independent Prognostic Value
 
 Now let's examine which proteins retain independent prognostic significance after controlling for established clinical variables.
@@ -1162,7 +1249,8 @@ topx_proteins <- res_all %>%
   filter(Multi_Sig == "Yes") %>%
   #arrange(Multi_FDR, desc(Multi_HR)) %>%
   arrange(desc(Multi_HR)) %>%
-  slice_head(n = 10) %>%
+  #slice_head(n = 10) %>%
+  dplyr::filter(Assay %in% c("SDC1", "GDF15", "FETUB")) %>% 
   select(OlinkID, Assay, Multi_HR, Multi_FDR)
 
 cat("=== Top 3 Proteins by Hazard Ratio ===\n")
@@ -1813,7 +1901,10 @@ top_cpps <- res_all2 %>%
   filter(Multi_Sig == "Yes") %>%
   #arrange(Multi_FDR, desc(Multi_HR)) %>%
   arrange(desc(Multi_HR)) %>%
-  slice_head(n = 10) 
+  #slice_head(n = 10) 
+  filter(Assay %in% c("SDC1", "EDF1", "CKAP4", "LMNB2", "LETM1", 
+           "COX5B", "HIP1R", "HMOX2", "DPY30", 
+           "WFDC2", "RCC1")) 
 
 # genes <- c("LMNB2", "COX5B", "SDC1", "CKAP4", "WFDC2", "HMOX2", "LETM1", "DFFA", "DPY30", "HIP1R", "RBP2", "SDHB")
 
@@ -1855,7 +1946,7 @@ top_cpps <- res_all2 %>%
 
 
 
-cat("=== Top 5 Proteins for CPPS Construction ===\n")
+cat("=== Proteins for CPPS Construction ===\n")
 print(top_cpps %>% select(Assay, Multi_HR, Multi_FDR))
 
 # Extract protein names for CPPS construction
@@ -1942,13 +2033,93 @@ cpps_fit <- survfit(Surv(time_to_death, death) ~ CPPS_risk, data = df_cpps)
 summary(cpps_fit)$table
 with(df_cpps, tapply(time_to_death, CPPS_risk, range, na.rm = TRUE))
 ```
+Plot the CPPS
+
+```{r}
+df_cpps_km <- df_cpps
+# Log-rank test for CPPS risk groups
+  cpps_survdiff <- survdiff(Surv(time_to_death, death) ~ CPPS_risk, data = df_cpps_km)
+  cpps_logrank_p <- 1 - pchisq(cpps_survdiff$chisq, length(cpps_survdiff$n) - 1)
+
+  cat("\nLog-rank Test:\n")
+  print(cpps_survdiff)
+  cat("Log-rank p-value:", formatC(cpps_logrank_p, format = "e", digits = 3), "\n")
+
+  # Fit Cox proportional hazards model
+  cpps_cox_km <- coxph(Surv(time_to_death, death) ~ CPPS_risk, data = df_cpps_km)
+  cpps_summary_km <- summary(cpps_cox_km)
+
+  # Extract HR and CI
+  hr_value <- cpps_summary_km$conf.int[1, "exp(coef)"]
+  hr_lower <- cpps_summary_km$conf.int[1, "lower .95"]
+  hr_upper <- cpps_summary_km$conf.int[1, "upper .95"]
+  hr_p <- cpps_summary_km$coefficients[1, "Pr(>|z|)"]
+
+  cat("\nCox Regression Results:\n")
+  cat("HR:", round(hr_value, 2), "[", round(hr_lower, 2), "-", round(hr_upper, 2), "]\n")
+  cat("P-value:", formatC(hr_p, format = "e", digits = 3), "\n")
+
+  # Kaplan-Meier analysis
+  cpps_survfit <- survfit(Surv(time_to_death, death) ~ CPPS_risk, data = df_cpps_km)
+
+  # Extract median survival times
+  cpps_medians <- summary(cpps_survfit)$table
+  cat("\nMedian Survival Times:\n")
+  print(cpps_medians)
+
+  # Create survival plot with HR in title
+  plot_title <- paste0("CPPS from 11 Proteins")
+
+  cpps_km_plot <- ggsurvplot(
+    fit = cpps_survfit,
+    data = df_cpps_km,
+    pval = TRUE,
+    conf.int = TRUE,
+    risk.table = TRUE,
+    risk.table.height = 0.3,
+    title = plot_title,
+    xlab = "Time to Death (months)",
+    ylab = "Overall Survival Probability",
+    palette = c("grey", "#e41a1c"),
+    legend.labs = c("Low Risk", "High Risk"),
+    break.time.by = 12,
+    ggtheme = theme_custom,
+    surv.median.line = "hv"
+  )
+
+  print(cpps_km_plot)
+
+  # Save the plot
+  pdf(file.path(wd$outCurr, paste0("CPPS_KM_survival with 11 prognostic", ".pdf")),
+      width = 10, height = 8)
+  print(cpps_km_plot)
+  dev.off()
+```
+
+Get the median survival and summary of risk score
+
+```{r}
+df_cpps_km %>%
+    dplyr::group_by(CPPS_risk) %>%
+    dplyr::summarise(
+        n = dplyr::n(),
+        min = min(time_to_death, na.rm = TRUE),
+        q1 = quantile(time_to_death, 0.25, na.rm = TRUE),
+        median = median(time_to_death, na.rm = TRUE),
+        mean = mean(time_to_death, na.rm = TRUE),
+        q3 = quantile(time_to_death, 0.75, na.rm = TRUE),
+        max = max(time_to_death, na.rm = TRUE),
+        sd = sd(time_to_death, na.rm = TRUE)
+    )
+```
+
 
 ### CPPS HR comparison
 
 
 ```{r}
 df_cpps_complete <- df_cpps %>% 
-  left_join(select(meta_in, log10_psa, log10_alp, sample_id) %>% rename(SampleID = sample_id))
+  left_join(select(meta_in, log10_psa, log10_alp, log10_ldh, sample_id) %>% rename(SampleID = sample_id))
 # Create forest plot data for top 10 proteins + clinical variables
 forest_data <- data.frame(
   Variable = c(top_cpps$Assay, "log10_psa", "log10_alp", "CPPS"),
@@ -2112,21 +2283,21 @@ for(n_proteins in protein_counts) {
   print(top_cpps_km %>% select(Assay, Multi_HR, Multi_FDR))
 
   # Calculate CPPS score for these proteins
-  df_pat_sum_km <- df_npx_long %>%
-    filter(OlinkID %in% top_cpps_km$OlinkID) %>%
-    select(final_sample_id, OlinkID, NPX) %>%
+    df_pat_sum_km <- df_npx_long %>%
+      filter(OlinkID %in% top_cpps_km$OlinkID) %>%
+      select(final_sample_id, OlinkID, NPX) %>%
     left_join(top_cpps_km) %>%
     group_by(final_sample_id) %>%
     mutate(RS = Multi_Coefficient * NPX,
            Sum_rs = sum(RS)) %>%
     select(final_sample_id, Sum_rs) %>%
-    distinct() %>%
-    rename(sample_id = final_sample_id) %>%
-    left_join(meta_in) %>%
-    select(sample_id, Sum_rs, death, OS) %>%
-    ungroup() %>%
-    rename(SampleID = sample_id,
-           CPPS = Sum_rs)
+      distinct() %>%
+      rename(sample_id = final_sample_id) %>%
+      left_join(meta_in) %>%
+      select(sample_id, Sum_rs, death, OS, log10_psa, log10_alp, log10_ldh) %>%
+      ungroup() %>%
+      rename(SampleID = sample_id,
+             CPPS = Sum_rs)
 
   # Merge CPPS scores with survival data
   df_cpps_km <- df_pat_sum_km %>%
@@ -2251,9 +2422,11 @@ comparison_results <- data.frame(
 for(n_proteins in protein_counts) {
   results <- km_plots_list[[paste0("Top_", n_proteins)]]
 
-  # Calculate C-index (concordance index) for discrimination using continuous CPPS
-  # Fit Cox model on continuous CPPS score for C-index calculation
-  cox_model_continuous <- coxph(Surv(time_to_death, death) ~ CPPS, data = results$data)
+  # Calculate C-index (concordance index) for discrimination using adjusted continuous CPPS
+  cox_model_continuous <- coxph(
+    Surv(time_to_death, death) ~ log10_psa + log10_alp + log10_ldh + CPPS,
+    data = results$data
+  )
 
   # Calculate C-index using concordance function
   cindex_obj <- concordance(cox_model_continuous)
@@ -2463,18 +2636,30 @@ for(n_proteins in protein_counts) {
       stringsAsFactors = FALSE
     )
 
-    # Add survival data
+    # Add survival + clinical data and restrict to complete-case cohort
     sim_df <- sim_df %>%
-      left_join(meta_in %>% select(sample_id, OS, death) %>% rename(SampleID = sample_id),
+      left_join(
+        meta_in %>%
+          select(sample_id, OS, death, log10_psa, log10_alp, log10_ldh) %>%
+          rename(SampleID = sample_id),
                 by = "SampleID") %>%
       rename(time_to_death = OS) %>%
-      filter(!is.na(time_to_death) & !is.na(death))
+      filter(
+        SampleID %in% df_cpps_complete$SampleID,
+        !is.na(time_to_death),
+        !is.na(death),
+        !is.na(log10_psa),
+        !is.na(log10_alp),
+        !is.na(log10_ldh)
+      )
 
     # Calculate C-index and HR
     if(nrow(sim_df) > 10 && sum(sim_df$death) > 2) {
-      # C-index using continuous risk_score
-      # Fit Cox model on continuous risk_score for C-index calculation
-      cox_model_continuous <- coxph(Surv(time_to_death, death) ~ risk_score, data = sim_df)
+      # C-index using clinically-adjusted continuous risk_score
+      cox_model_continuous <- coxph(
+        Surv(time_to_death, death) ~ log10_psa + log10_alp + log10_ldh + risk_score,
+        data = sim_df
+      )
 
       # Calculate C-index using concordance function
       cindex_obj <- concordance(cox_model_continuous)
@@ -2781,6 +2966,47 @@ p_combined <- ggplot() +
 
 print(p_combined)
 
+
+p_combined2 <- ggplot() +
+  # Add boxplots for simulation data
+  geom_boxplot(data = sim_data_plot, 
+               aes(x = x_pos, y = hr, group = n_proteins), 
+               alpha = 0.7, fill = "lightblue", width = 0.3) +
+  # Add quasirandom points for simulation data
+  geom_quasirandom(data = sim_data_plot, 
+                   aes(x = x_pos, y = hr), 
+                   alpha = 0.7, size = 1.5, color = "grey20", width = 0.15) +
+  # Add bars for CPPS data (positioned to the right of boxplots)
+  geom_col(data = cpps_data_plot, 
+           aes(x = x_pos, y = hr), 
+           fill = "darkblue", alpha = 0.8, width = 0.3) +
+  # Add reference lines
+  geom_hline(yintercept = 1, color = "black", linetype = "dotted") +
+  # Annotations for reference lines
+  annotate("text", x = 0.6, y = 1, 
+           label = "hr = 1", hjust = 0, vjust = -0.5, size = 3) +
+  # Add legend manually using rectangles and text
+  annotate("rect", xmin = 1.0, xmax = 1.2, ymin = 5.0, ymax = 5.3, 
+           fill = "lightblue", alpha = 0.7) +
+  annotate("text", x = 1.25, y = 5.15, 
+           label = "Random Non-prognostic", hjust = 0, size = 3) +
+  annotate("rect", xmin = 2.0, xmax = 2.2, ymin = 5.0, ymax = 5.3, 
+           fill = "darkblue", alpha = 0.8) +
+  annotate("text", x = 2.25, y = 5.15, 
+           label = "CPPS (Top Proteins)", hjust = 0, size = 3) +
+  # Labels and theme
+  labs(
+    title = "Simulation vs CPPS: Random Non-prognostic vs Top Prognostic Proteins",
+    x = "Number of Proteins",
+    y = "HR",
+    subtitle = "Boxplots show simulation results, bars show CPPS with top proteins"
+  ) +
+  scale_x_continuous(breaks = c(1, 2, 3, 4), labels = c("5", "10", "15", "20")) +
+  theme_minimal() +
+  theme_custom
+
+
+
 # Print comparison summary
 cat("\n=== CPPS vs Random Comparison Summary ===\n")
 print(comparison_data)
@@ -2790,6 +3016,7 @@ pdf(file.path(wd$outCurr, "Random_protein_simulation_results.pdf"), width = 12, 
 print(p_cindex)
 print(p_logrank)
 print(p_combined)
+print(p_combined2)
 dev.off()
 
 # Print summary table
@@ -2848,8 +3075,8 @@ p_combined_cindex <- ggplot(combined_plot_data, aes(x = factor(N_Proteins), y = 
   geom_hline(yintercept = 0.5, linetype = "dashed", color = "red", size = 0.5) +
   geom_text(aes(label = round(C_Index, 3)),
             position = position_dodge(width = 0.8), vjust = -0.5, size = 2.5) +
-  scale_fill_manual(values = c("CPPS (Top Prognostic)" = "steelblue",
-                                "Random (Non-prognostic)" = "lightcoral")) +
+  scale_fill_manual(values = c("CPPS (Top Prognostic)" = "lightcoral",
+                                "Random (Non-prognostic)" = "steelblue")) +
   theme_bw() +
   labs(title = "C-Index by Protein Count",
        subtitle = "Higher is better; error bars show SE; dashed line = random chance (0.5)",
@@ -2867,8 +3094,8 @@ p_combined_hr <- ggplot(combined_plot_data, aes(x = factor(N_Proteins), y = HR, 
   geom_hline(yintercept = 1, linetype = "dashed", color = "red", size = 0.5) +
   geom_text(aes(label = round(HR, 2)),
             position = position_dodge(width = 0.4), vjust = -1.5, size = 2.5) +
-  scale_color_manual(values = c("CPPS (Top Prognostic)" = "steelblue",
-                                 "Random (Non-prognostic)" = "lightcoral")) +
+  scale_color_manual(values = c("CPPS (Top Prognostic)" = "lightcoral",
+                                 "Random (Non-prognostic)" = "steelblue")) +
   theme_bw() +
   labs(title = "Hazard Ratio by Protein Count",
        subtitle = "Higher HR = better risk stratification; dashed line = HR of 1",
@@ -2884,8 +3111,8 @@ p_combined_pval <- ggplot(combined_plot_data, aes(x = factor(N_Proteins), y = -l
   geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red", size = 0.5) +
   geom_text(aes(label = sprintf("%.1e", Cox_P)),
             position = position_dodge(width = 0.8), vjust = -0.5, size = 2) +
-  scale_fill_manual(values = c("CPPS (Top Prognostic)" = "steelblue",
-                                "Random (Non-prognostic)" = "lightcoral")) +
+  scale_fill_manual(values = c("CPPS (Top Prognostic)" = "lightcoral",
+                                "Random (Non-prognostic)" = "steelblue")) +
   theme_bw() +
   labs(title = "-log10(P-value) by Protein Count",
        subtitle = "Higher is more significant; dashed line = p=0.05",
@@ -3012,7 +3239,7 @@ for(n_proteins in protein_counts) {
       title = random_plot_title,
       xlab = "Time to Death (months)",
       ylab = "Overall Survival Probability",
-      palette = c("grey", "lightcoral"),  # Different color to distinguish from CPPS
+      palette = c("grey", "steelblue"),  # Different color to distinguish from CPPS
       legend.labs = c("Low Risk", "High Risk"),
       break.time.by = 12,
       ggtheme = theme_custom,
@@ -3080,7 +3307,7 @@ Important
 
 ```{r}
 # Add clinical data to CPPS
-df_cpps <- df_cpps %>% left_join(meta_in %>% select(sample_id, log10_psa, log10_alp) %>% rename(SampleID = sample_id))
+df_cpps <- df_cpps %>% left_join(meta_in %>% select(sample_id, log10_psa, log10_alp, log10_ldh) %>% rename(SampleID = sample_id))
 # C-index (concordance index) for CPPS
 cpps_cindex <- rcorr.cens(df_cpps$CPPS, Surv(df_cpps$time_to_death, df_cpps$death))
 cat("=== CPPS Concordance Index ===\n")
@@ -3094,7 +3321,7 @@ cat("C-index (binary):", 1- cpps_cindex_binary[1], "\n")
 
 # Filter to patients with complete clinical data for fair comparison
 df_cpps_complete <- df_cpps %>%
-  filter(!is.na(log10_psa) & !is.na(log10_alp) & !is.na(CPPS) & !is.na(time_to_death) & !is.na(death))
+  filter(!is.na(log10_psa) & !is.na(log10_alp) & !is.na(log10_ldh) & !is.na(CPPS) & !is.na(time_to_death) & !is.na(death))
 
 cat("=== Sample Sizes ===\n")
 cat("Total patients:", nrow(df_cpps), "\n")
@@ -3103,11 +3330,11 @@ cat("Patients excluded due to missing data:", nrow(df_cpps) - nrow(df_cpps_compl
 
 # Fit all Cox models once using rms (for AUC, nomograms, etc.)
 library(rms)
-cox_model_clinical <- cph(Surv(time_to_death, death) ~ log10_psa + log10_alp, 
+cox_model_clinical <- cph(Surv(time_to_death, death) ~ log10_psa + log10_alp + log10_ldh, 
                          data = df_cpps_complete, x = TRUE, y = TRUE, surv = TRUE)
 cox_model_cpps_alone <- cph(Surv(time_to_death, death) ~ CPPS, 
                            data = df_cpps_complete, x = TRUE, y = TRUE, surv = TRUE)
-cox_model_cpps_combined <- cph(Surv(time_to_death, death) ~ log10_psa + log10_alp + CPPS, 
+cox_model_cpps_combined <- cph(Surv(time_to_death, death) ~ log10_psa + log10_alp + log10_ldh + CPPS, 
                               data = df_cpps_complete, x = TRUE, y = TRUE, surv = TRUE)
 
 # Also create standard coxph versions for compatibility with some functions
@@ -3357,11 +3584,11 @@ dd <- datadist(df_cpps_complete)
 options(datadist = "dd")
 
 # Refit models with datadist in place for nomograms
-cox_model_clinical_nom <- cph(Surv(time_to_death, death) ~ log10_psa + log10_alp, 
+cox_model_clinical_nom <- cph(Surv(time_to_death, death) ~ log10_psa + log10_alp + log10_ldh, 
                              data = df_cpps_complete, x = TRUE, y = TRUE, surv = TRUE)
 cox_model_cpps_alone_nom <- cph(Surv(time_to_death, death) ~ CPPS, 
                                data = df_cpps_complete, x = TRUE, y = TRUE, surv = TRUE)
-cox_model_cpps_combined_nom <- cph(Surv(time_to_death, death) ~ log10_psa + log10_alp + CPPS, 
+cox_model_cpps_combined_nom <- cph(Surv(time_to_death, death) ~ log10_psa + log10_alp + log10_ldh + CPPS, 
                                   data = df_cpps_complete, x = TRUE, y = TRUE, surv = TRUE)
 
 # Define survival probability function for nomograms
@@ -3545,5 +3772,475 @@ write.csv(nomogram_performance,
 
 ```
 
+# Obj 5: Iterations of the risk socre
+
+Here we want to asses the performance of the CPPS risk score in a few different iterations. perform the follwing
+
+- Top 10 proteins by HR
+- Top 10 proteins by FDR
+- Top 10 proteins by HR & FDR 
+- The 11 proteins of interest
+- Random 10 non-prognostic proteins
+
+For each we want to generate the cox-model and get the 24 and 36 month AUC. Also we want to generate the KM-plot from the resulting CPPS. 
+
+```{r}
+cat("=== Objective 5: CPPS iteration analysis ===\n")
+
+extract_auc_values <- function(roc_obj, eval_times) {
+  if (length(roc_obj$AUC) == length(eval_times) + 1) {
+    return(as.numeric(roc_obj$AUC[2:(length(eval_times) + 1)]))
+  }
+  as.numeric(roc_obj$AUC[1:length(eval_times)])
+}
+
+prep_protein_table <- function(df_in) {
+  df_in %>%
+    select(OlinkID, Assay, Multi_HR, Multi_FDR_num, Multi_Coefficient) %>%
+    filter(!is.na(OlinkID), !is.na(Multi_Coefficient)) %>%
+    distinct(OlinkID, .keep_all = TRUE)
+}
+
+build_cpps_from_proteins <- function(protein_df) {
+  df_npx_long %>%
+    filter(OlinkID %in% protein_df$OlinkID) %>%
+    select(final_sample_id, OlinkID, NPX) %>%
+    left_join(protein_df %>% select(OlinkID, Multi_Coefficient), by = "OlinkID") %>%
+    group_by(final_sample_id) %>%
+    summarise(CPPS = sum(Multi_Coefficient * NPX, na.rm = TRUE), .groups = "drop") %>%
+    rename(sample_id = final_sample_id) %>%
+    left_join(meta_in, by = "sample_id") %>%
+    transmute(
+      SampleID = sample_id,
+      CPPS = CPPS,
+      log10_psa = log10_psa,
+      log10_alp = log10_alp,
+      log10_ldh = log10_ldh,
+      time_to_death = OS,
+      death = death
+    ) %>%
+    filter(!is.na(CPPS), !is.na(time_to_death), !is.na(death))
+}
+
+run_cpps_iteration <- function(protein_df, iteration_name, file_stub, model_formula, eval_times = c(24, 36)) {
+  df_iter <- build_cpps_from_proteins(protein_df)
+  
+  # Use the same complete-case cohort as main AUC/Cox analysis
+  cox_ids <- intersect(df_iter$SampleID, df_cpps_complete$SampleID)
+  df_iter_cox <- df_iter %>% filter(SampleID %in% cox_ids)
+
+  cpps_cut <- median(df_iter$CPPS, na.rm = TRUE)
+  df_iter <- df_iter %>%
+    mutate(
+      CPPS_risk = ifelse(CPPS >= cpps_cut, "High", "Low"),
+      CPPS_risk = factor(CPPS_risk, levels = c("Low", "High"))
+    )
+  cpps_cut_cox <- median(df_iter_cox$CPPS, na.rm = TRUE)
+  df_iter_cox <- df_iter_cox %>%
+    mutate(
+      CPPS_risk = ifelse(CPPS >= cpps_cut_cox, "High", "Low"),
+      CPPS_risk = factor(CPPS_risk, levels = c("Low", "High"))
+    )
+
+  cox_cont <- coxph(model_formula, data = df_iter_cox)
+  cox_bin <- coxph(Surv(time_to_death, death) ~ CPPS_risk, data = df_iter_cox)
+  lp_cont <- predict(cox_cont, type = "lp")
+
+  roc_iter <- timeROC(
+    T = df_iter_cox$time_to_death,
+    delta = df_iter_cox$death,
+    marker = lp_cont,
+    cause = 1,
+    times = eval_times,
+    iid = TRUE
+  )
+  # Match AUC extraction logic used in the main AUC section
+  if (length(roc_iter$AUC) == length(eval_times) + 1) {
+    auc_iter_results <- data.frame(
+      Time_Months = eval_times,
+      AUC_CPPS_Iter = round(roc_iter$AUC[2:(length(eval_times) + 1)], 3)
+    )
+  } else {
+    auc_iter_results <- data.frame(
+      Time_Months = eval_times,
+      AUC_CPPS_Iter = round(roc_iter$AUC[1:length(eval_times)], 3)
+    )
+  }
+  auc_vals <- auc_iter_results$AUC_CPPS_Iter
+
+  km_fit <- survfit(Surv(time_to_death, death) ~ CPPS_risk, data = df_iter)
+  km_table <- summary(km_fit)$table
+  median_low <- NA_real_
+  median_high <- NA_real_
+  if (!is.null(dim(km_table))) {
+    if ("CPPS_risk=Low" %in% rownames(km_table)) {
+      median_low <- as.numeric(km_table["CPPS_risk=Low", "median"])
+    }
+    if ("CPPS_risk=High" %in% rownames(km_table)) {
+      median_high <- as.numeric(km_table["CPPS_risk=High", "median"])
+    }
+  }
+  fmt_median <- function(x) ifelse(is.na(x), "NR", sprintf("%.2f", x))
+  km_title <- paste0(
+    iteration_name, " (", nrow(protein_df), " proteins)\n",
+    "Median OS (months): Low=", fmt_median(median_low),
+    " | High=", fmt_median(median_high)
+  )
+  km_plot <- ggsurvplot(
+    fit = km_fit,
+    data = df_iter,
+    pval = TRUE,
+    conf.int = TRUE,
+    risk.table = TRUE,
+    risk.table.height = 0.3,
+    title = km_title,
+    xlab = "Time to Death (months)",
+    ylab = "Overall Survival Probability",
+    palette = c("grey", "#e41a1c"),
+    legend.labs = c("Low Risk", "High Risk"),
+    break.time.by = 12,
+    ggtheme = theme_custom,
+    surv.median.line = "hv"
+  )
+
+  # KM plot is written to the currently open PDF device (opened per model mode)
+  print(km_plot)
+
+  cont_summary <- summary(cox_cont)
+  bin_summary <- summary(cox_bin)
+
+  data.frame(
+    Iteration = iteration_name,
+    N_Proteins = nrow(protein_df),
+    Proteins = paste(protein_df$Assay, collapse = ", "),
+    N_Patients = nrow(df_iter),
+    N_Patients_Cox_AUC = nrow(df_iter_cox),
+    Events = sum(df_iter$death),
+    Events_Cox_AUC = sum(df_iter_cox$death),
+    HR_Continuous_CPPS = cont_summary$conf.int[1, "exp(coef)"],
+    HR_Continuous_Lower95 = cont_summary$conf.int[1, "lower .95"],
+    HR_Continuous_Upper95 = cont_summary$conf.int[1, "upper .95"],
+    P_Continuous_CPPS = cont_summary$coefficients[1, "Pr(>|z|)"],
+    HR_High_vs_Low = bin_summary$conf.int[1, "exp(coef)"],
+    HR_High_vs_Low_Lower95 = bin_summary$conf.int[1, "lower .95"],
+    HR_High_vs_Low_Upper95 = bin_summary$conf.int[1, "upper .95"],
+    P_High_vs_Low = bin_summary$coefficients[1, "Pr(>|z|)"],
+    AUC_24m = auc_vals[1],
+    AUC_36m = auc_vals[2],
+    stringsAsFactors = FALSE
+  )
+}
+
+# Define iteration protein sets
+sig_tbl <- res_all2 %>%
+  filter(Multi_Sig == "Yes") %>%
+  prep_protein_table()
+
+top10_hr <- sig_tbl %>%
+  arrange(desc(Multi_HR), Multi_FDR_num) %>%
+  slice_head(n = 10)
+
+top10_fdr <- sig_tbl %>%
+  arrange(Multi_FDR_num, desc(Multi_FDR_num)) %>%
+  slice_head(n = 10)
+
+top10_hr_fdr <- sig_tbl %>%
+  mutate(
+    rank_combined = -log10(Multi_FDR_num) * abs(log(pmax(Multi_HR, 1e-10)))
+  ) %>%
+  arrange(rank_combined) %>%
+  slice_head(n = 10) %>%
+  select(-rank_combined)
+
+proteins_11_interest <- if (exists("top_cpps") && nrow(top_cpps) >= 11) {
+  top_cpps %>% prep_protein_table()
+} else {
+  res_all2 %>%
+    filter(Assay %in% c("SDC1", "EDF1", "CKAP4", "LMNB2", "LETM1",
+                        "COX5B", "HIP1R", "HMOX2", "DPY30",
+                        "WFDC2", "RCC1")) %>%
+    prep_protein_table()
+}
+
+# Build random non-prognostic pool from limma table (proteins not included in res_all2)
+non_CD <- res_all2 %>% pull(OlinkID)
+non_prog_candidates <- limma_df %>%
+  filter(!OlinkID %in% non_CD) %>%
+  distinct(OlinkID, .keep_all = TRUE)
+
+if (!"Assay" %in% colnames(non_prog_candidates)) {
+  non_prog_candidates <- non_prog_candidates %>%
+    mutate(Assay = OlinkID)
+}
+
+non_prog_candidates <- non_prog_candidates %>%
+  mutate(
+    Multi_HR = NA_real_,
+    Multi_FDR_num = NA_real_,
+    Multi_Coefficient = 1
+  ) %>%
+  prep_protein_table() %>%
+  filter(!OlinkID %in% proteins_11_interest$OlinkID)
+
+set.seed(2026)
+random_n <- min(10, nrow(non_prog_candidates))
+random10_non_prog <- non_prog_candidates %>%
+  slice_sample(n = random_n)
+
+iteration_sets <- list(
+  list(name = "Top 10 proteins by HR", file_stub = "iter_top10_hr", proteins = top10_hr),
+  list(name = "Top 10 proteins by FDR", file_stub = "iter_top10_fdr", proteins = top10_fdr),
+  list(name = "Top 10 proteins by HR + FDR", file_stub = "iter_top10_hr_fdr", proteins = top10_hr_fdr),
+  list(name = "11 proteins of interest", file_stub = "iter_11_proteins_interest", proteins = proteins_11_interest),
+  list(name = "Random 10 non-prognostic proteins", file_stub = "iter_random10_nonprog", proteins = random10_non_prog)
+)
+
+model_modes <- list(
+  list(mode = "CPPS_only", formula = Surv(time_to_death, death) ~ CPPS),
+  list(mode = "Clinical_plus_CPPS", formula = Surv(time_to_death, death) ~ log10_psa + log10_alp + log10_ldh + CPPS)
+)
+
+all_iteration_results <- list()
+
+for (mm in model_modes) {
+  cat("\n=== Running model mode:", mm$mode, "===\n")
+
+  km_pdf <- file.path(wd$outCurr, paste0("CPPS_KM_all_iterations_", mm$mode, ".pdf"))
+  pdf(km_pdf, width = 10, height = 8, onefile = TRUE)
+
+  mode_results <- lapply(iteration_sets, function(x) {
+    cat("\n--- Running:", x$name, "(", mm$mode, ") ---\n")
+    run_cpps_iteration(
+      protein_df = x$proteins,
+      iteration_name = x$name,
+      file_stub = x$file_stub,
+      model_formula = mm$formula,
+      eval_times = time_points
+    )
+  })
+
+  dev.off()
+
+  mode_results <- bind_rows(mode_results) %>%
+    mutate(Model_Mode = mm$mode)
+
+  write.csv(
+    mode_results,
+    file.path(wd$outCurr, paste0("CPPS_iteration_performance_summary_", mm$mode, ".csv")),
+    row.names = FALSE
+  )
+
+  cat("\n=== CPPS Iteration Summary:", mm$mode, "===\n")
+  print(mode_results %>%
+          mutate(
+            AUC_24m = round(AUC_24m, 3),
+            AUC_36m = round(AUC_36m, 3),
+            HR_High_vs_Low = round(HR_High_vs_Low, 3),
+            P_High_vs_Low = signif(P_High_vs_Low, 3)
+          ) %>%
+          select(Model_Mode, Iteration, N_Proteins, N_Patients, N_Patients_Cox_AUC, Events, HR_High_vs_Low, P_High_vs_Low, AUC_24m, AUC_36m))
+
+  all_iteration_results[[mm$mode]] <- mode_results
+}
+
+# Combined results across both model modes
+iteration_results <- bind_rows(all_iteration_results)
+
+write.csv(
+  iteration_results,
+  file.path(wd$outCurr, "CPPS_iteration_performance_summary_all_models.csv"),
+  row.names = FALSE
+)
+```
+
+## Iteration Protein Membership Plot
+
+```{r}
+# Create long table for all 5 iteration sets
+set1_tbl <- top10_hr %>% select(Assay) %>% mutate(Set = "Set1", Rank = row_number())
+set2_tbl <- top10_fdr %>% select(Assay) %>% mutate(Set = "Set2", Rank = row_number())
+set3_tbl <- top10_hr_fdr %>% select(Assay) %>% mutate(Set = "Set3", Rank = row_number())
+set4_tbl <- proteins_11_interest %>% select(Assay) %>% mutate(Set = "Set4", Rank = row_number())
+set5_tbl <- random10_non_prog %>% select(Assay) %>% mutate(Set = "Set5", Rank = row_number())
+
+membership_long <- bind_rows(set1_tbl, set2_tbl, set3_tbl, set4_tbl, set5_tbl) %>%
+  distinct()
+
+# Build complete matrix so absent proteins can be shown in grey
+all_proteins <- membership_long %>% distinct(Assay)
+all_sets <- tibble(Set = c("Set1", "Set2", "Set3", "Set4", "Set5"))
+
+membership_mat <- tidyr::crossing(all_proteins, all_sets) %>%
+  left_join(membership_long %>% mutate(In_Set = TRUE), by = c("Assay", "Set")) %>%
+  mutate(
+    In_Set = ifelse(is.na(In_Set), FALSE, In_Set),
+    Rank_Label = ifelse(In_Set, as.character(Rank), "")
+  )
+
+# Order proteins by set-specific ranks in sequence:
+# Set1 first, then Set2..Set5 for tie-breaking while preserving previous order.
+rank_wide <- membership_long %>%
+  select(Assay, Set, Rank) %>%
+  distinct() %>%
+  tidyr::pivot_wider(names_from = Set, values_from = Rank, names_prefix = "Rank_")
+
+protein_order <- membership_mat %>%
+  group_by(Assay) %>%
+  summarise(Set_Count = sum(In_Set), .groups = "drop") %>%
+  left_join(rank_wide, by = "Assay") %>%
+  mutate(
+    Rank_Set1 = ifelse(is.na(Rank_Set1), Inf, Rank_Set1),
+    Rank_Set2 = ifelse(is.na(Rank_Set2), Inf, Rank_Set2),
+    Rank_Set3 = ifelse(is.na(Rank_Set3), Inf, Rank_Set3),
+    Rank_Set4 = ifelse(is.na(Rank_Set4), Inf, Rank_Set4),
+    Rank_Set5 = ifelse(is.na(Rank_Set5), Inf, Rank_Set5)
+  ) %>%
+  arrange(Rank_Set1, Rank_Set2, Rank_Set3, Rank_Set4, Rank_Set5, desc(Set_Count), Assay) %>%
+  pull(Assay)
+
+membership_mat <- membership_mat %>%
+  mutate(
+    Assay = factor(Assay, levels = rev(protein_order)),
+    Set = factor(Set, levels = c("Set1", "Set2", "Set3", "Set4", "Set5"))
+  )
+
+# Left annotation: 5 columns (one per set), colored when protein is present in that set
+annot_colors <- c("Present" = "black", "Absent" = "white")
+
+annot_mat <- membership_mat %>%
+  mutate(Annot_Fill = ifelse(In_Set, "Present", "Absent"))
+
+p_annot <- ggplot(annot_mat, aes(x = Set, y = Assay, fill = Annot_Fill)) +
+  geom_tile(color = "white", linewidth = 0.3) +
+  geom_text(aes(label = Rank_Label), size = 2.4, color = "white") +
+  scale_fill_manual(values = annot_colors, drop = FALSE) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 10, face = "bold"),
+    axis.text.y = element_text(size = 7),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.border = element_blank(),
+    panel.grid = element_blank(),
+    legend.position = "none"
+  )
+
+# AUC bar plot for 24 and 36 months with HR [95% CI] labels
+set_map <- tibble(
+  Set = c("Set1", "Set2", "Set3", "Set4", "Set5"),
+  Iteration = c(
+    "Top 10 proteins by HR",
+    "Top 10 proteins by FDR",
+    "Top 10 proteins by HR + FDR",
+    "11 proteins of interest",
+    "Random 10 non-prognostic proteins"
+  )
+)
+
+for (mode_name in names(all_iteration_results)) {
+  iteration_results_mode <- all_iteration_results[[mode_name]]
+
+  auc_plot_df <- iteration_results_mode %>%
+    left_join(set_map, by = "Iteration") %>%
+    mutate(Set = factor(Set, levels = c("Set1", "Set2", "Set3", "Set4", "Set5"))) %>%
+    select(Set, AUC_24m, AUC_36m, HR_High_vs_Low, HR_High_vs_Low_Lower95, HR_High_vs_Low_Upper95) %>%
+    pivot_longer(cols = c(AUC_24m, AUC_36m), names_to = "Timepoint", values_to = "AUC") %>%
+    mutate(
+      Timepoint = factor(Timepoint, levels = c("AUC_24m", "AUC_36m"),
+                         labels = c("24 months", "36 months"))
+    )
+
+  hr_label_df <- iteration_results_mode %>%
+    left_join(set_map, by = "Iteration") %>%
+    mutate(
+      Set = factor(Set, levels = c("Set1", "Set2", "Set3", "Set4", "Set5")),
+      HR_Label = paste0(
+        "HR ", sprintf("%.2f", HR_High_vs_Low),
+        " [", sprintf("%.2f", HR_High_vs_Low_Lower95),
+        ", ", sprintf("%.2f", HR_High_vs_Low_Upper95), "]"
+      )
+    ) %>%
+    select(Set, HR_Label)
+
+  y_text <- min(0.99, max(auc_plot_df$AUC, na.rm = TRUE) + 0.06)
+
+  p_auc <- ggplot(auc_plot_df, aes(x = Set, y = AUC, fill = Timepoint)) +
+    geom_col(position = position_dodge(width = 0.75), width = 0.65, color = "black", linewidth = 0.2) +
+    geom_text(
+      data = hr_label_df,
+      aes(x = Set, y = y_text, label = HR_Label),
+      inherit.aes = FALSE,
+      size = 3
+    ) +
+    scale_fill_manual(values = c("24 months" = "#4C78A8", "36 months" = "#F58518")) +
+    scale_y_continuous(limits = c(0, 1), expand = expansion(mult = c(0, 0.02))) +
+    geom_hline(yintercept = 0.5, linetype = "dashed") +
+    labs(x = NULL, y = "AUC", fill = NULL) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(size = 10, face = "bold"),
+      axis.text.y = element_text(size = 9),
+      panel.border = element_blank(),
+      panel.grid = element_blank(),
+      legend.position = "bottom"
+    )
+
+# p_points workflow kept for optional reuse:
+# p_points <- ggplot(membership_mat, aes(x = Set, y = Assay)) +
+#   geom_point(aes(fill = In_Set),
+#              shape = 21, size = 3.2, stroke = 0.25, color = "black") +
+#   scale_fill_manual(values = c("TRUE" = "black", "FALSE" = "grey80"),
+#                     labels = c("TRUE" = "Present", "FALSE" = "Absent"),
+#                     name = "Membership") +
+#   theme_bw() +
+#   theme(
+#     axis.text.x = element_text(size = 10, face = "bold"),
+#     axis.text.y = element_blank(),
+#     axis.ticks.y = element_blank(),
+#     axis.title = element_blank(),
+#     panel.border = element_blank(),
+#     panel.grid = element_blank(),
+#     legend.position = "bottom",
+#     legend.title = element_text(size = 9),
+#     legend.text = element_text(size = 8)
+#   )
+#
+# p_membership_bottom <- p_annot + p_points + plot_layout(widths = c(0.22, 1))
+# p_membership_combined <- p_auc / p_membership_bottom +
+#   plot_layout(heights = c(0.7, 1))
+
+  p_membership_combined <- p_auc / p_annot +
+    plot_layout(heights = c(0.7, 1)) +
+    plot_annotation(
+      title = paste0("Protein Membership Across 5 Iteration Sets (", mode_name, ")"),
+      subtitle = "Top: AUC at 24 and 36 months with HR [95% CI]. Bottom: set membership annotation (black = present)."
+    )
+
+  print(p_membership_combined)
+
+  ggsave(
+    file.path(wd$outCurr, paste0("CPPS_iteration_set_membership_plot_", mode_name, ".pdf")),
+    p_membership_combined,
+    width = 10,
+    height = 9
+  )
+}
+```
 
 
+# Save objects
+
+```{r}
+save(
+  df_cpps_complete, # CPPS score of selcted proteins
+  res_all2, # Result of multivariate prognositc
+  file = file.path(wd$outData, "05_data.Rdata"))
+```
+
+
+
+# Session Info
+
+```{r session_info}
+sessionInfo()
+```

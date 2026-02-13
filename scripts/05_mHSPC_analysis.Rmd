@@ -337,9 +337,121 @@ p_viol_gene
 ggsave(p_viol_gene, file=file.path(wd$outCurr, "PrePost_violin.pdf"), height = 6, width = 10)
 ```
 
+Show as heatmap
+
+```{r}
+# Wide matrix: Assay x sample
+heatmap_data <- df_plot %>%
+  select(Assay, final_sample_id, NPX) %>%
+  pivot_wider(names_from = final_sample_id, values_from = NPX) %>%
+  column_to_rownames("Assay") %>%
+  as.matrix()
+
+annotation_col <- df_plot %>%
+  select(final_sample_id, txt_stat) %>%
+  distinct() %>%
+  column_to_rownames("final_sample_id") %>%
+  rename(Group = txt_stat)
+
+annotation_col <- annotation_col[colnames(heatmap_data), , drop = FALSE]
+
+annotation_colors <- list(
+  Group = c(
+    Pre  = "#ff7f0e",
+    Post = "gold4"
+  )
+)
+
+
+scale_data <- heatmap_data
+
+pheatmap(
+    heatmap_data,
+    annotation_col = annotation_col,
+    annotation_colors = annotation_colors,
+    show_rownames = TRUE,
+    show_colnames = TRUE,
+    clustering_distance_rows = "euclidean",
+    clustering_distance_cols = "euclidean",
+    clustering_method = "complete",
+    scale = "row",
+    color = colorRampPalette(c("blue", "white", "red"))(100),
+    main = paste0(
+      "Pre vs Post Treatment"),
+    fontsize_row = 8,
+    fontsize_col = 8
+  )
+
+# Slight edit
+
+library(dendextend)
+
+col_dist <- dist(t(heatmap_data), method = "euclidean")
+col_hclust <- hclust(col_dist, method = "complete")
+
+col_dend <- as.dendrogram(col_hclust)
+
+desired_order <- rownames(annotation_col)[
+  order(annotation_col$Group)
+]
+
+col_dend <- rotate(col_dend, desired_order)
+
+
+# Desired order: Pre first, then Post
+desired_order <- rownames(annotation_col)[
+  order(annotation_col$Group)
+]
+
+# Rotate dendrogram
+col_dend <- rotate(col_dend, desired_order)
+
+col_hclust_rot <- as.hclust(col_dend)
+
+
+# plot
+pheatmap(
+  heatmap_data,
+  annotation_col = annotation_col,
+  annotation_colors = annotation_colors,
+  cluster_cols = col_hclust_rot,   # <-- key line
+  show_rownames = TRUE,
+  show_colnames = FALSE,
+  clustering_distance_rows = "euclidean",
+  clustering_distance_cols = "euclidean",
+  clustering_method = "complete",
+  scale = "row",
+  color = rev(RColorBrewer::brewer.pal(name = "RdBu", n = 11)),
+  main = "Pre vs Post Treatment",
+  fontsize_row = 8,
+  fontsize_col = 8
+)
+
+pdf(file.path(wd$outCurr, "Pre_post_heatmap.pdf"), height = 4, width = 9)
+pheatmap(
+  heatmap_data,
+  annotation_col = annotation_col,
+  annotation_colors = annotation_colors,
+  cluster_cols = col_hclust_rot,   # <-- key line
+  show_rownames = TRUE,
+  show_colnames = FALSE,
+  clustering_distance_rows = "euclidean",
+  clustering_distance_cols = "euclidean",
+  clustering_method = "complete",
+  scale = "row",
+  color = rev(RColorBrewer::brewer.pal(name = "RdBu", n = 11)),
+  main = "Pre vs Post Treatment",
+  fontsize_row = 8,
+  fontsize_col = 8
+)
+dev.off()
+```
+
+
+
 ## Correlation
 
-### Full data
+### Full mHSPC
 
 In all samples
 

@@ -640,6 +640,7 @@ df_c <- data.frame(
   psa = c(dd$sample1_psa, dd$sample2_psa, dd$sample3_psa),
   ldh = c(dd$sample1_ldh, dd$sample2_ldh, dd$sample3_ldh),
   alk_phos = c(dd$sample1_alk_phos, dd$sample2_alk_phos, dd$sample3_alk_phos),
+  alb = c(dd$`Albumin at s1`, rep(NA, (length(HCI_cID) - length(c(dd$`Albumin at s1`)  ) ) )),
   testo = c(dd$sample1_testos, dd$`Sample 2 Testos`, rep(NA, (length(HCI_cID) - length(c(dd$`sample1_testos`, dd$`Sample 2 Testos`)  ) ) )),
   hemoGlo = c(dd$`Hemoglobin at s1`, rep(NA, (length(HCI_cID) - length(dd$`Hemoglobin at s1`)  ) )),
   surgery_type = dd$Surgery_Type,

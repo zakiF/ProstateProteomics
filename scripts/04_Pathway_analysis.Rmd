@@ -470,7 +470,207 @@ ggsave(p_all2, file=file.path(wd$outCurr, "enrichedPathway_highC_highB_unique.pd
 ```
 
 
+# Obj 2: KLK3 PSA
 
+We check the KLK3 PSA association. 
+
+## Overall
+
+```{r}
+# Get KLK3 OlinkID
+klk3_id <- df_id_pro %>%
+  filter(Assay == "KLK3") %>%
+  pull(OlinkID)
+
+# Link HCI_cID to final_sample_id for all mHSPC patients
+df_link <- df_meta_f5 %>%
+  select(HCI_cID, txt_stat_ordered) %>%
+  left_join(df_final_ids %>% select(HCI_cID, final_sample_id))
+
+# Use all patients 
+psa_protein_data <- df_meta_all %>%
+  filter(HCI_cID %in% df_meta_f5$HCI_cID) %>%
+  mutate(logPSA = log10(psa)) %>% 
+  select(HCI_cID, fake_mrn, logPSA, txt_stat, psa, cohort, glsn_diag) %>%
+  left_join(df_link, by = "HCI_cID") %>%
+  filter(!is.na(final_sample_id)) %>%
+  filter(final_sample_id %in% colnames(exprMatrix_corrected_sub))
+
+# Extract KLK3 expression for these samples
+klk3_expression <- exprMatrix_corrected_sub[klk3_id, psa_protein_data$final_sample_id]
+psa_protein_data$KLK3_NPX <- as.numeric(klk3_expression)
+
+# Remove any rows with missing values
+psa_protein_data <- psa_protein_data %>% filter(!is.na(logPSA), !is.na(KLK3_NPX))
+
+# Calculate overall correlation
+cor_overall <- cor.test(psa_protein_data$logPSA, psa_protein_data$KLK3_NPX, method = "spearman")
+
+# Print results
+cat("=== Correlation between log(PSA) and KLK3 Protein Expression ===\n")
+cat("All mHSPC patients (not just paired samples)\n\n")
+cat("Overall (Pre + Post combined):\n")
+cat("  Spearman rho =", round(cor_overall$estimate, 3), "\n")
+cat("  P-value =", formatC(cor_overall$p.value, format = "e", digits = 2), "\n")
+cat("  N =", nrow(psa_protein_data), "\n\n")
+
+
+# Scatter plot
+p_psa_klk3 <- ggplot(psa_protein_data, aes(x = KLK3_NPX, y = logPSA)) +
+  geom_point(size = 5, alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE) +
+  #scale_color_manual(values = c("#ff7f0e", "gold4")) +
+  labs(
+    title = sprintf("log(PSA) vs KLK3 Expression (rho = %.2f, p = %.2e)",
+                    cor_overall$estimate, cor_overall$p.value),
+    x = "KLK3 NPX",
+    y = "log10(PSA)",
+    color = "Treatment Status"
+  ) +
+  theme_bw() +
+  theme_custom
+
+# Save plot
+ggsave(p_psa_klk3, file = file.path(wd$outCurr, "logPSA_vs_KLK3_allSamples.pdf"), height = 4, width = 6)
+print(p_psa_klk3)
+```
+
+Lets do it per cohort
+
+```{r}
+cor_by_cohort <- psa_protein_data %>%
+  group_by(cohort) %>%
+  summarise(
+    rho = cor(KLK3_NPX, logPSA, method = "spearman", use = "complete.obs"),
+    p = cor.test(KLK3_NPX, logPSA, method = "spearman")$p.value
+  ) %>%
+  mutate(
+    label = sprintf("rho = %.2f\np = %.2e", rho, p)
+  )
+
+
+p_psa_klk3.1 <- ggplot(psa_protein_data, aes(x = KLK3_NPX, y = logPSA, fill=cohort)) +
+  geom_point(size = 5, alpha = 0.7, shape=21) +
+  geom_smooth(method = "lm", se = TRUE) +
+  scale_fill_manual(values=pal.cohort.n) +
+  facet_wrap(~cohort) +
+  geom_text(
+    data = cor_by_cohort,
+    aes(label = label),
+    x = Inf, y = Inf,
+    hjust = 1.1, vjust = 1.2,
+    inherit.aes = FALSE
+  ) +
+  labs(
+    title = "log10(PSA) vs KLK3 Expression by Cohort",
+    x = "KLK3 NPX",
+    y = "log10(PSA)"
+  ) +
+  theme_bw() +
+  theme_custom
+
+# Save plot
+ggsave(p_psa_klk3.1, file = file.path(wd$outCurr, "logPSA_vs_KLK3_perCohort.pdf"), height = 4, width = 12)
+print(p_psa_klk3.1)
+
+```
+
+
+
+## Per-cohort
+
+Local state. Lets do the local state, pre-and post treatment
+
+```{r}
+df_plot_a <- psa_protein_data %>% 
+  dplyr::filter(cohort == "A") %>% 
+  dplyr::mutate(glsn_grp = case_when(glsn_diag >=8 ~ ">8",
+                                     glsn_diag <8 ~ "<8"))
+
+p_psa_a1 <- 
+  df_plot_a %>%
+  ggplot(aes(x = txt_stat, y = KLK3_NPX, fill = glsn_grp)) +
+  geom_quasirandom(dodge.width=0.9, colour="grey30", alpha=0.5) +
+  geom_violin(alpha = 0.5, scale = "width", position = position_dodge(width = 0.9)) +
+  geom_boxplot(outlier.alpha = 0,  width = 0.2, coef=0,
+               position = position_dodge(width = 0.9)) +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank"),
+        axis.text.x = element_text(angle = 0)) +
+  scale_fill_manual(values=c("lightblue", "orange")) +
+  NULL
+
+p_psa_a2 <- 
+  df_plot_a %>%
+  ggplot(aes(x = txt_stat, y = logPSA, fill = glsn_grp)) +
+  geom_quasirandom(dodge.width=0.9, colour="grey30", alpha=0.5) +
+  geom_violin(alpha = 0.5, scale = "width", position = position_dodge(width = 0.9)) +
+  geom_boxplot(outlier.alpha = 0,  width = 0.2, coef=0,
+               position = position_dodge(width = 0.9)) +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank"),
+        axis.text.x = element_text(angle = 0)) +
+  scale_fill_manual(values=c("lightblue", "orange")) +
+  NULL
+
+p_psa_a1 + p_psa_a2
+```
+
+
+Lets do mHSPC group
+
+```{r}
+df_plot_b <- psa_protein_data %>% 
+  dplyr::filter(cohort == "B") %>% 
+  mutate(txt_stat = factor(txt_stat, levels = c("Pre", "Post1")))
+
+p_psa_b1 <- 
+  df_plot_b %>%
+  ggplot(aes(x = txt_stat, y = KLK3_NPX, fill = txt_stat)) +
+  geom_quasirandom(dodge.width=0.9, colour="grey30", alpha=0.5) +
+  geom_violin(alpha = 0.5, scale = "width", position = position_dodge(width = 0.9)) +
+  geom_boxplot(outlier.alpha = 0,  width = 0.2, coef=0,
+               position = position_dodge(width = 0.9)) +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank"),
+        axis.text.x = element_text(angle = 0)) +
+  scale_fill_manual(values=c("#ff7f0e", "gold4")) +
+  geom_signif(
+    comparisons = list(c("Pre", "Post1")),
+    map_signif_level = FALSE,
+    test = "t.test") +
+  NULL
+
+p_psa_b2 <- 
+  df_plot_b %>%
+  ggplot(aes(x = txt_stat, y = logPSA, fill = txt_stat)) +
+  geom_quasirandom(dodge.width=0.9, colour="grey30", alpha=0.5) +
+  geom_violin(alpha = 0.5, scale = "width", position = position_dodge(width = 0.9)) +
+  geom_boxplot(outlier.alpha = 0,  width = 0.2, coef=0,
+               position = position_dodge(width = 0.9)) +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid.major = element_line(linetype = "blank"), 
+        panel.grid.minor = element_line(linetype = "blank"),
+        axis.text.x = element_text(angle = 0)) +
+  scale_fill_manual(values=c("#ff7f0e", "gold4")) +
+    geom_signif(
+    comparisons = list(c("Pre", "Post1")),
+    map_signif_level = FALSE,
+    test = "t.test") +
+  NULL
+
+p_psa_b1 + p_psa_b2
+
+
+ggsave(p_psa_b1 + p_psa_b2, file = file.path(wd$outCurr, "logPSA_vs_KLK3_mHSPCt.pdf"), height = 4, width = 8)
+```
 
 
 

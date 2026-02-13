@@ -74,6 +74,16 @@ pal.cohort.n4 <- c(
 
 pal.all <- c(pal.cohort.n3, pal.cohort.n4)
 
+# Define color palettes
+pal.olink <- c("Local" = "#AEC7E8",
+               "mHSPC" = "#FFBB78",
+               "mCRPC" = "#98DF8A")
+
+# Public data group colors (Benign, Local_PC, mCRPC)
+pal.public <- c("Benign" = "grey50",
+                "Local_PC" = "#AEC7E8",
+                "mCRPC" = "#98DF8A")
+
 
 
 # ------- Functions imported from olink package ---# 
@@ -1075,8 +1085,8 @@ analyze_proteins_multi <- function(cd_prot, npx_in, meta_in) {
       )
     
     # Fit Cox regression models with log10-transformed clinical covariates (PSA + ALP only)
-    model1 <- coxph(Surv(OS, death) ~ NPX + log10_psa + log10_alp, data = filtered_data)
-    model2 <- coxph(Surv(OS, death) ~ npx_bin + log10_psa + log10_alp, data = filtered_data)
+    model1 <- coxph(Surv(OS, death) ~ NPX + log10_psa + log10_alp + log10_ldh, data = filtered_data)
+    model2 <- coxph(Surv(OS, death) ~ npx_bin + log10_psa + log10_alp + log10_ldh, data = filtered_data)
     
     # Extract results for model1 (continuous NPX)
     coef_summary1 <- summary(model1)$coefficients["NPX", ]

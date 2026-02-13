@@ -62,18 +62,6 @@ library(patchwork)
 
 # Set default theme
 theme_set(theme_bw())
-
-# Define color palettes
-# Olink cohort colors (A=Local, B=mHSPC, C=mCRPC)
-pal.cohort.n2 <- c("#AEC7E8", "#FFBB78", "#98DF8A")
-pal.olink <- c("Local" = "#AEC7E8",
-               "mHSPC" = "#FFBB78",
-               "mCRPC" = "#98DF8A")
-
-# Public data group colors (Benign, Local_PC, mCRPC)
-pal.public <- c("Benign" = "grey50",
-                "Local_PC" = "#AEC7E8",
-                "mCRPC" = "#98DF8A")
 ```
 
 ## Set up directories
@@ -98,6 +86,14 @@ if (!file.exists(wd$outCurr)) {
 ---
 
 # Data Loading
+
+
+Load functions
+
+```{r}
+source(file.path(wd$script, "functions.R"))
+```
+
 
 ## Load proteomics data
 
@@ -126,6 +122,37 @@ metadata %>%
             N_Technical = n()) %>%
   print()
 ```
+## Load Olink data
+
+```{r load_olink_data, warning=FALSE, message=FALSE}
+if (nrow(matched_proteins) > 0) {
+  # Set output data directory
+  wd$outData <- file.path(wd$output, "data")
+
+  # Load Olink expression matrix
+  olink_expr <- read_csv(file.path(wd$outData, "allSamples_expression_matrix.csv"),
+                         show_col_types = FALSE)
+  olink_meta <- read_csv(file.path(wd$outData, "allSamples_metadata.csv"),
+                         show_col_types = FALSE)
+
+  cat("Olink data loaded:\n")
+  cat("  Expression matrix:", nrow(olink_expr), "proteins ×", ncol(olink_expr)-1, "samples\n")
+  cat("  Metadata:", nrow(olink_meta), "samples\n")
+  cat("  Cohorts:", paste(table(olink_meta$cohort), collapse=", "), "\n")
+
+  # Convert expression matrix to long format
+  olink_long <- olink_expr %>%
+    rename(OlinkID = `...1`) %>%
+    pivot_longer(-OlinkID, names_to = "HCI_cID", values_to = "NPX") %>%
+    left_join(olink_meta %>% select(HCI_cID, cohort, txt_stat_ordered), by = "HCI_cID") %>%
+    filter(cohort %in% c("A", "B", "C"))
+
+  cat("  Long format:", nrow(olink_long), "observations\n")
+} else {
+  cat("No matched proteins available\n")
+}
+```
+
 
 ---
 
@@ -638,8 +665,8 @@ Group B represents Local PC and Group CD represents mCRPC (metastatic castration
 ```{r filter_olink}
 # Filter for proteins upregulated in Local PC and mCRPC
 olink_filtered <- olink_de %>%
-  #filter(OverlapDegree %in% c("Group B and Group CD", "Group CD"))
-  filter(OverlapDegree %in% c("Group CD"))
+  filter(OverlapDegree %in% c("Group B and Group CD", "Group CD"))
+  #filter(OverlapDegree %in% c("Group CD"))
 
 cat("\n=== Filtered Olink Proteins ===\n")
 cat("Group B and Group CD:", sum(olink_filtered$OverlapDegree == "Group B and Group CD"), "\n")
@@ -679,6 +706,27 @@ write_csv(matched_proteins %>% select(OlinkID, Assay, OverlapDegree, Protein),
 
 cat("\nMatched proteins exported to: Matched_Olink_SWATHMS_Proteins.csv\n")
 ```
+
+This might contain duplicates. Do a simple venn
+
+```{r}
+un_a <- unique(olink_filtered$Assay)
+un_b <- unique(prot_data_with_gene$Gene_Name)
+
+overlap <- calculate.overlap(
+x <- list("Olink"=un_a, 
+          "M.Spec"=un_b))
+
+ggvenn(
+  x, 
+  fill_color = pal.cohort.n2,
+  show_percentage = FALSE,
+  stroke_size = 0.5, set_name_size = 4
+)
+
+```
+
+> Ticky part - some prteins matched to mulitple fold change
 
 ## Overall Protein Coverage: Olink vs Public SWATH-MS
 
@@ -815,103 +863,280 @@ if (nrow(matched_proteins) > 0) {
 }
 ```
 
+## Mean heatmap
+
+log2FC heatmap showing Olink (plasma) and public SWATH-MS (tissue) fold changes for all matched proteins, arranged by combined log2FC.
+
+```{r log2fc_heatmap, fig.width=10, fig.height=14, warning=FALSE, message=FALSE}
+prog_pro <- res_all2 %>% dplyr::filter(Multi_Sig == "Yes") %>% pull(OlinkID)
+
+if (exists("concordance_df") && nrow(concordance_df) > 0) {
+
+  # Prepare heatmap data
+  heatmap_pre <- concordance_df %>%
+    filter(!is.na(Olink_log2FC), !is.na(Public_log2FC)) %>%
+    mutate(Combined_log2FC = Olink_log2FC + Public_log2FC) %>%
+    dplyr::filter(OlinkID %in% prog_pro) # <---------------- TO CHANGE IF WE WANT TO SHOW ALL HEATMAP
+
+  # Identify duplicated Assay names
+  duplicated_assays <- heatmap_pre %>%
+    group_by(Assay) %>%
+    filter(n() > 1) %>%
+    arrange(Assay) %>%
+    select(Assay, OlinkID, Olink_log2FC, Public_log2FC, Combined_log2FC, Concordant)
+
+  cat("\n=== Duplicated Assay Names ===\n")
+  cat("Total rows before dedup:", nrow(heatmap_pre), "\n")
+  cat("Duplicated genes:", n_distinct(duplicated_assays$Assay), "\n\n")
+  print(duplicated_assays)
+
+  # Deduplicate by Assay — keep row with highest Combined_log2FC per gene
+  heatmap_dedup <- heatmap_pre %>%
+    group_by(Assay) %>%
+    slice_max(Combined_log2FC, n = 1, with_ties = FALSE) %>%
+    ungroup()
+
+  # Order by tissue log2FC (Public_log2FC):
+  #   Concordant (positive Public_log2FC): descending — highest tissue FC at top
+  #   Discordant (negative Public_log2FC): ascending  — most negative at bottom
+  #   → creates a smooth gradient from high positive (top) to most negative (bottom)
+  concordant_part <- heatmap_dedup %>%
+    filter(Concordant == TRUE) %>%
+    arrange(desc(Public_log2FC))
+
+  discordant_part <- heatmap_dedup %>%
+    filter(Concordant == FALSE) %>%
+    arrange(desc(Public_log2FC))
+
+  heatmap_df <- bind_rows(concordant_part, discordant_part) %>%
+    mutate(Assay = factor(Assay, levels = rev(Assay)))  # rev() puts first row at top
+
+  cat("\nProteins after deduplication:", nrow(heatmap_df), "\n")
+
+  cat("Proteins in heatmap:", nrow(heatmap_df), "\n")
+  cat("  Concordant:", sum(heatmap_df$Concordant), "\n")
+  cat("  Discordant:", sum(!heatmap_df$Concordant), "\n")
+
+  # Long format for heatmap (2 columns)
+  heatmap_long <- heatmap_df %>%
+    select(Assay, Concordant,
+           `Olink (Plasma)` = Olink_log2FC,
+           `SWATH-MS (Tissue)` = Public_log2FC) %>%
+    pivot_longer(cols = c(`Olink (Plasma)`, `SWATH-MS (Tissue)`),
+                 names_to = "Dataset",
+                 values_to = "log2FC") %>%
+    mutate(Dataset = factor(Dataset, levels = c("Olink (Plasma)", "SWATH-MS (Tissue)")))
+
+  # --- Plot 1: Concordance annotation bar (left) ---
+  p_annot <- ggplot(heatmap_df, aes(x = "Direction", y = Assay, fill = Concordant)) +
+    geom_tile(color = "white", linewidth = 0.3) +
+    scale_fill_manual(values = c("TRUE" = "#2ca02c", "FALSE" = "#d62728"),
+                      labels = c("TRUE" = "Concordant", "FALSE" = "Discordant"),
+                      name = "Direction") +
+    theme_bw() +
+    theme(axis.text.x = element_blank(),
+          axis.text.y = element_text(size = 7),
+          axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          panel.border = element_blank(),
+          panel.grid = element_blank(),
+          legend.position = "bottom",
+          legend.title = element_text(size = 9),
+          legend.text = element_text(size = 8))
+
+  # --- Plot 2: Two-column log2FC heatmap (right) ---
+  p_heatmap <- ggplot(heatmap_long, aes(x = Dataset, y = Assay, fill = log2FC)) +
+    geom_tile(color = "white", linewidth = 0.3) +
+    scale_fill_gradient2(low = "#4575B4", mid = "white", high = "#D73027",
+                         #midpoint = 0, limits = c(-2, 2),
+                         oob = scales::squish,
+                         name = "log2FC\n(capped ±2)") +
+    theme_bw() +
+    theme(axis.text.x = element_text(size = 10, face = "bold", angle = 30, hjust = 1),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          axis.title = element_blank(),
+          panel.border = element_blank(),
+          panel.grid = element_blank(),
+          legend.position = "bottom",
+          legend.title = element_text(size = 9),
+          legend.text = element_text(size = 8))
+
+  # --- Combine with patchwork ---
+  p_heatmap_combined <- p_annot + p_heatmap +
+    plot_layout(widths = c(0.15, 1)) +
+    plot_annotation(
+      title = paste0("log2FC: Olink vs SWATH-MS (", nrow(heatmap_df), " matched proteins)"),
+      subtitle = "Arranged by combined log2FC (highest to lowest). Left bar: green = concordant, red = discordant.",
+      theme = theme(plot.title = element_text(size = 14, face = "bold"),
+                    plot.subtitle = element_text(size = 10))
+    )
+
+  print(p_heatmap_combined)
+
+  # Save
+  ggsave(file.path(wd$outCurr, "Heatmap_log2FC_Concordance_Olink_vs_Public.pdf"),
+         plot = p_heatmap_combined, width = 10, height = 14)
+
+  cat("\nHeatmap saved to: Heatmap_log2FC_Concordance_Olink_vs_Public.pdf\n")
+
+} else {
+  cat("concordance_df not available\n")
+}
+```
+
+Flipped version
+
+```{r log2fc_heatmap_flipped, fig.width=20, fig.height=6, warning=FALSE, message=FALSE}
+
+if (exists("concordance_df") && nrow(concordance_df) > 0) {
+
+  # Reuse heatmap_df / heatmap_long built in the chunk above
+  # (prog_pro, heatmap_dedup, concordant_part, discordant_part, heatmap_df, heatmap_long
+  #  are all still in the environment from the previous chunk)
+
+  # --- Plot 1: Two-row log2FC heatmap (top) ---
+  # Proteins on x-axis, datasets on y-axis.
+  # scale_x_discrete(limits = rev) reverses the x-axis so the highest-FC
+  # protein (top of the original plot) ends up on the LEFT.
+  p_heatmap_h <- ggplot(heatmap_long, 
+                        aes(x = Assay, y = Dataset, fill = log2FC)) +
+    geom_tile(color = "white", linewidth = 0.3) +
+    scale_x_discrete(limits = rev) +
+    scale_fill_gradient2(low = "#4575B4", mid = "white", high = "#D73027",
+                         #midpoint = 0, limits = c(-2, 2),
+                         oob = scales::squish,
+                         name = "log2FC") +
+    theme_bw() +
+    theme(axis.text.x  = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.text.y  = element_text(size = 10, face = "bold"),
+          axis.title   = element_blank(),
+          panel.border = element_blank(),
+          panel.grid   = element_blank(),
+          legend.position = "right",
+          legend.title = element_text(size = 9),
+          legend.text  = element_text(size = 8))
+
+  # --- Plot 2: Concordance annotation bar (bottom) ---
+  # Must use the same scale_x_discrete(limits = rev) so columns align.
+  p_annot_h <- ggplot(heatmap_df, aes(x = Assay, y = "Direction", fill = Concordant)) +
+    geom_tile(color = "white", linewidth = 0.3) +
+    scale_x_discrete(limits = rev) +
+    scale_fill_manual(values = c("TRUE" = "#2ca02c", "FALSE" = "#d62728"),
+                      labels = c("TRUE" = "Concordant", "FALSE" = "Discordant"),
+                      name = "Direction") +
+    theme_bw() +
+    theme(axis.text.x  = element_text(size = 7, angle = 90, hjust = 1, vjust = 0.5),
+          axis.text.y  = element_blank(),
+          axis.ticks   = element_blank(),
+          axis.title   = element_blank(),
+          panel.border = element_blank(),
+          panel.grid   = element_blank(),
+          legend.position = "right",
+          legend.title = element_text(size = 9),
+          legend.text  = element_text(size = 8))
+
+  # --- Combine: heatmap on top, annotation strip on bottom ---
+  p_heatmap_combined_h <- p_heatmap_h / p_annot_h +
+    plot_layout(heights = c(1, 0.15)) +
+    plot_annotation(
+      title    = paste0("log2FC: Olink vs SWATH-MS (", nrow(heatmap_df), " matched proteins)"),
+      subtitle = "Proteins on x-axis, ordered highest→lowest FC (left→right). Bottom bar: green = concordant, red = discordant.",
+      theme    = theme(plot.title    = element_text(size = 14, face = "bold"),
+                       plot.subtitle = element_text(size = 10))
+    )
+
+  print(p_heatmap_combined_h)
+
+  # Save
+  ggsave(file.path(wd$outCurr, "Heatmap_log2FC_Concordance_Olink_vs_Public_horizontal.pdf"),
+         plot = p_heatmap_combined_h, width = 20, height = 6)
+
+  cat("\nHeatmap saved to: Heatmap_log2FC_Concordance_Olink_vs_Public_horizontal.pdf\n")
+
+} else {
+  cat("concordance_df not available\n")
+}
+```
+
+
+
+### Platform Dominance: Diverging Bar Chart
+
+For each protein, the bar direction indicates which platform shows relatively greater upregulation in mCRPC. The metric is the **z-score normalised difference** (`z(Public_log2FC) - z(Olink_log2FC)`), which places both platforms on a common scale before comparing:
+
+- **Left (negative)** → tissue (SWATH-MS) fold change is relatively higher
+- **Right (positive)** → plasma (Olink) fold change is relatively higher
+- **Bar colour** → Combined log2FC (overall signal strength across both platforms)
+
+```{r diverging_bar, fig.width=7, fig.height=14, warning=FALSE, message=FALSE}
+if (exists("concordance_df") && nrow(concordance_df) > 0) {
+
+  # Build data — deduplicate and compute metrics
+  divbar_df <- concordance_df %>%
+    filter(!is.na(Olink_log2FC), !is.na(Public_log2FC)) %>%
+    mutate(Combined_log2FC = Olink_log2FC + Public_log2FC) %>%
+    group_by(Assay) %>%
+    slice_max(Combined_log2FC, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(
+      # Z-score each platform's log2FC independently (removes scale difference)
+      z_Olink  = as.numeric(scale(Olink_log2FC)),
+      z_Public = as.numeric(scale(Public_log2FC)),
+      # Positive = tissue dominates, Negative = plasma dominates
+      Platform_Diff = z_Public - z_Olink
+    ) %>%
+    arrange(Platform_Diff) %>%                         # plasma → left, tissue → right
+    mutate(Assay = factor(Assay, levels = Assay))      # lock order
+
+  # Bar chart
+  p_divbar <- ggplot(divbar_df,
+                     aes(x = Platform_Diff, y = Assay, fill = Combined_log2FC)) +
+    geom_bar(stat = "identity", width = 0.8) +
+    geom_vline(xintercept = 0, color = "black", linewidth = 0.6) +
+    scale_fill_gradient(low = "#fee8c8", high = "#b30000",
+                        name = "Combined\nlog2FC") +
+    scale_x_continuous(
+      name = "← Higher in Tissue (SWATH-MS)          Higher in Plasma (Olink) →"
+    ) +
+    labs(title = "Platform Dominance per Protein",
+         subtitle = "z-normalised difference: z(Public log2FC) − z(Olink log2FC)",
+         y = NULL) +
+    theme_bw() +
+    theme(axis.text.y  = element_text(size = 7),
+          axis.title.x = element_text(size = 9),
+          panel.grid.major.y = element_blank(),
+          panel.grid.minor   = element_blank(),
+          plot.title    = element_text(size = 13, face = "bold"),
+          plot.subtitle = element_text(size = 9),
+          legend.position = "right")
+
+  print(p_divbar)
+
+  # Save
+  ggsave(file.path(wd$outCurr, "DivergingBar_PlatformDominance.pdf"),
+         plot = p_divbar, width = 7, height = 14)
+
+  cat("\nDiverging bar chart saved to: DivergingBar_PlatformDominance.pdf\n")
+
+  # Summary
+  n_tissue  <- sum(divbar_df$Platform_Diff > 0)
+  n_plasma  <- sum(divbar_df$Platform_Diff < 0)
+  cat(sprintf("Proteins with relatively higher tissue FC:  %d\n", n_tissue))
+  cat(sprintf("Proteins with relatively higher plasma FC:  %d\n", n_plasma))
+
+} else {
+  cat("concordance_df not available\n")
+}
+```
+
 ## Enhanced Visualizations: Concordance and Expression Patterns
 
 <!-- ### Violin + Boxplot: All Matched Proteins (Local vs mCRPC)
 
 Display expression distribution for all matched Group CD proteins, comparing Local to mCRPC in both datasets.
 
-```{r violin_all_proteins, fig.width=16, fig.height=20, warning=FALSE, message=FALSE, eval=FALSE}
-if (nrow(matched_proteins) > 0 && requireNamespace("ggbeeswarm", quietly = TRUE)) {
-  library(ggbeeswarm)
-
-  # Prepare Olink data (Local and mCRPC only)
-  olink_violin_data <- olink_long %>%
-    filter(OlinkID %in% matched_proteins$OlinkID,
-           cohort %in% c("A", "C")) %>%
-    left_join(matched_proteins %>% select(OlinkID, Assay), by = "OlinkID") %>%
-    mutate(
-      Group = case_when(
-        cohort == "A" ~ "Local",
-        cohort == "C" ~ "mCRPC"
-      ),
-      Group = factor(Group, levels = c("Local", "mCRPC")),
-      Expression = NPX,
-      Dataset = "Olink"
-    )
-
-  # Prepare Public data (Local_PC and mCRPC only)
-  public_violin_long <- as.data.frame(intensity_norm[matched_proteins$Protein, ]) %>%
-    rownames_to_column("Protein") %>%
-    pivot_longer(-Protein, names_to = "Biological_ID", values_to = "Expression") %>%
-    left_join(sample_info %>% rownames_to_column("Biological_ID") %>%
-                select(Biological_ID, Group), by = "Biological_ID") %>%
-    filter(Group %in% c("Local_PC", "mCRPC")) %>%
-    left_join(matched_proteins %>% select(Protein, Assay), by = "Protein") %>%
-    mutate(
-      Group = recode(Group, "Local_PC" = "Local"),  # Rename for consistency
-      Group = factor(Group, levels = c("Local", "mCRPC")),
-      Dataset = "Public"
-    )
-
-  cat("\n=== Violin Plot Data ===\n")
-  cat("Olink proteins:", length(unique(olink_violin_data$Assay)), "\n")
-  cat("Public proteins:", length(unique(public_violin_long$Assay)), "\n")
-
-  # Create Olink violin plot
-  p_olink_violin <- ggplot(olink_violin_data, aes(x = Group, y = Expression, fill = Group)) +
-    geom_quasirandom(dodge.width = 0.9, colour = "grey30", alpha = 0.5, size = 0.3) +
-    geom_violin(alpha = 0.5, scale = "width", position = position_dodge(width = 0.9)) +
-    geom_boxplot(outlier.alpha = 0, width = 0.2, coef = 0,
-                 position = position_dodge(width = 0.9)) +
-    facet_wrap(~ Assay, ncol = 8, scales = "free_y") +
-    scale_fill_manual(values = pal.olink[c("Local", "mCRPC")]) +
-    theme_bw() +
-    labs(title = "Olink (NPX)",
-         x = "Disease Group",
-         y = "NPX Expression") +
-    theme(legend.position = "none",
-          panel.grid.major = element_blank(),
-          panel.grid.minor = element_blank(),
-          axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
-          strip.text = element_text(size = 7))
-
-  # Create Public violin plot
-  p_public_violin <- ggplot(public_violin_long, aes(x = Group, y = Expression, fill = Group)) +
-    geom_quasirandom(dodge.width = 0.9, colour = "grey30", alpha = 0.5, size = 0.3) +
-    geom_violin(alpha = 0.5, scale = "width", position = position_dodge(width = 0.9)) +
-    geom_boxplot(outlier.alpha = 0, width = 0.2, coef = 0,
-                 position = position_dodge(width = 0.9)) +
-    facet_wrap(~ Assay, ncol = 8, scales = "free_y") +
-    scale_fill_manual(values = c("Local" = "#1f77b4", "mCRPC" = "#2ca02c")) +
-    theme_bw() +
-    labs(title = "Public SWATH-MS (Log2 Normalized)",
-         x = "Disease Group",
-         y = "Log2 Normalized Intensity") +
-    theme(legend.position = "none",
-          panel.grid.major = element_blank(),
-          panel.grid.minor = element_blank(),
-          axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
-          strip.text = element_text(size = 7))
-
-  # Combine plots
-  p_violin_combined <- p_olink_violin + p_public_violin +
-    plot_annotation(title = paste0("All Matched Group CD Proteins: Local vs mCRPC (",
-                                    nrow(matched_proteins), " proteins)"),
-                    theme = theme(plot.title = element_text(size = 14, face = "bold")))
-
-  print(p_violin_combined)
-
-  # Save
-  ggsave(file.path(wd$outCurr, "Violin_All88_Proteins_Local_vs_mCRPC.pdf"),
-         plot = p_violin_combined, width = 16, height = 20, limitsize = FALSE)
-
-  cat("\nViolin plot saved to: Violin_All88_Proteins_Local_vs_mCRPC.pdf\n")
-
-} else {
-  cat("No matched proteins or ggbeeswarm package not available\n")
-}
-```
 -->
 
 ### Overall Expression: Scaled Matched Proteins Across Groups
@@ -929,8 +1154,15 @@ if (nrow(matched_proteins) > 0 && requireNamespace("ggbeeswarm", quietly = TRUE)
     return((x - m) / s)
   }
 
+  # Deduplicate: keep one unique SWATH-MS Protein ID per gene (Assay)
+  matched_proteins_dedup <- matched_proteins %>%
+    distinct(Assay, .keep_all = TRUE)
+
+  cat("matched_proteins after dedup:", nrow(matched_proteins_dedup),
+      "(from", nrow(matched_proteins), "before)\n")
+
   # Get matched protein data from normalized matrix
-  matched_protein_ids <- matched_proteins$Protein
+  matched_protein_ids <- matched_proteins_dedup$Protein
   mat_matched <- intensity_norm[matched_protein_ids, ]
 
   # Scale proteins (z-score across samples)
@@ -953,7 +1185,7 @@ if (nrow(matched_proteins) > 0 && requireNamespace("ggbeeswarm", quietly = TRUE)
     filter(Group %in% c("Local_PC", "mCRPC")) %>%
     mutate(Group = factor(Group, levels = c("Local_PC", "mCRPC")))
 
-  cat("Scaled data prepared:", nrow(matched_proteins), "proteins x",
+  cat("Scaled data prepared:", nrow(matched_proteins_dedup), "proteins x",
       length(unique(mat_long$Biological_ID)), "samples (Local_PC and mCRPC only)\n")
 
   # Aggregate by protein and group (mean scaled expression per protein per group)
@@ -1220,6 +1452,7 @@ if (exists("concordance_df") && nrow(concordance_df) > 0 &&
 
     # Prepare Olink data for top 2 (Local and mCRPC only)
     olink_top2 <- olink_long %>%
+      #filter(txt_stat_ordered == "Pre1") %>% 
       filter(OlinkID %in% top2_concordant$OlinkID,
              cohort %in% c("A", "C")) %>%
       left_join(top2_concordant %>% select(OlinkID, Assay), by = "OlinkID") %>%
@@ -1244,7 +1477,7 @@ if (exists("concordance_df") && nrow(concordance_df) > 0 &&
 
     # Create Olink plot (NPX)
     p1_top2 <- ggplot(olink_top2, aes(x = Group, y = Expression, fill = Group)) +
-      geom_quasirandom(dodge.width = 0.9, colour = "grey30", alpha = 0.5, size = 1) +
+      geom_quasirandom(dodge.width = 0.9, colour = "grey30", alpha = 0.5, size = 2.5) +
       geom_violin(alpha = 0.5, scale = "width") +
       geom_boxplot(outlier.alpha = 0, width = 0.2, coef = 0) +
       facet_wrap(~ Assay, ncol = 2, scales = "free_y") +
@@ -1262,7 +1495,7 @@ if (exists("concordance_df") && nrow(concordance_df) > 0 &&
 
     # Create Public plot (Log2 Normalized)
     p2_top2 <- ggplot(public_top2, aes(x = Group, y = Expression, fill = Group)) +
-      geom_quasirandom(dodge.width = 0.9, colour = "grey30", alpha = 0.5, size = 1) +
+      geom_quasirandom(dodge.width = 0.9, colour = "grey30", alpha = 0.5, size = 2.5) +
       geom_violin(alpha = 0.5, scale = "width") +
       geom_boxplot(outlier.alpha = 0, width = 0.2, coef = 0) +
       facet_wrap(~ Assay, ncol = 2, scales = "free_y") +
@@ -1313,8 +1546,8 @@ if (exists("concordance_df") && nrow(concordance_df) > 0 &&
   top2_concordant <- concordance_df %>%
     #filter(Concordant == FALSE) %>%
     #arrange((Public_log2FC)) %>%
-    #ead(2)
-    filter(Assay %in% c("FKBP5", "MYDGF"))
+    #head(2)
+    filter(Assay %in% c("CD276", "GDF15"))
 
   if (nrow(top2_concordant) >= 2) {
     cat("\n=== Top 2 Concordant Proteins ===\n")
@@ -1346,7 +1579,7 @@ if (exists("concordance_df") && nrow(concordance_df) > 0 &&
 
     # Create Olink plot (NPX)
     p1_top2 <- ggplot(olink_top2, aes(x = Group, y = Expression, fill = Group)) +
-      geom_quasirandom(dodge.width = 0.9, colour = "grey30", alpha = 0.5, size = 1) +
+      geom_quasirandom(dodge.width = 0.9, colour = "grey30", alpha = 0.5, size = 2.5) +
       geom_violin(alpha = 0.5, scale = "width") +
       geom_boxplot(outlier.alpha = 0, width = 0.2, coef = 0) +
       facet_wrap(~ Assay, ncol = 2, scales = "free_y") +
@@ -1364,7 +1597,7 @@ if (exists("concordance_df") && nrow(concordance_df) > 0 &&
 
     # Create Public plot (Log2 Normalized)
     p2_top2 <- ggplot(public_top2, aes(x = Group, y = Expression, fill = Group)) +
-      geom_quasirandom(dodge.width = 0.9, colour = "grey30", alpha = 0.5, size = 1) +
+      geom_quasirandom(dodge.width = 0.9, colour = "grey30", alpha = 0.5, size = 2.5) +
       geom_violin(alpha = 0.5, scale = "width") +
       geom_boxplot(outlier.alpha = 0, width = 0.2, coef = 0) +
       facet_wrap(~ Assay, ncol = 2, scales = "free_y") +
@@ -1628,36 +1861,6 @@ if (nrow(matched_proteins) > 0) {
 
 Compare Olink and public SWATH-MS data side-by-side for proteins showing highest expression in mCRPC across both datasets.
 
-### Load Olink data
-
-```{r load_olink_data, warning=FALSE, message=FALSE}
-if (nrow(matched_proteins) > 0) {
-  # Set output data directory
-  wd$outData <- file.path(wd$output, "data")
-
-  # Load Olink expression matrix
-  olink_expr <- read_csv(file.path(wd$outData, "allSamples_expression_matrix.csv"),
-                         show_col_types = FALSE)
-  olink_meta <- read_csv(file.path(wd$outData, "allSamples_metadata.csv"),
-                         show_col_types = FALSE)
-
-  cat("Olink data loaded:\n")
-  cat("  Expression matrix:", nrow(olink_expr), "proteins ×", ncol(olink_expr)-1, "samples\n")
-  cat("  Metadata:", nrow(olink_meta), "samples\n")
-  cat("  Cohorts:", paste(table(olink_meta$cohort), collapse=", "), "\n")
-
-  # Convert expression matrix to long format
-  olink_long <- olink_expr %>%
-    rename(OlinkID = `...1`) %>%
-    pivot_longer(-OlinkID, names_to = "HCI_cID", values_to = "NPX") %>%
-    left_join(olink_meta %>% select(HCI_cID, cohort), by = "HCI_cID") %>%
-    filter(cohort %in% c("A", "B", "C"))
-
-  cat("  Long format:", nrow(olink_long), "observations\n")
-} else {
-  cat("No matched proteins available\n")
-}
-```
 
 ### Select Top 6 Proteins by Concordant Upregulation
 
