@@ -443,6 +443,40 @@ write.csv(res_pre_multi, file.path(wd$outCurr, "HR_values_mCRPC_specific_multi_p
 
 ```
 
+Lets compute every single protein
+
+```{r}
+full_prot <- rownames(exp_mat_sub)
+results_fullPro <- analyze_proteins_multi(full_prot, npx_in=tmp_npx, meta_in=meta_in2)
+results_fullPro <- left_join(results_fullPro, df_id_pro)
+
+results_fullPro <- results_fullPro %>% 
+  mutate(
+    Lower_Bound = round(Lower_Bound, 2),
+    Upper_Bound = round(Upper_Bound, 2),
+    bin_Lower_Bound = round(bin_Lower_Bound, 2),
+    bin_Upper_Bound = round(bin_Upper_Bound, 2),
+    
+    HR = round(HR, 2),
+    bin_HR = round(HR, 2),
+    
+    Sig_bin = case_when(
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound >=1 ~ "Sig",
+      #bin_P_Value <= cox_p_val & bin_Lower_Bound <=1 & bin_Upper_Bound <=1 ~ "Sig",
+      bin_P_Value <= cox_p_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"),
+    
+    fdr_cont = p.adjust(P_Value, method = "fdr"),
+    
+    Sig_fdr_cont = case_when(
+      fdr_cont <= cox_fdr_val & HR >= 1 ~ "Sig",
+      TRUE ~ "Non"))
+#wd$outCurr <- file.path(wd$output, "06_mCRPC_analysis")
+write.csv(results_fullPro, file.path(wd$outCurr, "HR_values_mCRPC_specific_multi_pre-allProteins.csv"))
+```
+
+
+
 ### Combined results
 
 Combine the uni and multi in one table
@@ -3802,14 +3836,184 @@ prep_protein_table <- function(df_in) {
 }
 
 build_cpps_from_proteins <- function(protein_df) {
-  df_npx_long %>%
-    filter(OlinkID %in% protein_df$OlinkID) %>%
-    select(final_sample_id, OlinkID, NPX) %>%
-    left_join(protein_df %>% select(OlinkID, Multi_Coefficient), by = "OlinkID") %>%
+  # Try direct OlinkID matching first (most robust when IDs are consistent)
+  n_match_olink <- sum(unique(df_npx_long$OlinkID) %in% unique(protein_df$OlinkID), na.rm = TRUE)
+  cat("      OlinkID matches:", n_match_olink, "\n")
+
+  if (n_match_olink > 0) {
+    out_df <- df_npx_long %>%
+      filter(OlinkID %in% protein_df$OlinkID) %>%
+      select(final_sample_id, OlinkID, NPX) %>%
+      left_join(protein_df %>% select(OlinkID, Multi_Coefficient), by = "OlinkID")
+  } else {
+    # Fallback to assay-name matching if OlinkIDs do not overlap
+    npx_assay <- if ("Assay" %in% colnames(df_npx_long)) {
+      df_npx_long %>% select(final_sample_id, Assay, NPX)
+    } else {
+      df_npx_long %>%
+        left_join(df_id_pro %>% select(OlinkID, Assay) %>% distinct(), by = "OlinkID") %>%
+        select(final_sample_id, Assay, NPX)
+    }
+    protein_weights <- protein_df %>%
+      select(Assay, Multi_Coefficient) %>%
+      distinct(Assay, .keep_all = TRUE)
+    n_match_assay <- sum(unique(npx_assay$Assay) %in% unique(protein_weights$Assay), na.rm = TRUE)
+    cat("      Assay matches:", n_match_assay, "\n")
+
+    out_df <- npx_assay %>%
+      filter(Assay %in% protein_weights$Assay) %>%
+      left_join(protein_weights, by = "Assay")
+  }
+
+  cpps_df <- out_df %>%
     group_by(final_sample_id) %>%
-    summarise(CPPS = sum(Multi_Coefficient * NPX, na.rm = TRUE), .groups = "drop") %>%
-    rename(sample_id = final_sample_id) %>%
-    left_join(meta_in, by = "sample_id") %>%
+    summarise(CPPS = sum(Multi_Coefficient * NPX, na.rm = TRUE), .groups = "drop")
+
+  cat("      DEBUG final_sample_id (CPPS) head:",
+      paste(head(unique(cpps_df$final_sample_id), 10), collapse = ", "), "\n")
+  if ("sample_id" %in% colnames(meta_in)) {
+    cat("      DEBUG meta_in$sample_id head:",
+        paste(head(unique(meta_in$sample_id), 10), collapse = ", "), "\n")
+  }
+  if ("HCI_cID" %in% colnames(meta_pre2)) {
+    cat("      DEBUG meta_pre2$HCI_cID head:",
+        paste(head(unique(meta_pre2$HCI_cID), 10), collapse = ", "), "\n")
+  }
+  if ("final_sample_id" %in% colnames(meta_pre2)) {
+    cat("      DEBUG meta_pre2$final_sample_id head:",
+        paste(head(unique(meta_pre2$final_sample_id), 10), collapse = ", "), "\n")
+  }
+
+  # Attach metadata robustly across ID formats:
+  # - direct final_sample_id -> meta_in$sample_id
+  # - fallback final_sample_id -> HCI_cID via meta_pre2, then HCI_cID -> meta_in
+  n_direct <- sum(cpps_df$final_sample_id %in% meta_in$sample_id, na.rm = TRUE)
+  cat("      metadata direct sample_id matches:", n_direct, "\n")
+
+  if (n_direct > 0) {
+    cpps_meta <- cpps_df %>%
+      rename(sample_id = final_sample_id) %>%
+      left_join(meta_in, by = "sample_id")
+  } else if (exists("lookup")) {
+    # Preferred bridge when available: lookup maps HCI IDs <-> final_sample_id labels
+    normalize_sample <- function(x) {
+      x <- tolower(as.character(x))
+      x <- gsub("-", "_", x)
+      x <- gsub("^c_?", "", x)  # remove leading c or c_
+      m <- stringr::str_match(x, "^(\\d{4})_?(\\d+)$")
+      out <- ifelse(
+        !is.na(m[, 1]),
+        paste0("c_", m[, 2], "_", stringr::str_pad(m[, 3], width = 4, side = "left", pad = "0")),
+        NA_character_
+      )
+      out
+    }
+
+    lookup_df <- tryCatch({
+      if (is.atomic(lookup) && !is.null(names(lookup))) {
+        tibble(
+          final_sample_id = as.character(unname(lookup)),
+          lookup_id = as.character(names(lookup))
+        )
+      } else if (is.data.frame(lookup)) {
+        # Minimal fallback for table-like lookup objects
+        nm <- colnames(lookup)
+        tibble(
+          final_sample_id = as.character(lookup[[nm[2]]]),
+          lookup_id = as.character(lookup[[nm[1]]])
+        )
+      } else {
+        tibble(final_sample_id = character(), lookup_id = character())
+      }
+    }, error = function(e) tibble(final_sample_id = character(), lookup_id = character()))
+
+    lookup_df <- lookup_df %>%
+      mutate(sample_id_norm = normalize_sample(lookup_id)) %>%
+      distinct(final_sample_id, sample_id_norm)
+
+    meta_norm <- meta_in %>%
+      mutate(sample_id_norm = normalize_sample(sample_id))
+
+    n_lookup_overlap <- sum(cpps_df$final_sample_id %in% lookup_df$final_sample_id, na.rm = TRUE)
+    cat("      DEBUG lookup overlap (final_sample_id):", n_lookup_overlap, "\n")
+    cat("      DEBUG lookup final_sample_id head:",
+        paste(head(unique(lookup_df$final_sample_id), 10), collapse = ", "), "\n")
+    cat("      DEBUG lookup sample_id_norm head:",
+        paste(head(unique(lookup_df$sample_id_norm), 10), collapse = ", "), "\n")
+    intersect_ids <- intersect(unique(lookup_df$sample_id_norm), unique(meta_norm$sample_id_norm))
+    cat("      DEBUG lookup/meta normalized intersections:", length(intersect_ids), "\n")
+    cat("      DEBUG lookup/meta intersection head:",
+        paste(head(intersect_ids, 10), collapse = ", "), "\n")
+
+    cpps_meta <- cpps_df %>%
+      left_join(lookup_df, by = "final_sample_id") %>%
+      left_join(meta_norm %>% select(sample_id, sample_id_norm, OS, death, log10_psa, log10_alp, log10_ldh),
+                by = "sample_id_norm")
+
+    n_lookup_meta <- sum(!is.na(cpps_meta$OS), na.rm = TRUE)
+    cat("      metadata lookup bridge matches:", n_lookup_meta, "\n")
+  } else if (all(c("final_sample_id", "HCI_cID") %in% colnames(meta_pre2)) &&
+             any(c("HCI_cID", "sample_id") %in% colnames(meta_in))) {
+    # Normalize HCI IDs to handle c2021_XXXX vs c_2021_XXXX naming differences
+    normalize_hci <- function(x) {
+      x <- tolower(as.character(x))
+      x <- gsub("-", "_", x)
+      x <- gsub("^c_?", "", x)  # remove leading c or c_
+      m <- stringr::str_match(x, "^(\\d{4})_?(\\d+)$")
+      out <- ifelse(
+        !is.na(m[, 1]),
+        paste0("c_", m[, 2], "_", stringr::str_pad(m[, 3], width = 4, side = "left", pad = "0")),
+        NA_character_
+      )
+      out
+    }
+
+    meta_bridge <- meta_pre2 %>%
+      select(final_sample_id, HCI_cID) %>%
+      distinct() %>%
+      mutate(HCI_norm = normalize_hci(HCI_cID))
+
+    meta_surv <- if ("HCI_cID" %in% colnames(meta_in)) {
+      meta_in %>%
+        select(HCI_cID, OS, death, log10_psa, log10_alp, log10_ldh) %>%
+        distinct() %>%
+        mutate(HCI_norm = normalize_hci(HCI_cID))
+    } else {
+      meta_in %>%
+        select(sample_id, OS, death, log10_psa, log10_alp, log10_ldh) %>%
+        distinct() %>%
+        mutate(HCI_norm = normalize_hci(sample_id))
+    }
+
+    cpps_key <- cpps_df %>%
+      left_join(meta_bridge %>% select(final_sample_id, HCI_norm), by = "final_sample_id")
+    n_norm_overlap <- sum(cpps_key$HCI_norm %in% meta_surv$HCI_norm, na.rm = TRUE)
+    cat("      DEBUG normalized key overlap:", n_norm_overlap, "\n")
+    cat("      DEBUG cpps HCI_norm head:",
+        paste(head(unique(cpps_key$HCI_norm), 10), collapse = ", "), "\n")
+    cat("      DEBUG meta_surv HCI_norm head:",
+        paste(head(unique(meta_surv$HCI_norm), 10), collapse = ", "), "\n")
+
+    cpps_meta <- cpps_df %>%
+      left_join(meta_bridge, by = "final_sample_id") %>%
+      left_join(meta_surv %>% select(-any_of(c("HCI_cID", "sample_id"))), by = "HCI_norm") %>%
+      rename(sample_id = final_sample_id)
+    n_hci <- sum(!is.na(cpps_meta$OS), na.rm = TRUE)
+    cat("      metadata HCI_cID bridge matches:", n_hci, "\n")
+  } else {
+    cpps_meta <- cpps_df %>%
+      rename(sample_id = final_sample_id)
+    cat("      metadata bridge unavailable: no join performed\n")
+  }
+
+  # Ensure expected clinical/survival columns exist even if metadata join failed
+  if (!"OS" %in% colnames(cpps_meta)) cpps_meta$OS <- NA_real_
+  if (!"death" %in% colnames(cpps_meta)) cpps_meta$death <- NA_real_
+  if (!"log10_psa" %in% colnames(cpps_meta)) cpps_meta$log10_psa <- NA_real_
+  if (!"log10_alp" %in% colnames(cpps_meta)) cpps_meta$log10_alp <- NA_real_
+  if (!"log10_ldh" %in% colnames(cpps_meta)) cpps_meta$log10_ldh <- NA_real_
+
+  cpps_meta %>%
     transmute(
       SampleID = sample_id,
       CPPS = CPPS,
@@ -3822,12 +4026,83 @@ build_cpps_from_proteins <- function(protein_df) {
     filter(!is.na(CPPS), !is.na(time_to_death), !is.na(death))
 }
 
-run_cpps_iteration <- function(protein_df, iteration_name, file_stub, model_formula, eval_times = c(24, 36)) {
+run_cpps_iteration <- function(protein_df, iteration_name, set_label, file_stub, model_formula, eval_times = c(24, 36)) {
   df_iter <- build_cpps_from_proteins(protein_df)
+  cat("  ", set_label, "-", iteration_name, ": proteins =", nrow(protein_df),
+      "| rows after CPPS build =", nrow(df_iter), "\n")
+
+  # If no data are available for this set, return NA summary and a placeholder KM plot
+  if (nrow(df_iter) == 0) {
+    dummy_df <- data.frame(
+      time_to_death = c(1, 1),
+      death = c(0, 0),
+      CPPS_risk = factor(c("Low", "High"), levels = c("Low", "High"))
+    )
+    km_fit <- survfit(Surv(time_to_death, death) ~ CPPS_risk, data = dummy_df)
+    km_plot <- ggsurvplot(
+      fit = km_fit,
+      data = dummy_df,
+      pval = FALSE,
+      conf.int = FALSE,
+      risk.table = TRUE,
+      risk.table.height = 0.3,
+      title = paste0(set_label, ": ", iteration_name, " (no valid observations)"),
+      xlab = "Time to Death (months)",
+      ylab = "Overall Survival Probability",
+      palette = c("grey", "#e41a1c"),
+      legend.labs = c("Low Risk", "High Risk"),
+      break.time.by = 12,
+      ggtheme = theme_custom,
+      surv.median.line = "none"
+    )
+    km_plot$plot <- km_plot$plot +
+      labs(subtitle = "No overlapping non-missing NPX + survival rows for this set.")
+
+    summary_df <- data.frame(
+      Iteration = iteration_name,
+      N_Proteins = nrow(protein_df),
+      Proteins = paste(protein_df$Assay, collapse = ", "),
+      N_Patients = 0,
+      N_Patients_Cox_AUC = 0,
+      Events = 0,
+      Events_Cox_AUC = 0,
+      HR_Continuous_CPPS = NA_real_,
+      HR_Continuous_Lower95 = NA_real_,
+      HR_Continuous_Upper95 = NA_real_,
+      P_Continuous_CPPS = NA_real_,
+      HR_High_vs_Low = NA_real_,
+      HR_High_vs_Low_Lower95 = NA_real_,
+      HR_High_vs_Low_Upper95 = NA_real_,
+      P_High_vs_Low = NA_real_,
+      AUC_24m = NA_real_,
+      AUC_36m = NA_real_,
+      stringsAsFactors = FALSE
+    )
+
+    return(list(summary = summary_df, km_plot = km_plot))
+  }
   
-  # Use the same complete-case cohort as main AUC/Cox analysis
-  cox_ids <- intersect(df_iter$SampleID, df_cpps_complete$SampleID)
-  df_iter_cox <- df_iter %>% filter(SampleID %in% cox_ids)
+  # Use complete clinical cases for Cox/AUC (same principle as df_cpps_complete)
+  df_iter_cox <- df_iter %>%
+    filter(
+      !is.na(log10_psa),
+      !is.na(log10_alp),
+      !is.na(log10_ldh),
+      !is.na(CPPS),
+      !is.na(time_to_death),
+      !is.na(death)
+    )
+
+  # Optionally enforce overlap with df_cpps_complete IDs when available
+  id_col <- if ("SampleID" %in% colnames(df_cpps_complete)) "SampleID" else if ("sample_id" %in% colnames(df_cpps_complete)) "sample_id" else NA_character_
+  if (!is.na(id_col)) {
+    cox_ids <- intersect(df_iter_cox$SampleID, as.character(df_cpps_complete[[id_col]]))
+    if (length(cox_ids) > 0) {
+      df_iter_cox <- df_iter_cox %>% filter(SampleID %in% cox_ids)
+    }
+  }
+  cat("     rows for Cox/AUC =", nrow(df_iter_cox),
+      "| events =", sum(df_iter_cox$death, na.rm = TRUE), "\n")
 
   cpps_cut <- median(df_iter$CPPS, na.rm = TRUE)
   df_iter <- df_iter %>%
@@ -3842,31 +4117,56 @@ run_cpps_iteration <- function(protein_df, iteration_name, file_stub, model_form
       CPPS_risk = factor(CPPS_risk, levels = c("Low", "High"))
     )
 
-  cox_cont <- coxph(model_formula, data = df_iter_cox)
-  cox_bin <- coxph(Surv(time_to_death, death) ~ CPPS_risk, data = df_iter_cox)
-  lp_cont <- predict(cox_cont, type = "lp")
-
-  roc_iter <- timeROC(
-    T = df_iter_cox$time_to_death,
-    delta = df_iter_cox$death,
-    marker = lp_cont,
-    cause = 1,
-    times = eval_times,
-    iid = TRUE
-  )
-  # Match AUC extraction logic used in the main AUC section
-  if (length(roc_iter$AUC) == length(eval_times) + 1) {
-    auc_iter_results <- data.frame(
-      Time_Months = eval_times,
-      AUC_CPPS_Iter = round(roc_iter$AUC[2:(length(eval_times) + 1)], 3)
-    )
+  has_cox_data <- nrow(df_iter_cox) > 0 && sum(df_iter_cox$death, na.rm = TRUE) > 0
+  if (has_cox_data) {
+    cox_cont <- coxph(model_formula, data = df_iter_cox)
+    cox_bin <- coxph(Surv(time_to_death, death) ~ CPPS_risk, data = df_iter_cox)
+    lp_cont <- predict(cox_cont, type = "lp")
   } else {
-    auc_iter_results <- data.frame(
-      Time_Months = eval_times,
-      AUC_CPPS_Iter = round(roc_iter$AUC[1:length(eval_times)], 3)
-    )
+    cox_cont <- NULL
+    cox_bin <- NULL
+    lp_cont <- NULL
   }
-  auc_vals <- auc_iter_results$AUC_CPPS_Iter
+
+  if (has_cox_data) {
+    roc_iter <- timeROC(
+      T = df_iter_cox$time_to_death,
+      delta = df_iter_cox$death,
+      marker = lp_cont,
+      cause = 1,
+      times = eval_times,
+      iid = TRUE
+    )
+    # Match AUC extraction logic used in the main AUC section
+    if (length(roc_iter$AUC) == length(eval_times) + 1) {
+      auc_iter_results <- data.frame(
+        Time_Months = eval_times,
+        AUC_CPPS_Iter = round(roc_iter$AUC[2:(length(eval_times) + 1)], 3)
+      )
+    } else {
+      auc_iter_results <- data.frame(
+        Time_Months = eval_times,
+        AUC_CPPS_Iter = round(roc_iter$AUC[1:length(eval_times)], 3)
+      )
+    }
+    auc_vals <- auc_iter_results$AUC_CPPS_Iter
+  } else {
+    auc_vals <- rep(NA_real_, length(eval_times))
+  }
+
+  if (has_cox_data) {
+    cont_summary <- summary(cox_cont)
+    bin_summary <- summary(cox_bin)
+    hr_value <- bin_summary$conf.int[1, "exp(coef)"]
+    hr_lower <- bin_summary$conf.int[1, "lower .95"]
+    hr_upper <- bin_summary$conf.int[1, "upper .95"]
+  } else {
+    cont_summary <- NULL
+    bin_summary <- NULL
+    hr_value <- NA_real_
+    hr_lower <- NA_real_
+    hr_upper <- NA_real_
+  }
 
   km_fit <- survfit(Surv(time_to_death, death) ~ CPPS_risk, data = df_iter)
   km_table <- summary(km_fit)$table
@@ -3882,9 +4182,14 @@ run_cpps_iteration <- function(protein_df, iteration_name, file_stub, model_form
   }
   fmt_median <- function(x) ifelse(is.na(x), "NR", sprintf("%.2f", x))
   km_title <- paste0(
-    iteration_name, " (", nrow(protein_df), " proteins)\n",
+    set_label, ": ", iteration_name, " (", nrow(protein_df), " proteins)\n",
+    "HR (High vs Low) = ", sprintf("%.2f", hr_value),
+    " [", sprintf("%.2f", hr_lower), "-", sprintf("%.2f", hr_upper), "]"
+  )
+  km_subtitle <- paste0(
     "Median OS (months): Low=", fmt_median(median_low),
-    " | High=", fmt_median(median_high)
+    " | High=", fmt_median(median_high),
+    "\nProteins: ", paste(protein_df$Assay, collapse = ", ")
   )
   km_plot <- ggsurvplot(
     fit = km_fit,
@@ -3902,14 +4207,17 @@ run_cpps_iteration <- function(protein_df, iteration_name, file_stub, model_form
     ggtheme = theme_custom,
     surv.median.line = "hv"
   )
+  median_label <- paste0(
+    "Median OS (months)\n",
+    "Low: ", fmt_median(median_low), "\n",
+    "High: ", fmt_median(median_high)
+  )
+  km_plot$plot <- km_plot$plot +
+    labs(subtitle = km_subtitle) +
+    annotate("text", x = Inf, y = Inf, label = median_label, hjust = 1.02, vjust = 1.1, size = 3.3) +
+    theme(plot.subtitle = element_text(size = 9))
 
-  # KM plot is written to the currently open PDF device (opened per model mode)
-  print(km_plot)
-
-  cont_summary <- summary(cox_cont)
-  bin_summary <- summary(cox_bin)
-
-  data.frame(
+  summary_df <- data.frame(
     Iteration = iteration_name,
     N_Proteins = nrow(protein_df),
     Proteins = paste(protein_df$Assay, collapse = ", "),
@@ -3917,17 +4225,22 @@ run_cpps_iteration <- function(protein_df, iteration_name, file_stub, model_form
     N_Patients_Cox_AUC = nrow(df_iter_cox),
     Events = sum(df_iter$death),
     Events_Cox_AUC = sum(df_iter_cox$death),
-    HR_Continuous_CPPS = cont_summary$conf.int[1, "exp(coef)"],
-    HR_Continuous_Lower95 = cont_summary$conf.int[1, "lower .95"],
-    HR_Continuous_Upper95 = cont_summary$conf.int[1, "upper .95"],
-    P_Continuous_CPPS = cont_summary$coefficients[1, "Pr(>|z|)"],
-    HR_High_vs_Low = bin_summary$conf.int[1, "exp(coef)"],
-    HR_High_vs_Low_Lower95 = bin_summary$conf.int[1, "lower .95"],
-    HR_High_vs_Low_Upper95 = bin_summary$conf.int[1, "upper .95"],
-    P_High_vs_Low = bin_summary$coefficients[1, "Pr(>|z|)"],
+    HR_Continuous_CPPS = if (!is.null(cont_summary)) cont_summary$conf.int[1, "exp(coef)"] else NA_real_,
+    HR_Continuous_Lower95 = if (!is.null(cont_summary)) cont_summary$conf.int[1, "lower .95"] else NA_real_,
+    HR_Continuous_Upper95 = if (!is.null(cont_summary)) cont_summary$conf.int[1, "upper .95"] else NA_real_,
+    P_Continuous_CPPS = if (!is.null(cont_summary)) cont_summary$coefficients[1, "Pr(>|z|)"] else NA_real_,
+    HR_High_vs_Low = if (!is.null(bin_summary)) bin_summary$conf.int[1, "exp(coef)"] else NA_real_,
+    HR_High_vs_Low_Lower95 = if (!is.null(bin_summary)) bin_summary$conf.int[1, "lower .95"] else NA_real_,
+    HR_High_vs_Low_Upper95 = if (!is.null(bin_summary)) bin_summary$conf.int[1, "upper .95"] else NA_real_,
+    P_High_vs_Low = if (!is.null(bin_summary)) bin_summary$coefficients[1, "Pr(>|z|)"] else NA_real_,
     AUC_24m = auc_vals[1],
     AUC_36m = auc_vals[2],
     stringsAsFactors = FALSE
+  )
+
+  list(
+    summary = summary_df,
+    km_plot = km_plot
   )
 }
 
@@ -3944,13 +4257,6 @@ top10_fdr <- sig_tbl %>%
   arrange(Multi_FDR_num, desc(Multi_FDR_num)) %>%
   slice_head(n = 10)
 
-top10_hr_fdr <- sig_tbl %>%
-  mutate(
-    rank_combined = -log10(Multi_FDR_num) * abs(log(pmax(Multi_HR, 1e-10)))
-  ) %>%
-  arrange(rank_combined) %>%
-  slice_head(n = 10) %>%
-  select(-rank_combined)
 
 proteins_11_interest <- if (exists("top_cpps") && nrow(top_cpps) >= 11) {
   top_cpps %>% prep_protein_table()
@@ -3988,11 +4294,10 @@ random10_non_prog <- non_prog_candidates %>%
   slice_sample(n = random_n)
 
 iteration_sets <- list(
-  list(name = "Top 10 proteins by HR", file_stub = "iter_top10_hr", proteins = top10_hr),
-  list(name = "Top 10 proteins by FDR", file_stub = "iter_top10_fdr", proteins = top10_fdr),
-  list(name = "Top 10 proteins by HR + FDR", file_stub = "iter_top10_hr_fdr", proteins = top10_hr_fdr),
-  list(name = "11 proteins of interest", file_stub = "iter_11_proteins_interest", proteins = proteins_11_interest),
-  list(name = "Random 10 non-prognostic proteins", file_stub = "iter_random10_nonprog", proteins = random10_non_prog)
+  list(name = "11 proteins of interest", set_label = "Set 1", file_stub = "iter_11_proteins_interest", proteins = proteins_11_interest),
+  list(name = "Top 10 proteins by HR", set_label = "Set 2", file_stub = "iter_top10_hr", proteins = top10_hr),
+  list(name = "Top 10 proteins by FDR", set_label = "Set 3", file_stub = "iter_top10_fdr", proteins = top10_fdr),
+  list(name = "Random 10 non-prognostic proteins", set_label = "Set 4", file_stub = "iter_random10_nonprog", proteins = random10_non_prog)
 )
 
 model_modes <- list(
@@ -4005,24 +4310,28 @@ all_iteration_results <- list()
 for (mm in model_modes) {
   cat("\n=== Running model mode:", mm$mode, "===\n")
 
-  km_pdf <- file.path(wd$outCurr, paste0("CPPS_KM_all_iterations_", mm$mode, ".pdf"))
-  pdf(km_pdf, width = 10, height = 8, onefile = TRUE)
-
-  mode_results <- lapply(iteration_sets, function(x) {
+  mode_results_raw <- lapply(iteration_sets, function(x) {
     cat("\n--- Running:", x$name, "(", mm$mode, ") ---\n")
     run_cpps_iteration(
       protein_df = x$proteins,
       iteration_name = x$name,
+      set_label = x$set_label,
       file_stub = x$file_stub,
       model_formula = mm$formula,
       eval_times = time_points
     )
   })
 
-  dev.off()
-
-  mode_results <- bind_rows(mode_results) %>%
+  mode_results <- bind_rows(lapply(mode_results_raw, function(x) x$summary)) %>%
     mutate(Model_Mode = mm$mode)
+  mode_km_plots <- lapply(mode_results_raw, function(x) x$km_plot)
+
+  # Save all 4 KM plots for this model mode on one 2x2 page
+  km_pdf <- file.path(wd$outCurr, paste0("CPPS_KM_all_iterations_", mm$mode, ".pdf"))
+  km_combined <- arrange_ggsurvplots(mode_km_plots, print = FALSE, ncol = 2, nrow = 2)
+  pdf(km_pdf, width = 16, height = 12)
+  print(km_combined)
+  dev.off()
 
   write.csv(
     mode_results,
@@ -4056,19 +4365,18 @@ write.csv(
 ## Iteration Protein Membership Plot
 
 ```{r}
-# Create long table for all 5 iteration sets
-set1_tbl <- top10_hr %>% select(Assay) %>% mutate(Set = "Set1", Rank = row_number())
-set2_tbl <- top10_fdr %>% select(Assay) %>% mutate(Set = "Set2", Rank = row_number())
-set3_tbl <- top10_hr_fdr %>% select(Assay) %>% mutate(Set = "Set3", Rank = row_number())
-set4_tbl <- proteins_11_interest %>% select(Assay) %>% mutate(Set = "Set4", Rank = row_number())
-set5_tbl <- random10_non_prog %>% select(Assay) %>% mutate(Set = "Set5", Rank = row_number())
+# Create long table for all 4 iteration sets
+set1_tbl <- proteins_11_interest %>% select(Assay) %>% mutate(Set = "Set1", Rank = row_number())
+set2_tbl <- top10_hr %>% select(Assay) %>% mutate(Set = "Set2", Rank = row_number())
+set3_tbl <- top10_fdr %>% select(Assay) %>% mutate(Set = "Set3", Rank = row_number())
+set4_tbl <- random10_non_prog %>% select(Assay) %>% mutate(Set = "Set4", Rank = row_number())
 
-membership_long <- bind_rows(set1_tbl, set2_tbl, set3_tbl, set4_tbl, set5_tbl) %>%
+membership_long <- bind_rows(set1_tbl, set2_tbl, set3_tbl, set4_tbl) %>%
   distinct()
 
 # Build complete matrix so absent proteins can be shown in grey
 all_proteins <- membership_long %>% distinct(Assay)
-all_sets <- tibble(Set = c("Set1", "Set2", "Set3", "Set4", "Set5"))
+all_sets <- tibble(Set = c("Set1", "Set2", "Set3", "Set4"))
 
 membership_mat <- tidyr::crossing(all_proteins, all_sets) %>%
   left_join(membership_long %>% mutate(In_Set = TRUE), by = c("Assay", "Set")) %>%
@@ -4078,7 +4386,7 @@ membership_mat <- tidyr::crossing(all_proteins, all_sets) %>%
   )
 
 # Order proteins by set-specific ranks in sequence:
-# Set1 first, then Set2..Set5 for tie-breaking while preserving previous order.
+# Set1 first, then Set2..Set4 for tie-breaking while preserving previous order.
 rank_wide <- membership_long %>%
   select(Assay, Set, Rank) %>%
   distinct() %>%
@@ -4092,19 +4400,18 @@ protein_order <- membership_mat %>%
     Rank_Set1 = ifelse(is.na(Rank_Set1), Inf, Rank_Set1),
     Rank_Set2 = ifelse(is.na(Rank_Set2), Inf, Rank_Set2),
     Rank_Set3 = ifelse(is.na(Rank_Set3), Inf, Rank_Set3),
-    Rank_Set4 = ifelse(is.na(Rank_Set4), Inf, Rank_Set4),
-    Rank_Set5 = ifelse(is.na(Rank_Set5), Inf, Rank_Set5)
+    Rank_Set4 = ifelse(is.na(Rank_Set4), Inf, Rank_Set4)
   ) %>%
-  arrange(Rank_Set1, Rank_Set2, Rank_Set3, Rank_Set4, Rank_Set5, desc(Set_Count), Assay) %>%
+  arrange(Rank_Set1, Rank_Set2, Rank_Set3, Rank_Set4, desc(Set_Count), Assay) %>%
   pull(Assay)
 
 membership_mat <- membership_mat %>%
   mutate(
     Assay = factor(Assay, levels = rev(protein_order)),
-    Set = factor(Set, levels = c("Set1", "Set2", "Set3", "Set4", "Set5"))
+    Set = factor(Set, levels = c("Set1", "Set2", "Set3", "Set4"))
   )
 
-# Left annotation: 5 columns (one per set), colored when protein is present in that set
+# Left annotation: 4 columns (one per set), colored when protein is present in that set
 annot_colors <- c("Present" = "black", "Absent" = "white")
 
 annot_mat <- membership_mat %>%
@@ -4127,12 +4434,11 @@ p_annot <- ggplot(annot_mat, aes(x = Set, y = Assay, fill = Annot_Fill)) +
 
 # AUC bar plot for 24 and 36 months with HR [95% CI] labels
 set_map <- tibble(
-  Set = c("Set1", "Set2", "Set3", "Set4", "Set5"),
+  Set = c("Set1", "Set2", "Set3", "Set4"),
   Iteration = c(
+    "11 proteins of interest",
     "Top 10 proteins by HR",
     "Top 10 proteins by FDR",
-    "Top 10 proteins by HR + FDR",
-    "11 proteins of interest",
     "Random 10 non-prognostic proteins"
   )
 )
@@ -4142,7 +4448,7 @@ for (mode_name in names(all_iteration_results)) {
 
   auc_plot_df <- iteration_results_mode %>%
     left_join(set_map, by = "Iteration") %>%
-    mutate(Set = factor(Set, levels = c("Set1", "Set2", "Set3", "Set4", "Set5"))) %>%
+    mutate(Set = factor(Set, levels = c("Set1", "Set2", "Set3", "Set4"))) %>%
     select(Set, AUC_24m, AUC_36m, HR_High_vs_Low, HR_High_vs_Low_Lower95, HR_High_vs_Low_Upper95) %>%
     pivot_longer(cols = c(AUC_24m, AUC_36m), names_to = "Timepoint", values_to = "AUC") %>%
     mutate(
@@ -4153,7 +4459,7 @@ for (mode_name in names(all_iteration_results)) {
   hr_label_df <- iteration_results_mode %>%
     left_join(set_map, by = "Iteration") %>%
     mutate(
-      Set = factor(Set, levels = c("Set1", "Set2", "Set3", "Set4", "Set5")),
+      Set = factor(Set, levels = c("Set1", "Set2", "Set3", "Set4")),
       HR_Label = paste0(
         "HR ", sprintf("%.2f", HR_High_vs_Low),
         " [", sprintf("%.2f", HR_High_vs_Low_Lower95),
@@ -4212,7 +4518,7 @@ for (mode_name in names(all_iteration_results)) {
   p_membership_combined <- p_auc / p_annot +
     plot_layout(heights = c(0.7, 1)) +
     plot_annotation(
-      title = paste0("Protein Membership Across 5 Iteration Sets (", mode_name, ")"),
+      title = paste0("Protein Membership Across 4 Iteration Sets (", mode_name, ")"),
       subtitle = "Top: AUC at 24 and 36 months with HR [95% CI]. Bottom: set membership annotation (black = present)."
     )
 

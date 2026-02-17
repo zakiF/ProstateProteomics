@@ -1,33 +1,4 @@
----
-title: "Integrate all results"
-date: "`r Sys.Date()`"
-output:
-  html_document:
-    toc: true
-    toc_float:
-      collapsed: true
-    toc_depth: 3
-    number_sections: false
-    theme: lumen
-    code_folding: show
----
-
-# Background
-
-This analysis combines all aspects of our project. We can query proteins of interest and evaluate their prognostic association with OS in mCRPC, plasma-tissue expression concordance, druggability status, and cross-reference against previously published prostate cancer biomarkers. We also generate CPPS, stratify by median risk, and compare model performance.
-
-# Objectives
-
-1. Load all required data
-2. Example workflows
-
----
-
-# Pre-processing
-
-## Load packages
-
-```{r setup, message=FALSE, warning=FALSE}
+## ----setup, message=FALSE, warning=FALSE--------------------------------------
 library(here)
 library(tidyverse)
 library(readxl)
@@ -41,11 +12,9 @@ library(grid)
 
 # Set default theme
 theme_set(theme_bw())
-```
 
-## Set up directories
 
-```{r directories}
+## ----directories--------------------------------------------------------------
 wd <- list()
 wd$main <- here()
 wd$data <- file.path(wd$main, "data")
@@ -63,32 +32,9 @@ if (!file.exists(wd$outCurr)) {
 } else {
   cat("✓ Output directory exists:", wd$outCurr, "\n")
 }
-```
 
----
 
-# Obj 1: Load data
-
-The dataset required for this analysis are ;
-
-- Previous prostate biomarker records
-- Annotated protein-drug targets
-- Annotated cell-surface proteins
-- mCRPC overexpressed DEPs
-- Olink (plasma) NPX matrix + metadata
-- Tissue (Mass-spect) matrix + metadata
-
-We also need to load the expression matrix proteomics data (public, mass-spec tissue) and our Olink (plamsa) matrix.
-
-Finally, we need to clinical metadata file
-
-Lets load the individual data from all previous sessions
-
-## Expression data
-
-Lets read in the public data with their metadata
-
-```{r}
+## -----------------------------------------------------------------------------
 # Public SWATH-MS data (same source used in script 09)
 public_raw <- read_excel(
   file.path(wd$public, "41467_2018_3573_MOESM4_ESM.xlsx"),
@@ -117,11 +63,9 @@ colnames(public_norm) <- colnames(public_log2)
 rownames(public_norm) <- public_wide$Protein
 
 cat("Public data loaded:", nrow(public_norm), "proteins x", ncol(public_norm), "samples\n")
-```
 
-Lets read in the Olink (plasma data) with their metadata
 
-```{r}
+## -----------------------------------------------------------------------------
 # Olink expression (all cohorts) and metadata
 olink_expr <- readr::read_csv(
   file.path(wd$outData, "allSamples_expression_matrix.csv"),
@@ -174,12 +118,9 @@ df_npx_long_c_pre <- df_npx_long %>%
 meta_in <- meta_mcrpc %>% rename(sample_id = HCI_cID)
 
 cat("Olink data loaded:", n_distinct(df_npx_long$OlinkID), "proteins\n")
-```
 
 
-The matching protein IDs from public and our Data
-
-```{r}
+## -----------------------------------------------------------------------------
 matched_proteins <- readr::read_csv(
   file.path(wd$out09, "Matched_Olink_SWATHMS_Proteins.csv"),
   show_col_types = FALSE
@@ -192,14 +133,9 @@ matched_public_ids <- unique(matched_proteins$Protein)
 public_norm_matched <- public_norm[rownames(public_norm) %in% matched_public_ids, , drop = FALSE]
 
 cat("Matched proteins:", nrow(matched_proteins), "\n")
-```
 
 
-## Biomarker records
-
-Previous prostate biomarkers records
-
-```{r}
+## -----------------------------------------------------------------------------
 # Read the protein biomarker table
 protein_table <- read_excel(file.path(wd$data, "updated_2024/Protein biomarker pubs mCRPC_zaki_edit.xlsx"))
 
@@ -304,30 +240,21 @@ all_proteins_raw <- lapply(all_protein_entries, function(study) {
 
 
 biom_unique_proteins <- sort(unique(all_proteins_raw))
-```
-
-## Annotated protein-drug target
-
-Lets read in the whole database 
 
 
-```{r}
+## -----------------------------------------------------------------------------
 # Downloaded the file from DrugBank
 df_target <- read.csv(file.path(wd$data, "DrugBank/drugbank_all_target_polypeptide_ids.csv/pharmacologically_active.csv"))
 df_vocab <- read.csv(file.path(wd$data, "DrugBank/drugbank vocabulary.csv"))
-```
 
-Manual addition of drug targets
 
-```{r}
+## -----------------------------------------------------------------------------
 df_target_manual <- read.delim(file.path(wd$data, "Drug_review/protein_drug_associations.tsv"),
                                sep = "\t", 
                                stringsAsFactors = FALSE)
-```
 
-Get a final list combining both
 
-```{r}
+## -----------------------------------------------------------------------------
 df_target_sub <- df_target %>% select(Gene.Name, Drug.IDs) %>% 
   mutate(Drug.IDs = str_split(Drug.IDs, ",\\s*")) %>%
   tidyr::unnest(Drug.IDs) %>%
@@ -338,11 +265,9 @@ df_target_sub <- df_target %>% select(Gene.Name, Drug.IDs) %>%
     DrugBank.ID = str_c(sort(unique(Drug.IDs)), collapse = "; "),
     .groups = "drop"
   )
-```
 
-Replace DrugID with common name
 
-```{r}
+## -----------------------------------------------------------------------------
 df_vocab_sub <- df_vocab %>% select(DrugBank.ID, Common.name)
 # Replace each DrugBank ID with the corresponding Common name
 df_target_ann <- df_target_sub %>%
@@ -357,12 +282,9 @@ df_target_ann <- df_target_sub %>%
     })
   ) %>%
   select(-DrugBank.ID_list)
-```
 
 
-We include additional annotations of drug that was done through manual curations
-
-```{r}
+## -----------------------------------------------------------------------------
 # Proteins that are drug target from manual curations
 dt_manual <- df_target_manual %>% filter(Drug_Association == "Yes") %>% pull (Protein)
 
@@ -378,22 +300,15 @@ df_druggable_index <- tibble(
 )
 
 cat("Drug-annotated unique proteins:", length(drug_annotated_proteins), "\n")
-```
 
-## Annotated cell-surface proteins
 
-```{r}
+## -----------------------------------------------------------------------------
 # List of cell surface markers
 cs <- read.delim(file.path(wd$outData, "CS_human.txt"))
 cs_prot <- unique(cs$Approved.symbol)
-```
 
 
-## mCRPC DEPs
-
-The mCRPC DEP are genes considered over-expressed in mCRPc
-
-```{r}
+## -----------------------------------------------------------------------------
 df_DEPs <- read.csv(file.path(wd$out06, "HR_values_mCRPC_specific_multivariate_cell_surface.csv"))
 
 # Section 03 all-protein multivariate HR results (2000+ proteins)
@@ -404,18 +319,9 @@ df_hr_all <- df_hr_all %>%
 
 # Considered prognostic
 prog_prot <- df_DEPs %>% filter(Multi_Sig == "Yes") %>% pull(Assay) %>% unique()
-```
 
 
-
-# Objective 2: Calculate CPPS from any proteins
-
-We want to calculate CPPS from any protein combination, including proteins without pre-existing multivariate coefficients.
-
-
-The workflow below supports both univariate and multivariate coefficient options (plus equal-weight fallback).
-
-```{r}
+## -----------------------------------------------------------------------------
 cat("=== Objective 2: CPPS from user-defined protein sets ===\n")
 
 # De-duplicate Assay symbols once (pick one row for duplicated assays)
@@ -536,15 +442,9 @@ cpps_perf_combined <- run_cpps_model(df_cpps_example, model_type = "Clinical_plu
 cpps_performance <- bind_rows(cpps_perf_cpps, cpps_perf_combined)
 
 print(cpps_performance)
-```
 
 
-# Objective 3: Some plots
-
-
-## HR plots
-
-```{r}
+## -----------------------------------------------------------------------------
 # Map OlinkID -> Assay (pick one mapping per assay)
 assay_map <- bind_rows(
   dep_unique %>% select(OlinkID, Assay),
@@ -609,17 +509,9 @@ hr_olink <- fit_olink_hr(proteins_for_hr)
 p_hr <- plot_olink_hr_forest(hr_olink)
 print(p_hr)
 ggsave(file.path(wd$outCurr, "Objective3_HR_forest_olink.pdf"), p_hr, width = 8, height = 6)
-```
 
 
-## Expression plot
-
-Given any protiens, plot the expression of Local prostate cancer (cohort A in Olink). mHSPC (chort B) and mCRPC. Next to it plot the public data local PC and mCRPC.
-
-Need to use facet_wrap becayse the scale of Olink and public is different
-
-
-```{r}
+## -----------------------------------------------------------------------------
 plot_expression_cross_platform <- function(proteins) {
   # Define color palettes
   pal.olink <- c("Local" = "#AEC7E8",
@@ -724,15 +616,9 @@ proteins_for_expr <- matched_proteins %>%
 p_expr <- plot_expression_cross_platform(proteins_for_expr)
 print(p_expr)
 ggsave(file.path(wd$outCurr, "Objective3_Expression_cross_platform.pdf"), p_expr, width = 14, height = 2.6 * length(proteins_for_expr))
-```
 
 
-## Multi-panel summary (ggplot)
-
-Given any protein list, generate 6 aligned panels:
-1) annotations, 2) Olink means, 3) Olink FC, 4) Public means, 5) Public FC, 6) HR forest plot.
-
-```{r}
+## -----------------------------------------------------------------------------
 build_integration_panels_gg <- function(proteins, cpps_method = c("multivariate", "univariate", "equal_weight")) {
   cpps_method <- match.arg(cpps_method)
   proteins <- unique(proteins)
@@ -1167,9 +1053,4 @@ p_multi <- build_integration_panels_gg(proteins_for_complex)
 print(p_multi)
 ggsave(file.path(wd$outCurr, "Objective3_Integration_Multipanel_ggplot.pdf"), 
        p_multi, width = 10.7, height = 0.4 * length(proteins_for_complex) + 3)
-```
 
-
-# Obj 4: Nomogram 
-
-Lets now also generate nomograms

@@ -727,27 +727,23 @@ ggsave(file.path(wd$outCurr, "Objective3_Expression_cross_platform.pdf"), p_expr
 ```
 
 
-## Multi-panel summary (ggplot)
+## Complex summary heatmap
 
-Given any protein list, generate 6 aligned panels:
-1) annotations, 2) Olink means, 3) Olink FC, 4) Public means, 5) Public FC, 6) HR forest plot.
+Given any protein list, generate one-row-per-protein summary with:
+- detection in Olink/Public,
+- druggability,
+- prognostic status in Olink,
+- Olink/Public mCRPC-vs-Local log2FC,
+- HR (plus CPPS row in the HR panel only).
 
 ```{r}
-build_integration_panels_gg <- function(proteins, cpps_method = c("multivariate", "univariate", "equal_weight")) {
+build_complex_protein_heatmap <- function(proteins, cpps_method = c("multivariate", "univariate", "equal_weight")) {
   cpps_method <- match.arg(cpps_method)
+
   proteins <- unique(proteins)
   if (length(proteins) == 0) stop("No proteins provided.")
 
-  # Define scaling function (min-max per row)
-  pheatmap.scale <- function(x) {
-    rmin <- apply(x, 1, min, na.rm = TRUE)
-    rmax <- apply(x, 1, max, na.rm = TRUE)
-    rrng <- rmax - rmin
-    z <- (x - rmin) / rrng
-    z[!is.finite(z)] <- NA_real_
-    z
-  }
-
+  # Allow running this chunk standalone by loading HR table on demand
   hr_all_tbl <- if (exists("df_hr_all", inherits = TRUE)) {
     get("df_hr_all", inherits = TRUE)
   } else {
@@ -756,332 +752,47 @@ build_integration_panels_gg <- function(proteins, cpps_method = c("multivariate"
       distinct(OlinkID, Assay, .keep_all = TRUE)
   }
 
-  # Order proteins by HR (high -> low), keep CPPS as top row
-  hr_order_df <- tibble(Assay = proteins, input_idx = seq_along(proteins)) %>%
-    mutate(Assay_key = toupper(Assay)) %>%
-    left_join(
-      hr_all_tbl %>%
-        transmute(Assay_key = toupper(Assay), HR = as.numeric(HR)),
-      by = "Assay_key"
-    ) %>%
-    arrange(is.na(HR), desc(HR), input_idx)
-  proteins_ord <- hr_order_df$Assay
-  rows_all <- c(proteins_ord, "CPPS")
-  prot_levels <- c(rev(proteins_ord), "CPPS")
+  # 1) Binary status columns
+  olink_detected <- proteins %in% unique(assay_map$Assay)
+  public_detected <- proteins %in% unique(matched_proteins$Assay)
+  # Case-insensitive matching for annotation sources
+  is_cell_surface <- toupper(proteins) %in% toupper(unique(cs_prot))
+  is_druggable <- toupper(proteins) %in% toupper(unique(drug_annotated_proteins))
+  is_prognostic <- proteins %in% unique(dep_unique$Assay[dep_unique$Multi_Sig == "Yes"])
 
-  ann_df <- tibble(
-    Protein = rows_all,
-    `In Olink` = ifelse(Protein == "CPPS", NA_integer_, as.integer(Protein %in% unique(assay_map$Assay))),
-    `In Public` = ifelse(Protein == "CPPS", NA_integer_, as.integer(Protein %in% unique(matched_proteins$Assay))),
-    `Biom` = ifelse(Protein == "CPPS", NA_integer_, as.integer(toupper(Protein) %in% toupper(unique(biom_unique_proteins)))),
-    `CS` = ifelse(Protein == "CPPS", NA_integer_, as.integer(toupper(Protein) %in% toupper(unique(cs_prot)))),
-    `Dx` = ifelse(Protein == "CPPS", NA_integer_, as.integer(toupper(Protein) %in% toupper(unique(drug_annotated_proteins)))),
-    `Prog` = ifelse(Protein == "CPPS", NA_integer_, as.integer(Protein %in% unique(dep_unique$Assay[dep_unique$Multi_Sig == "Yes"])))
-  ) %>%
-    mutate(Protein = factor(Protein, levels = prot_levels))
-
-  ann_cells <- ann_df %>%
-    select(-Protein) %>%
-    mutate(Protein = ann_df$Protein) %>%
-    pivot_longer(-Protein, names_to = "Column", values_to = "Value") %>%
-    mutate(
-      Column = factor(Column, levels = c("In Public", "Biom", "CS", "Dx", "Prog")),
-      fill_key = case_when(
-        is.na(Value) ~ NA_character_,
-        Value == 0 ~ "no",
-        Column == "In Public" & Value == 1 ~ "plasma_yes",
-        Value == 1 ~ "other_yes",
-        TRUE ~ NA_character_
-      )
-    )
-
-  name_cells <- ann_df %>%
-    transmute(Protein, Column = factor("Protein", levels = c("Protein", "In Public", "Biom", "CS", "Dx", "Prog")), label = as.character(Protein))
-
-  cpps_sum_public <- ann_df %>%
-    filter(as.character(Protein) != "CPPS") %>%
-    summarise(score = sum(`In Public`, na.rm = TRUE)) %>%
-    pull(score)
-  cpps_sum_biom <- ann_df %>%
-    filter(as.character(Protein) != "CPPS") %>%
-    summarise(score = sum(`Biom`, na.rm = TRUE)) %>%
-    pull(score)
-  cpps_sum_cs <- ann_df %>%
-    filter(as.character(Protein) != "CPPS") %>%
-    summarise(score = sum(`CS`, na.rm = TRUE)) %>%
-    pull(score)
-  cpps_sum_dx <- ann_df %>%
-    filter(as.character(Protein) != "CPPS") %>%
-    summarise(score = sum(`Dx`, na.rm = TRUE)) %>%
-    pull(score)
-  cpps_sum_prog <- ann_df %>%
-    filter(as.character(Protein) != "CPPS") %>%
-    summarise(score = sum(`Prog`, na.rm = TRUE)) %>%
-    pull(score)
-
-  cpps_score_cells <- tibble(
-    Protein = factor(rep("CPPS", 5), levels = prot_levels),
-    Column = factor(c("In Public", "Biom", "CS", "Dx", "Prog"), levels = c("Protein", "In Public", "Biom", "CS", "Dx", "Prog")),
-    label = c(
-      as.character(cpps_sum_public),
-      as.character(cpps_sum_biom),
-      as.character(cpps_sum_cs),
-      as.character(cpps_sum_dx),
-      as.character(cpps_sum_prog)
-    )
-  )
-
-  p_ann <- ggplot() +
-    geom_tile(
-      data = ann_cells,
-      aes(x = Column, y = Protein, fill = fill_key),
-      color = "grey60", linewidth = 0.3, width = 0.95, height = 0.95
-    ) +
-    geom_tile(
-      data = name_cells,
-      aes(x = Column, y = Protein),
-      fill = "white", color = "grey60", linewidth = 0.3, width = 0.95, height = 0.95
-    ) +
-    geom_text(
-      data = name_cells,
-      aes(x = Column, y = Protein, label = label),
-      size = 3
-    ) +
-    geom_text(
-      data = cpps_score_cells,
-      aes(x = Column, y = Protein, label = label),
-      size = 3.2,
-      fontface = "bold"
-    ) +
-    scale_fill_manual(
-      values = c(
-        "no" = "grey99",
-        "olink_yes" = "#D69526",
-        "plasma_yes" = "#FBB4AE",
-        "other_yes" = "grey40"
-      ),
-      na.value = "white",
-      guide = "none"
-    ) +
-    scale_x_discrete(drop = FALSE, limits = c("Protein", "In Public", "Biom", "CS", "Dx", "Prog")) +
-    labs(x = NULL, y = NULL, title = "Annotations") +
-    theme_bw() +
-    theme(
-      axis.text.y = element_blank(),
-      axis.ticks = element_blank(),
-      axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
-      panel.grid = element_blank(),
-      plot.title = element_text(size = 10, face = "bold")
-    )
-
-  olink_long <- df_npx_long %>%
+  # 2) Olink log2FC (mCRPC - Local) using pre-treatment only
+  olink_fc <- df_npx_long %>%
     filter(cohort %in% c("A", "C"), grepl("^Pre", txt_stat_ordered)) %>%
     left_join(assay_map, by = "OlinkID") %>%
     filter(!is.na(Assay), Assay %in% proteins) %>%
-    mutate(Group = recode(cohort, A = "Local", C = "mCRPC")) %>%
-    transmute(Assay, Sample = HCI_cID, Group, Expr = NPX)
+    group_by(Assay, cohort) %>%
+    summarise(mu = mean(NPX, na.rm = TRUE), .groups = "drop") %>%
+    mutate(cohort_lbl = recode(cohort, A = "Local", C = "mCRPC")) %>%
+    select(-cohort) %>%
+    pivot_wider(names_from = cohort_lbl, values_from = mu) %>%
+    mutate(Olink_log2FC = mCRPC - Local) %>%
+    select(Assay, Olink_log2FC) %>%
+    group_by(Assay) %>%
+    summarise(Olink_log2FC = mean(Olink_log2FC, na.rm = TRUE), .groups = "drop")
 
-  # min-max scaling within each protein for Olink panel (row-wise matrix scaling)
-  olink_mat <- olink_long %>%
-    select(Assay, Sample, Expr) %>%
-    distinct() %>%
-    pivot_wider(names_from = Sample, values_from = Expr)
-  olink_mat_num <- as.matrix(olink_mat %>% select(-Assay))
-  rownames(olink_mat_num) <- olink_mat$Assay
-  olink_z_mat <- pheatmap.scale(olink_mat_num)
-  olink_z_long <- as.data.frame(olink_z_mat) %>%
-    tibble::rownames_to_column("Assay") %>%
-    pivot_longer(-Assay, names_to = "Sample", values_to = "Expr_scaled") %>%
-    left_join(olink_long %>% select(Sample, Group) %>% distinct(), by = "Sample")
-
-  olink_z_mean <- olink_z_long %>%
-    group_by(Assay, Group) %>%
-    summarise(MeanExpr = mean(Expr_scaled, na.rm = TRUE), .groups = "drop") %>%
-    complete(Assay = proteins, Group = c("Local", "mCRPC"), fill = list(MeanExpr = NA_real_)) %>%
-    mutate(Assay = as.character(Assay)) %>%
-    bind_rows(tibble(Assay = "CPPS", Group = c("Local", "mCRPC"), MeanExpr = NA_real_)) %>%
-    mutate(Assay = factor(Assay, levels = prot_levels), Group = factor(Group, levels = c("Local", "mCRPC")))
-
-  p_olink_mean <- olink_z_mean %>%
-    ggplot(aes(y = Assay)) +
-    geom_segment(
-      data = ~ dplyr::filter(.x, Group == "Local"),
-      aes(x = 0, xend = MeanExpr, yend = Assay),
-      color = "grey40",
-      position = position_nudge(y = -0.16),
-      linewidth = 0.55,
-      na.rm = TRUE
-    ) +
-    geom_point(
-      data = ~ dplyr::filter(.x, Group == "Local"),
-      aes(x = MeanExpr),
-      color = pal.olink["Local"],
-      position = position_nudge(y = -0.16),
-      size = 2.5,
-      na.rm = TRUE
-    ) +
-    geom_segment(
-      data = ~ dplyr::filter(.x, Group == "mCRPC"),
-      aes(x = 0, xend = MeanExpr, yend = Assay),
-      color = "grey40",
-      position = position_nudge(y = 0.16),
-      linewidth = 0.55,
-      na.rm = TRUE
-    ) +
-    geom_point(
-      data = ~ dplyr::filter(.x, Group == "mCRPC"),
-      aes(x = MeanExpr),
-      color = pal.olink["mCRPC"],
-      position = position_nudge(y = 0.16),
-      size = 2.5,
-      na.rm = TRUE
-    ) +
-    #scale_x_continuous(limits = c(0, 1)) +
-    scale_y_discrete(drop = FALSE) +
-    labs(x = "Mean min-max scaled", y = NULL, title = "Olink Expression") +
-    theme_bw() +
-    theme(
-      axis.text.y = element_blank(),
-      axis.ticks.y = element_blank(),
-      legend.position = "none",
-      panel.grid = element_blank(),
-      plot.title = element_text(size = 10, face = "bold")
-    )
-
-  # FC is kept on raw scale
-  olink_fc <- olink_long %>%
-    group_by(Assay, Group) %>%
-    summarise(MeanExpr = mean(Expr, na.rm = TRUE), .groups = "drop") %>%
-    complete(Assay = proteins, Group = c("Local", "mCRPC"), fill = list(MeanExpr = NA_real_)) %>%
-    pivot_wider(names_from = Group, values_from = MeanExpr) %>%
-    mutate(FC = mCRPC - Local) %>%
-    transmute(Assay, Dataset = "Olink", log2FC = FC) %>%
-    bind_rows(tibble(Assay = "CPPS", Dataset = "Olink", log2FC = NA_real_))
-
-  p_olink_fc <- olink_fc %>%
-    mutate(Assay = factor(Assay, levels = prot_levels), Dataset = factor(Dataset, levels = "Olink")) %>%
-    ggplot(aes(x = Dataset, y = Assay, fill = log2FC)) +
-    geom_tile(color = "white", linewidth = 0.3, width = 0.95, height = 0.95, na.rm = TRUE) +
-    scale_fill_gradient2(low = "#4575B4", mid = "white", high = "#D73027", midpoint = 0, oob = scales::squish, na.value = "white") +
-    scale_y_discrete(drop = FALSE) +
-    labs(x = NULL, y = NULL, title = "Olink FC") +
-    theme_bw() +
-    theme(
-      axis.text.y = element_blank(),
-      axis.ticks.y = element_blank(),
-      axis.text.x = element_text(size = 10, face = "bold", angle = 30, hjust = 1),
-      legend.position = "none",
-      panel.grid = element_blank(),
-      #panel.border = element_blank(),
-      plot.title = element_text(size = 10, face = "bold")
-    )
-
-  public_long <- as.data.frame(public_norm) %>%
+  # 3) Public log2FC (mCRPC - Local_PC), following script 09 style
+  public_fc <- as.data.frame(public_norm) %>%
     tibble::rownames_to_column("Protein") %>%
     pivot_longer(-Protein, names_to = "Biological_ID", values_to = "Value") %>%
     left_join(public_avg %>% select(Biological_ID, Group) %>% distinct(), by = "Biological_ID") %>%
     filter(Group %in% c("Local_PC", "mCRPC")) %>%
+    group_by(Protein, Group) %>%
+    summarise(mu = mean(Value, na.rm = TRUE), .groups = "drop") %>%
+    pivot_wider(names_from = Group, values_from = mu) %>%
+    mutate(Public_log2FC = mCRPC - Local_PC) %>%
+    select(Protein, Public_log2FC) %>%
     left_join(matched_proteins %>% select(Protein, Assay) %>% distinct(), by = "Protein") %>%
     filter(!is.na(Assay), Assay %in% proteins) %>%
-    transmute(Assay, Sample = Biological_ID, Group, Expr = Value)
+    group_by(Assay) %>%
+    summarise(Public_log2FC = mean(Public_log2FC, na.rm = TRUE), .groups = "drop")
 
-  # min-max scaling within each protein for Public panel (row-wise matrix scaling)
-  public_mat <- public_long %>%
-    select(Assay, Sample, Expr) %>%
-    distinct() %>%
-    pivot_wider(names_from = Sample, values_from = Expr)
-  public_mat_num <- as.matrix(public_mat %>% select(-Assay))
-  rownames(public_mat_num) <- public_mat$Assay
-  public_z_mat <- pheatmap.scale(public_mat_num)
-  public_z_long <- as.data.frame(public_z_mat) %>%
-    tibble::rownames_to_column("Assay") %>%
-    pivot_longer(-Assay, names_to = "Sample", values_to = "Expr_scaled") %>%
-    left_join(public_long %>% select(Sample, Group) %>% distinct(), by = "Sample")
-
-  public_z_mean <- public_z_long %>%
-    group_by(Assay, Group) %>%
-    summarise(MeanExpr = mean(Expr_scaled, na.rm = TRUE), .groups = "drop") %>%
-    complete(Assay = proteins, Group = c("Local_PC", "mCRPC"), fill = list(MeanExpr = NA_real_)) %>%
-    mutate(Assay = as.character(Assay)) %>%
-    bind_rows(tibble(Assay = "CPPS", Group = c("Local_PC", "mCRPC"), MeanExpr = NA_real_)) %>%
-    mutate(Assay = factor(Assay, levels = prot_levels), Group = factor(Group, levels = c("Local_PC", "mCRPC")))
-
-  p_public_mean <- public_z_mean %>%
-    ggplot(aes(y = Assay)) +
-    geom_segment(
-      data = ~ dplyr::filter(.x, Group == "Local_PC"),
-      aes(x = 0, xend = MeanExpr, yend = Assay),
-      color = "grey40",
-      position = position_nudge(y = -0.16),
-      linewidth = 0.55,
-      na.rm = TRUE
-    ) +
-    geom_point(
-      data = ~ dplyr::filter(.x, Group == "Local_PC"),
-      aes(x = MeanExpr),
-      color = pal.public["Local_PC"],
-      position = position_nudge(y = -0.16),
-      size = 2.5,
-      na.rm = TRUE
-    ) +
-    geom_segment(
-      data = ~ dplyr::filter(.x, Group == "mCRPC"),
-      aes(x = 0, xend = MeanExpr, yend = Assay),
-      color = "grey40",
-      position = position_nudge(y = 0.16),
-      linewidth = 0.55,
-      na.rm = TRUE
-    ) +
-    geom_point(
-      data = ~ dplyr::filter(.x, Group == "mCRPC"),
-      aes(x = MeanExpr),
-      color = pal.public["mCRPC"],
-      position = position_nudge(y = 0.16),
-      size = 2.5,
-      na.rm = TRUE
-    ) +
-    # scale_x_continuous(limits = c(0, 1)) +
-    scale_x_reverse() +
-    scale_y_discrete(drop = FALSE) +
-    labs(x = "Mean min-max scaled", y = NULL, title = "Public Expression") +
-    theme_bw() +
-    theme(
-      axis.text.y = element_blank(),
-      axis.ticks.y = element_blank(),
-      legend.position = "none",
-      panel.grid = element_blank(),
-      plot.title = element_text(size = 10, face = "bold")
-    )
-
-  # FC is kept on raw normalized scale
-  public_fc <- public_long %>%
-    group_by(Assay, Group) %>%
-    summarise(MeanExpr = mean(Expr, na.rm = TRUE), .groups = "drop") %>%
-    complete(Assay = proteins, Group = c("Local_PC", "mCRPC"), fill = list(MeanExpr = NA_real_)) %>%
-    pivot_wider(names_from = Group, values_from = MeanExpr) %>%
-    mutate(FC = mCRPC - Local_PC) %>%
-    transmute(Assay, Dataset = "Public", log2FC = FC) %>%
-    bind_rows(tibble(Assay = "CPPS", Dataset = "Public", log2FC = NA_real_))
-
-  p_public_fc <- public_fc %>%
-    mutate(Assay = factor(Assay, levels = prot_levels), Dataset = factor(Dataset, levels = "Public")) %>%
-    ggplot(aes(x = Dataset, y = Assay, fill = log2FC)) +
-    geom_tile(color = "white", linewidth = 0.3, width = 0.95, height = 0.95, na.rm = TRUE) +
-    scale_fill_gradient2(low = "#4575B4", mid = "white", high = "#D73027", midpoint = 0, oob = scales::squish, na.value = "white") +
-    scale_y_discrete(drop = FALSE) +
-    labs(x = NULL, y = NULL, title = "Public FC") +
-    theme_bw() +
-    theme(
-      axis.text.y = element_blank(),
-      axis.ticks.y = element_blank(),
-      axis.text.x = element_text(size = 10, face = "bold", angle = 30, hjust = 1),
-      legend.position = "none",
-      panel.grid = element_blank(),
-      #panel.border = element_blank(),
-      plot.title = element_text(size = 10, face = "bold")
-    )
-
-  hr_df <- tibble(Assay = proteins) %>%
+  # 4) Protein-level HR from section 03 all-protein multivariate output
+  hr_protein <- tibble(Assay = proteins) %>%
     mutate(Assay_key = toupper(Assay)) %>%
     left_join(
       hr_all_tbl %>%
@@ -1092,8 +803,16 @@ build_integration_panels_gg <- function(proteins, cpps_method = c("multivariate"
           U95 = as.numeric(Upper_Bound)
         ),
       by = "Assay_key"
-    )
+    ) %>%
+    select(Assay, HR, L95, U95)
 
+  # Keep CPPS first, order protein rows by HR (highest -> lowest), NAs at bottom
+  protein_order <- tibble(Assay = proteins, input_idx = seq_along(proteins)) %>%
+    left_join(hr_protein %>% select(Assay, HR), by = "Assay") %>%
+    arrange(is.na(HR), desc(HR), input_idx) %>%
+    pull(Assay)
+
+  # 5) CPPS HR row (only for HR panel)
   cpps_tbl <- prepare_cpps_protein_table(proteins, method = cpps_method)
   cpps_df <- build_cpps_dataset(cpps_tbl) %>%
     filter(!is.na(CPPS), !is.na(time_to_death), !is.na(death))
@@ -1115,61 +834,242 @@ build_integration_panels_gg <- function(proteins, cpps_method = c("multivariate"
     cpps_u95 <- ss_cpps$conf.int["CPPS_riskHigh", "upper .95"]
   }
 
-  hr_df <- bind_rows(
-    hr_df,
-    tibble(Assay = "CPPS", HR = cpps_hr, L95 = cpps_l95, U95 = cpps_u95)
-  ) %>%
+  # Build row index including CPPS (top row)
+  rows_all <- c("CPPS", protein_order)
+  n_rows <- length(rows_all)
+
+  # Binary matrices (protein rows always 0/1; CPPS row stays NA/blank)
+  mat_detect <- matrix(NA_real_, nrow = n_rows, ncol = 2,
+                       dimnames = list(rows_all, c("Olink", "Public")))
+  prot_idx <- match(proteins, rows_all)
+  mat_detect[prot_idx, "Olink"] <- 0
+  mat_detect[prot_idx, "Public"] <- 0
+  mat_detect[prot_idx, "Olink"] <- as.numeric(olink_detected)
+  mat_detect[prot_idx, "Public"] <- as.numeric(public_detected)
+
+  mat_cs <- matrix(NA_real_, nrow = n_rows, ncol = 1, dimnames = list(rows_all, "CS"))
+  mat_dx <- matrix(NA_real_, nrow = n_rows, ncol = 1, dimnames = list(rows_all, "Dx"))
+  mat_prog <- matrix(NA_real_, nrow = n_rows, ncol = 1, dimnames = list(rows_all, "Prog"))
+  mat_cs[prot_idx, 1] <- 0
+  mat_dx[prot_idx, 1] <- 0
+  mat_prog[prot_idx, 1] <- 0
+  mat_cs[prot_idx, 1] <- as.numeric(is_cell_surface)
+  mat_dx[prot_idx, 1] <- as.numeric(is_druggable)
+  mat_prog[prot_idx, 1] <- as.numeric(is_prognostic)
+
+  # FC matrix (CPPS row blank)
+  mat_fc <- matrix(NA_real_, nrow = n_rows, ncol = 2,
+                   dimnames = list(rows_all, c("Olink FC", "Public FC")))
+  if (nrow(olink_fc) > 0) {
+    mat_fc[olink_fc$Assay, "Olink FC"] <- olink_fc$Olink_log2FC
+  }
+  if (nrow(public_fc) > 0) {
+    mat_fc[public_fc$Assay, "Public FC"] <- public_fc$Public_log2FC
+  }
+
+  # HR vectors (include CPPS as final row)
+  hr_df_all <- tibble(
+    RowID = rows_all,
+    HR = NA_real_,
+    L95 = NA_real_,
+    U95 = NA_real_
+  )
+  hr_df_all <- hr_df_all %>%
+    left_join(hr_protein %>% rename(RowID = Assay), by = "RowID", suffix = c("", ".new")) %>%
     mutate(
-      Assay = factor(Assay, levels = prot_levels),
-      log2HR = log2(HR),
-      log2L95 = log2(L95),
-      log2U95 = log2(U95)
+      HR = coalesce(HR.new, HR),
+      L95 = coalesce(L95.new, L95),
+      U95 = coalesce(U95.new, U95)
+    ) %>%
+    select(RowID, HR, L95, U95)
+  hr_df_all[hr_df_all$RowID == "CPPS", c("HR", "L95", "U95")] <- list(cpps_hr, cpps_l95, cpps_u95)
+
+  # Color scales
+  col_bin <- c("0" = "grey85", "1" = "black")
+  fc_cap <- suppressWarnings(max(abs(mat_fc), na.rm = TRUE))
+  if (!is.finite(fc_cap) || fc_cap <= 0) fc_cap <- 1
+  col_fc <- circlize::colorRamp2(c(-fc_cap, 0, fc_cap), c("#2166AC", "white", "#B2182B"))
+
+  # Main heatmap blocks
+  ht_detect <- Heatmap(
+    mat_detect,
+    name = "Detected",
+    col = col_bin,
+    na_col = "white",
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    row_names_side = "left",
+    row_names_gp = gpar(fontsize = 10),
+    column_names_rot = 45,
+    column_names_gp = gpar(fontsize = 8),
+    width = unit(c(7, 7), "mm"),
+    rect_gp = gpar(col = "grey70"),
+    show_heatmap_legend = FALSE
+  )
+
+  ht_cs <- Heatmap(
+    mat_cs,
+    name = "CS",
+    col = col_bin,
+    na_col = "white",
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    row_names_side = "left",
+    show_row_names = FALSE,
+    column_names_rot = 0,
+    column_names_gp = gpar(fontsize = 8),
+    width = unit(10, "mm"),
+    rect_gp = gpar(col = "grey50"),
+    show_heatmap_legend = FALSE
+  )
+
+  ht_dx <- Heatmap(
+    mat_dx,
+    name = "Dx",
+    col = col_bin,
+    na_col = "white",
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    row_names_side = "left",
+    show_row_names = FALSE,
+    column_names_rot = 0,
+    column_names_gp = gpar(fontsize = 8),
+    width = unit(10, "mm"),
+    rect_gp = gpar(col = "grey50"),
+    show_heatmap_legend = FALSE
+  )
+
+  ht_prog <- Heatmap(
+    mat_prog,
+    name = "Prog",
+    col = col_bin,
+    na_col = "white",
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    row_names_side = "left",
+    show_row_names = FALSE,
+    column_names_rot = 0,
+    column_names_gp = gpar(fontsize = 8),
+    width = unit(12, "mm"),
+    rect_gp = gpar(col = "grey70"),
+    show_heatmap_legend = FALSE
+  )
+
+  # Explicit spacer to create a visible gap between column 3 and 4 blocks
+  ht_spacer <- Heatmap(
+    matrix(NA_real_, nrow = n_rows, ncol = 1, dimnames = list(rows_all, "")),
+    col = c("0" = "white"),
+    na_col = "white",
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    show_row_names = FALSE,
+    show_column_names = FALSE,
+    width = unit(3.5, "mm"),
+    rect_gp = gpar(col = NA),
+    show_heatmap_legend = FALSE
+  )
+
+  # Thin separator to keep flag columns visually distinct
+  ht_sep <- Heatmap(
+    matrix(NA_real_, nrow = n_rows, ncol = 1, dimnames = list(rows_all, "")),
+    col = c("0" = "white"),
+    na_col = "white",
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    show_row_names = FALSE,
+    show_column_names = FALSE,
+    width = unit(0.8, "mm"),
+    rect_gp = gpar(col = NA),
+    show_heatmap_legend = FALSE
+  )
+
+  ht_fc <- Heatmap(
+    mat_fc,
+    name = "log2FC",
+    col = col_fc,
+    na_col = "white",
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    show_row_names = FALSE,
+    column_names_rot = 45,
+    column_names_gp = gpar(fontsize = 8),
+    width = unit(c(16, 16), "mm"),
+    rect_gp = gpar(col = "grey80")
+  )
+
+  # Row-wise HR forest panel (log2 scale so symmetric around HR=1)
+  hr_x <- log2(hr_df_all$HR)
+  hr_l <- log2(hr_df_all$L95)
+  hr_u <- log2(hr_df_all$U95)
+
+  hr_anno <- rowAnnotation(
+    `HR (OS)` = anno_empty(
+      border = TRUE,
+      width = unit(45, "mm"),
+      zoom = TRUE
+    ),
+    annotation_name_side = "top",
+    annotation_name_rot = 0
+  )
+
+  ht_all <- ht_detect + ht_spacer + ht_cs + ht_sep + ht_dx + ht_sep + ht_prog + ht_sep + ht_fc + hr_anno
+
+  draw(ht_all,
+       heatmap_legend_side = "right",
+       annotation_legend_side = "right",
+       column_title = "Protein integration summary")
+
+  # Draw CI and points in HR panel viewport after layout
+  decorate_annotation("HR (OS)", {
+    y_pos <- rev(seq_len(n_rows)) - 0.5
+    ok <- which(is.finite(hr_x) & is.finite(hr_l) & is.finite(hr_u))
+    if (length(ok) > 0) {
+      x_min <- min(hr_l[ok], log2(0.5), na.rm = TRUE)
+      x_max <- max(hr_u[ok], log2(4), na.rm = TRUE)
+    } else {
+      x_min <- log2(0.5)
+      x_max <- log2(4)
+    }
+    pad <- 0.08 * (x_max - x_min + 1e-8)
+    x_lims <- c(x_min - pad, x_max + pad)
+
+    # x-axis ticks at clinically familiar HR values
+    tick_hr <- c(0.5, 1, 2, 4)
+    tick_x <- log2(tick_hr)
+
+    # baseline at HR=1
+    grid.lines(
+      x = unit(rep((log2(1) - x_lims[1]) / diff(x_lims), 2), "npc"),
+      y = unit(c(0, 1), "npc"),
+      gp = gpar(col = "grey55", lty = 2)
     )
 
-  hr_xmin <- suppressWarnings(min(hr_df$log2L95, na.rm = TRUE))
-  hr_xmax <- suppressWarnings(max(hr_df$log2U95, na.rm = TRUE))
-  if (!is.finite(hr_xmin)) hr_xmin <- -1
-  if (!is.finite(hr_xmax)) hr_xmax <- 1
-  hr_xlim <- c(min(-1, hr_xmin), max(1, hr_xmax))
+    # CIs + points
+    for (i in ok) {
+      x0 <- (hr_l[i] - x_lims[1]) / diff(x_lims)
+      x1 <- (hr_u[i] - x_lims[1]) / diff(x_lims)
+      xp <- (hr_x[i] - x_lims[1]) / diff(x_lims)
+      yp <- (y_pos[i]) / n_rows
+      grid.lines(x = unit(c(x0, x1), "npc"), y = unit(c(yp, yp), "npc"), gp = gpar(col = "black", lwd = 1))
+      grid.points(x = unit(xp, "npc"), y = unit(yp, "npc"), pch = 16, size = unit(2.2, "mm"))
+    }
 
-  p_hr <- hr_df %>%
-    ggplot(aes(y = Assay)) +
-    geom_vline(xintercept = 0, linetype = 2, color = "grey55") +
-    geom_segment(
-      data = hr_df %>% filter(is.finite(log2L95), is.finite(log2U95)),
-      aes(x = log2L95, xend = log2U95, y = Assay, yend = Assay),
-      linewidth = 0.5
-    ) +
-    geom_point(
-      data = hr_df %>% filter(is.finite(log2HR)),
-      aes(x = log2HR),
-      size = 2.6
-    ) +
-    coord_cartesian(xlim = hr_xlim) +
-    labs(x = "log2(HR)", y = NULL, title = "HR (OS)") +
-    theme_bw() +
-    theme(
-      axis.text.y = element_blank(),
-      axis.ticks.y = element_blank(),
-      panel.grid = element_blank(),
-      plot.title = element_text(size = 10, face = "bold")
-    )
+    # Tick marks and labels
+    for (j in seq_along(tick_x)) {
+      if (tick_x[j] < x_lims[1] || tick_x[j] > x_lims[2]) next
+      tx <- (tick_x[j] - x_lims[1]) / diff(x_lims)
+      grid.lines(x = unit(c(tx, tx), "npc"), y = unit(c(0, 0.02), "npc"), gp = gpar(col = "black"))
+      grid.text(as.character(tick_hr[j]), x = unit(tx, "npc"), y = unit(-0.02, "npc"), gp = gpar(fontsize = 6))
+    }
 
-  p_ann + p_public_mean + p_public_fc + p_olink_fc + p_olink_mean + p_hr +
-    patchwork::plot_layout(ncol = 6, widths = c(3, 2, 0.6, 0.6, 2, 2.5))
+    # Axis title at bottom of HR panel
+    grid.text("Hazard Ratio", x = unit(0.5, "npc"), y = unit(-0.08, "npc"), gp = gpar(fontsize = 7))
+  })
 }
 
 # Example usage
-# proteins_for_complex <- c("SDC1", "EDF1", "CKAP4", "LMNB2", "LETM1", "COX5B", "HIP1R", "HMOX2", "DPY30", "WFDC2", "RCC1")
-#proteins_for_complex <- c("FETUB", "MOCS2", "MSLN", "USP28", "SEZ6L2", "TOMM20", "CCN4", "CXADR", "PAXX", "MUC13")
-proteins_for_complex <- c("DPY30", "NFU1", "LETM1", "GDF15", "TPR", "CST7", "FKBP5", "LMNB2", "SDC1", "KRT19")
-p_multi <- build_integration_panels_gg(proteins_for_complex)
-print(p_multi)
-ggsave(file.path(wd$outCurr, "Objective3_Integration_Multipanel_ggplot.pdf"), 
-       p_multi, width = 10.7, height = 0.4 * length(proteins_for_complex) + 3)
+proteins_for_complex <- c("SDC1", "EDF1", "CKAP4", "LMNB2", "LETM1", "COX5B", "HIP1R", "HMOX2", "DPY30", "WFDC2", "RCC1")
+pdf(file.path(wd$outCurr, "Objective3_Complex_Integration_Heatmap.pdf"), width = 12, height = 0.35 * length(proteins_for_complex) + 3)
+build_complex_protein_heatmap(proteins_for_complex, cpps_method = "multivariate")
+dev.off()
 ```
-
-
-# Obj 4: Nomogram 
-
-Lets now also generate nomograms

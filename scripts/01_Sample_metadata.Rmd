@@ -2800,7 +2800,7 @@ dat_NPX3_save <- dat_NPX3 %>%
 ```{r}
 df_meta_all <- rbind(df_meta_cohort_a, df_meta_cohort_b, df_meta_cohort_c)
 
-write.csv(df_meta_all, file.path(wd$outCurr, "proteomics_metadata.csv"))
+write.csv(df_meta_all, file.path(wd$outData, "proteomics_metadata.csv"))
 ```
 
 > TO DO - add the cohort B timing to mCRPC ...etc
