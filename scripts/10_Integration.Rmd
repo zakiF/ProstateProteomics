@@ -1160,9 +1160,10 @@ build_integration_panels_gg <- function(proteins, cpps_method = c("multivariate"
 }
 
 # Example usage
-# proteins_for_complex <- c("SDC1", "EDF1", "CKAP4", "LMNB2", "LETM1", "COX5B", "HIP1R", "HMOX2", "DPY30", "WFDC2", "RCC1")
+proteins_for_complex <- c("SDC1", "EDF1", "CKAP4", "LMNB2", "LETM1", "COX5B", "HIP1R", "HMOX2", "DPY30", "WFDC2", "RCC1",
+                          "PAXX", "FKBP4", "DDAH1", "CRYM", "GDF15")
 #proteins_for_complex <- c("FETUB", "MOCS2", "MSLN", "USP28", "SEZ6L2", "TOMM20", "CCN4", "CXADR", "PAXX", "MUC13")
-proteins_for_complex <- c("DPY30", "NFU1", "LETM1", "GDF15", "TPR", "CST7", "FKBP5", "LMNB2", "SDC1", "KRT19")
+#proteins_for_complex <- c("DPY30", "NFU1", "LETM1", "GDF15", "TPR", "CST7", "FKBP5", "LMNB2", "SDC1", "KRT19")
 p_multi <- build_integration_panels_gg(proteins_for_complex)
 print(p_multi)
 ggsave(file.path(wd$outCurr, "Objective3_Integration_Multipanel_ggplot.pdf"), 

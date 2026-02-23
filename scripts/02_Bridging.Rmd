@@ -1797,7 +1797,18 @@ lookup <- meta_olink %>%
   select(HCI_cID, final_sample_id) %>%
   deframe()
 
-colnames(mat_exp) <- lookup[colnames(mat_exp)]
+# colnames(mat_exp) <- lookup[colnames(mat_exp)]
+
+# Create reverse mapping: Disc_29 -> c2021_3867
+rev_lookup <- setNames(names(lookup), lookup)
+
+# Rename columns
+colnames(mat_exp) <- rev_lookup[colnames(mat_exp)]
+
+# Optional: check result
+head(colnames(mat_exp))
+
+write.csv(mat_exp, file.path(wd$outData, "ExpMat_integrated.csv"))
 
 saveRDS(mat_exp, file.path(wd$outData, "Olink_expMat.RDS"))
 saveRDS(meta_olink, file.path(wd$outData, "Olink_Meta.RDS"))

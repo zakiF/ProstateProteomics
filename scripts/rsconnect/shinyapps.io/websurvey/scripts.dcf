@@ -1,0 +1,10 @@
+name: scripts
+title: scripts
+username: websurvey
+account: websurvey
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 16681165
+bundleId: 11586814
+url: https://websurvey.shinyapps.io/scripts/
+version: 1

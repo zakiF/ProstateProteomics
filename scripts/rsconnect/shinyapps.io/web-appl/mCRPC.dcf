@@ -1,0 +1,10 @@
+name: mCRPC
+title:
+username: web-appl
+account: web-appl
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 16708559
+bundleId: 11615841
+url: https://web-appl.shinyapps.io/mCRPC/
+version: 1

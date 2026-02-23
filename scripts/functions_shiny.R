@@ -122,12 +122,10 @@ build_integration_panels_gg <- function(proteins, prep, cpps_method = c("multiva
 
   ann_df <- tibble(
     Protein = rows_all,
-    `In Olink` = ifelse(Protein == "CPPS", NA_integer_, as.integer(Protein %in% unique(prep$assay_map$Assay))),
-    `In Public` = ifelse(Protein == "CPPS", NA_integer_, as.integer(Protein %in% unique(prep$matched_proteins$Assay))),
-    `Biom` = ifelse(Protein == "CPPS", NA_integer_, as.integer(toupper(Protein) %in% toupper(unique(biom_unique_proteins)))),
-    `CS` = ifelse(Protein == "CPPS", NA_integer_, as.integer(toupper(Protein) %in% toupper(unique(cs_prot)))),
-    `Dx` = ifelse(Protein == "CPPS", NA_integer_, as.integer(toupper(Protein) %in% toupper(unique(drug_annotated_proteins)))),
-    `Prog` = ifelse(Protein == "CPPS", NA_integer_, as.integer(Protein %in% unique(dep_unique$Assay[dep_unique$Multi_Sig == "Yes"])))
+    `In Tissue` = ifelse(Protein == "CPPS", NA_integer_, as.integer(Protein %in% unique(prep$matched_proteins$Assay))),
+    `Biomarker` = ifelse(Protein == "CPPS", NA_integer_, as.integer(toupper(Protein) %in% toupper(unique(biom_unique_proteins)))),
+    `Surface Protein` = ifelse(Protein == "CPPS", NA_integer_, as.integer(toupper(Protein) %in% toupper(unique(cs_prot)))),
+    `Druggable` = ifelse(Protein == "CPPS", NA_integer_, as.integer(toupper(Protein) %in% toupper(unique(drug_annotated_proteins))))
   ) %>%
     mutate(Protein = factor(Protein, levels = prot_levels))
 
@@ -136,29 +134,28 @@ build_integration_panels_gg <- function(proteins, prep, cpps_method = c("multiva
     mutate(Protein = ann_df$Protein) %>%
     pivot_longer(-Protein, names_to = "Column", values_to = "Value") %>%
     mutate(
-      Column = factor(Column, levels = c("In Public", "Biom", "CS", "Dx", "Prog")),
+      Column = factor(Column, levels = c("In Tissue", "Biomarker", "Surface Protein", "Druggable")),
       fill_key = case_when(
         is.na(Value) ~ NA_character_,
         Value == 0 ~ "no",
-        Column == "In Public" & Value == 1 ~ "plasma_yes",
+        Column == "In Tissue" & Value == 1 ~ "plasma_yes",
         Value == 1 ~ "other_yes",
         TRUE ~ NA_character_
       )
     )
 
   name_cells <- ann_df %>%
-    transmute(Protein, Column = factor("Protein", levels = c("Protein", "In Public", "Biom", "CS", "Dx", "Prog")), label = as.character(Protein))
+    transmute(Protein, Column = factor("Protein", levels = c("Protein", "In Tissue", "Biomarker", "Surface Protein", "Druggable")), label = as.character(Protein))
 
-  cpps_sum_public <- ann_df %>% filter(as.character(Protein) != "CPPS") %>% summarise(score = sum(`In Public`, na.rm = TRUE)) %>% pull(score)
-  cpps_sum_biom <- ann_df %>% filter(as.character(Protein) != "CPPS") %>% summarise(score = sum(`Biom`, na.rm = TRUE)) %>% pull(score)
-  cpps_sum_cs <- ann_df %>% filter(as.character(Protein) != "CPPS") %>% summarise(score = sum(`CS`, na.rm = TRUE)) %>% pull(score)
-  cpps_sum_dx <- ann_df %>% filter(as.character(Protein) != "CPPS") %>% summarise(score = sum(`Dx`, na.rm = TRUE)) %>% pull(score)
-  cpps_sum_prog <- ann_df %>% filter(as.character(Protein) != "CPPS") %>% summarise(score = sum(`Prog`, na.rm = TRUE)) %>% pull(score)
+  cpps_sum_tissue <- ann_df %>% filter(as.character(Protein) != "CPPS") %>% summarise(score = sum(`In Tissue`, na.rm = TRUE)) %>% pull(score)
+  cpps_sum_biom <- ann_df %>% filter(as.character(Protein) != "CPPS") %>% summarise(score = sum(`Biomarker`, na.rm = TRUE)) %>% pull(score)
+  cpps_sum_cs <- ann_df %>% filter(as.character(Protein) != "CPPS") %>% summarise(score = sum(`Surface Protein`, na.rm = TRUE)) %>% pull(score)
+  cpps_sum_dx <- ann_df %>% filter(as.character(Protein) != "CPPS") %>% summarise(score = sum(`Druggable`, na.rm = TRUE)) %>% pull(score)
 
   cpps_score_cells <- tibble(
-    Protein = factor(rep("CPPS", 5), levels = prot_levels),
-    Column = factor(c("In Public", "Biom", "CS", "Dx", "Prog"), levels = c("Protein", "In Public", "Biom", "CS", "Dx", "Prog")),
-    label = c(as.character(cpps_sum_public), as.character(cpps_sum_biom), as.character(cpps_sum_cs), as.character(cpps_sum_dx), as.character(cpps_sum_prog))
+    Protein = factor(rep("CPPS", 4), levels = prot_levels),
+    Column = factor(c("In Tissue", "Biomarker", "Surface Protein", "Druggable"), levels = c("Protein", "In Tissue", "Biomarker", "Surface Protein", "Druggable")),
+    label = c(as.character(cpps_sum_tissue), as.character(cpps_sum_biom), as.character(cpps_sum_cs), as.character(cpps_sum_dx))
   )
 
   p_ann <- ggplot() +
@@ -175,12 +172,12 @@ build_integration_panels_gg <- function(proteins, prep, cpps_method = c("multiva
     geom_text(
       data = name_cells,
       aes(x = Column, y = Protein, label = label),
-      size = 3
+      size = 3.5
     ) +
     geom_text(
       data = cpps_score_cells,
       aes(x = Column, y = Protein, label = label),
-      size = 3.2,
+      size = 3.8,
       fontface = "bold"
     ) +
     scale_fill_manual(
@@ -193,13 +190,13 @@ build_integration_panels_gg <- function(proteins, prep, cpps_method = c("multiva
       na.value = "white",
       guide = "none"
     ) +
-    scale_x_discrete(drop = FALSE, limits = c("Protein", "In Public", "Biom", "CS", "Dx", "Prog")) +
+    scale_x_discrete(drop = FALSE, limits = c("Protein", "In Tissue", "Biomarker", "Surface Protein", "Druggable")) +
     labs(x = NULL, y = NULL, title = "Annotations") +
     theme_bw() +
     theme(
       axis.text.y = element_blank(),
       axis.ticks = element_blank(),
-      axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 10, face = "bold"),
       panel.grid = element_blank(),
       plot.title = element_text(size = 10, face = "bold")
     )
@@ -266,7 +263,7 @@ build_integration_panels_gg <- function(proteins, prep, cpps_method = c("multiva
       na.rm = TRUE
     ) +
     scale_y_discrete(drop = FALSE) +
-    labs(x = "Mean min-max scaled", y = NULL, title = "Olink Expression") +
+    labs(x = "Scaled Exp", y = NULL, title = "Plasma Exp") +
     theme_bw() +
     theme(
       axis.text.y = element_blank(),
@@ -283,16 +280,16 @@ build_integration_panels_gg <- function(proteins, prep, cpps_method = c("multiva
     complete(Assay = proteins, Group = c("Local", "mCRPC"), fill = list(MeanExpr = NA_real_)) %>%
     pivot_wider(names_from = Group, values_from = MeanExpr) %>%
     mutate(FC = mCRPC - Local) %>%
-    transmute(Assay, Dataset = "Olink", log2FC = FC) %>%
-    bind_rows(tibble(Assay = "CPPS", Dataset = "Olink", log2FC = NA_real_))
+    transmute(Assay, Dataset = "Plasma", log2FC = FC) %>%
+    bind_rows(tibble(Assay = "CPPS", Dataset = "Plasma", log2FC = NA_real_))
 
   p_olink_fc <- olink_fc %>%
-    mutate(Assay = factor(Assay, levels = prot_levels), Dataset = factor(Dataset, levels = "Olink")) %>%
+    mutate(Assay = factor(Assay, levels = prot_levels), Dataset = factor(Dataset, levels = "Plasma")) %>%
     ggplot(aes(x = Dataset, y = Assay, fill = log2FC)) +
     geom_tile(color = "white", linewidth = 0.3, width = 0.95, height = 0.95, na.rm = TRUE) +
     scale_fill_gradient2(low = "#4575B4", mid = "white", high = "#D73027", midpoint = 0, oob = scales::squish, na.value = "white") +
     scale_y_discrete(drop = FALSE) +
-    labs(x = NULL, y = NULL, title = "Olink FC") +
+    labs(x = NULL, y = NULL, title = "FC") +
     theme_bw() +
     theme(
       axis.text.y = element_blank(),
@@ -369,7 +366,7 @@ build_integration_panels_gg <- function(proteins, prep, cpps_method = c("multiva
     ) +
     scale_x_reverse() +
     scale_y_discrete(drop = FALSE) +
-    labs(x = "Mean min-max scaled", y = NULL, title = "Public Expression") +
+    labs(x = "Scaled Exp", y = NULL, title = "Tissue Exp") +
     theme_bw() +
     theme(
       axis.text.y = element_blank(),
@@ -386,16 +383,16 @@ build_integration_panels_gg <- function(proteins, prep, cpps_method = c("multiva
     complete(Assay = proteins, Group = c("Local_PC", "mCRPC"), fill = list(MeanExpr = NA_real_)) %>%
     pivot_wider(names_from = Group, values_from = MeanExpr) %>%
     mutate(FC = mCRPC - Local_PC) %>%
-    transmute(Assay, Dataset = "Public", log2FC = FC) %>%
-    bind_rows(tibble(Assay = "CPPS", Dataset = "Public", log2FC = NA_real_))
+    transmute(Assay, Dataset = "Tissue", log2FC = FC) %>%
+    bind_rows(tibble(Assay = "CPPS", Dataset = "Tissue", log2FC = NA_real_))
 
   p_public_fc <- public_fc %>%
-    mutate(Assay = factor(Assay, levels = prot_levels), Dataset = factor(Dataset, levels = "Public")) %>%
+    mutate(Assay = factor(Assay, levels = prot_levels), Dataset = factor(Dataset, levels = "Tissue")) %>%
     ggplot(aes(x = Dataset, y = Assay, fill = log2FC)) +
     geom_tile(color = "white", linewidth = 0.3, width = 0.95, height = 0.95, na.rm = TRUE) +
     scale_fill_gradient2(low = "#4575B4", mid = "white", high = "#D73027", midpoint = 0, oob = scales::squish, na.value = "white") +
     scale_y_discrete(drop = FALSE) +
-    labs(x = NULL, y = NULL, title = "Public FC") +
+    labs(x = NULL, y = NULL, title = "FC") +
     theme_bw() +
     theme(
       axis.text.y = element_blank(),

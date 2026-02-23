@@ -1395,8 +1395,7 @@ patient_patterns <- get_patient_pattern(df_meta_f2 %>% mutate(txt_stat = txt_sta
 df_meta_f2 <- df_meta_f2 %>%
   left_join(patient_patterns %>% select(mrn, pattern, total_samples), by = "mrn")
 
-dplyr::filter(df_meta_f2, mrn == "[REDACTED_MRN]") %>% select(mrn, HCI_cID, txt_stat, txt_stat_ordered)
-dplyr::filter(patient_patterns, mrn == "[REDACTED_MRN]") %>% as.data.frame()
+# MRN-specific debug filters removed to avoid exposing identifiers
 
 # 5. Order patients by pattern and total_samples
 ordered_mrns <- df_meta_f2 %>%
@@ -1718,8 +1717,7 @@ patient_patterns <- get_patient_pattern(df_meta_f4 %>% mutate(txt_stat = txt_sta
 df_meta_f4 <- df_meta_f4 %>%
   left_join(patient_patterns %>% select(mrn, pattern, total_samples), by = "mrn")
 
-# dplyr::filter(df_meta_f4, mrn == "[REDACTED_MRN]") %>% select(mrn, HCI_cID, txt_stat, txt_stat_ordered)
-# dplyr::filter(patient_patterns, mrn == "[REDACTED_MRN]") %>% as.data.frame()
+# MRN-specific debug filters removed to avoid exposing identifiers
 
 # 5. Order patients by pattern and total_samples
 ordered_mrns <- df_meta_f4 %>%
@@ -2793,6 +2791,287 @@ dat_NPX3_save <- dat_NPX3 %>%
   mutate(SampleID = if_else(!is.na(HCI_cID), HCI_cID, SampleID)) %>%
   select(-HCI_cID)
 ```
+## Follow-up
+
+Get follow up time
+
+
+```{r}
+safe_min_date <- function(x) {
+  x <- as.Date(x)
+  if (all(is.na(x))) as.Date(NA) else min(x, na.rm = TRUE)
+}
+
+df_followup <- dplyr::bind_rows(
+  df_a2 %>%
+    dplyr::transmute(
+      mrn = as.character(mrn),
+      sample_date = as.Date(date),
+      death_date = as.Date(death_date),
+      death_status = tolower(as.character(death_status))
+    ),
+  df_b3 %>%
+    dplyr::transmute(
+      mrn = as.character(mrn),
+      sample_date = as.Date(date),
+      death_date = as.Date(death_date),
+      death_status = tolower(as.character(death_status))
+    ),
+  df_c2 %>%
+    dplyr::transmute(
+      mrn = as.character(mrn),
+      sample_date = as.Date(date),
+      death_date = as.Date(death_date),
+      death_status = tolower(as.character(death_status))
+    )
+) %>%
+  dplyr::group_by(mrn) %>%
+  dplyr::summarise(
+    first_collection_date = safe_min_date(sample_date),
+    first_death_date = safe_min_date(death_date),
+    died = any(death_status %in% c("yes", "y", "dead", "1") | !is.na(death_date), na.rm = TRUE),
+    event_date = dplyr::if_else(
+      died & !is.na(first_death_date) & first_death_date <= censor_date,
+      first_death_date,
+      censor_date
+    ),
+    event = dplyr::if_else(
+      died & !is.na(first_death_date) & first_death_date <= censor_date, 1L, 0L
+    ),
+    followup_days = as.numeric(event_date - first_collection_date),
+    followup_months = round(followup_days / 30.4375, 2),
+    .groups = "drop"
+  )
+```
+
+
+## Progression
+
+```{r}
+is_yes <- function(x) {
+  str_to_lower(trimws(as.character(x))) %in% c("yes", "y", "1", "true")
+}
+
+# 1) mHSPC cohort (B): how many progressed to mCRPC
+mhspc_prog <- df_b3 %>%
+  mutate(
+    mrn = as.character(mrn),
+    progressed_flag = is_yes(progressed_to_crpc) | !is.na(crpc_earliest_date)
+  ) %>%
+  group_by(mrn) %>%
+  summarise(progressed = any(progressed_flag, na.rm = TRUE), .groups = "drop") %>%
+  summarise(
+    progressed_n = sum(progressed, na.rm = TRUE),
+    mhspc_total = n(),
+    .groups = "drop"
+  )
+
+# 2) mCRPC sub-cohort (C): xx/yy died
+mcrpc_death <- df_c2 %>%
+  mutate(
+    mrn = as.character(mrn),
+    death_flag = is_yes(death_status) | !is.na(death_date)
+  ) %>%
+  group_by(mrn) %>%
+  summarise(died = any(death_flag, na.rm = TRUE), .groups = "drop") %>%
+  summarise(
+    died_n = sum(died, na.rm = TRUE),
+    mcrpc_total = n(),
+    .groups = "drop"
+  )
+
+mhspc_prog
+mcrpc_death
+```
+
+
+## Extended results text
+
+```{r}
+# Analysis window
+enroll_start <- as.Date("2020-08-01")
+enroll_end <- as.Date("2025-04-01")
+censor_date <- as.Date("2025-07-01")
+
+safe_min_date <- function(x) {
+  x <- as.Date(x)
+  if (all(is.na(x))) as.Date(NA) else min(x, na.rm = TRUE)
+}
+
+safe_max_date <- function(x) {
+  x <- as.Date(x)
+  if (all(is.na(x))) as.Date(NA) else max(x, na.rm = TRUE)
+}
+
+fmt_med_iqr <- function(x, digits = 1) {
+  x <- as.numeric(x)
+  x <- x[!is.na(x)]
+  if (length(x) == 0) return("NA")
+  qs <- stats::quantile(x, probs = c(0.25, 0.50, 0.75), na.rm = TRUE)
+  paste0(
+    formatC(qs[[2]], format = "f", digits = digits),
+    " (IQR ",
+    formatC(qs[[1]], format = "f", digits = digits), "-",
+    formatC(qs[[3]], format = "f", digits = digits), ")"
+  )
+}
+
+fmt_med_iqr_range <- function(x, digits = 1) {
+  x <- as.numeric(x)
+  x <- x[!is.na(x)]
+  if (length(x) == 0) return("NA")
+  qs <- stats::quantile(x, probs = c(0.25, 0.50, 0.75), na.rm = TRUE)
+  paste0(
+    formatC(qs[[2]], format = "f", digits = digits),
+    " (IQR ",
+    formatC(qs[[1]], format = "f", digits = digits), "-",
+    formatC(qs[[3]], format = "f", digits = digits),
+    "; range ",
+    formatC(min(x), format = "f", digits = digits), "-",
+    formatC(max(x), format = "f", digits = digits),
+    ")"
+  )
+}
+
+fmt_n_pct <- function(n, d, digits = 1) {
+  ifelse(d > 0, paste0(n, "/", d, " (", round(100 * n / d, digits), "%)"), paste0(n, "/", d, " (NA)"))
+}
+
+standardize_cohort <- function(df, cohort_label) {
+  required_cols <- c(
+    "mrn", "HCI_cID", "date", "death_date", "death_status", "age", "psa", "alk_phos",
+    "ldh", "hemoGlo", "glsn_diag", "sur_or_rad", "mets_stage", "progressed_to_crpc", "crpc_earliest_date"
+  )
+  missing_cols <- setdiff(required_cols, names(df))
+  for (nm in missing_cols) df[[nm]] <- NA
+
+  df %>%
+    dplyr::transmute(
+      cohort = cohort_label,
+      mrn = as.character(mrn),
+      HCI_cID = as.character(HCI_cID),
+      sample_date = as.Date(date),
+      death_date = as.Date(death_date),
+      death_status = tolower(as.character(death_status)),
+      age = as.numeric(age),
+      psa = as.numeric(psa),
+      alk_phos = as.numeric(alk_phos),
+      ldh = as.numeric(ldh),
+      hemoGlo = as.numeric(hemoGlo),
+      glsn_diag = as.character(glsn_diag),
+      sur_or_rad = as.character(sur_or_rad),
+      mets_stage = as.character(mets_stage),
+      progressed_to_crpc = as.character(progressed_to_crpc),
+      crpc_earliest_date = as.Date(crpc_earliest_date)
+    )
+}
+
+cohort_long <- dplyr::bind_rows(
+  standardize_cohort(df_a2, "Localized"),
+  standardize_cohort(df_b3, "mHSPC"),
+  standardize_cohort(df_c2, "mCRPC")
+)
+
+# Patient-level table (earliest sample date per patient)
+patient_table <- cohort_long %>%
+  dplyr::group_by(cohort, mrn) %>%
+  dplyr::summarise(
+    first_collection_date = safe_min_date(sample_date),
+    last_collection_date = safe_max_date(sample_date),
+    n_samples = dplyr::n_distinct(HCI_cID),
+    first_death_date = safe_min_date(death_date),
+    died = any(death_status %in% c("yes", "y", "dead", "1") | !is.na(death_date), na.rm = TRUE),
+    progressed = any(is_yes(progressed_to_crpc) | !is.na(crpc_earliest_date), na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::filter(first_collection_date >= enroll_start, first_collection_date <= enroll_end) %>%
+  dplyr::mutate(
+    event_date = dplyr::if_else(
+      died & !is.na(first_death_date) & first_death_date <= censor_date,
+      first_death_date,
+      censor_date
+    ),
+    event = dplyr::if_else(
+      died & !is.na(first_death_date) & first_death_date <= censor_date, 1L, 0L
+    ),
+    followup_months = as.numeric(event_date - first_collection_date) / 30.4375
+  )
+
+# Baseline sample-level characteristics (first sample per patient)
+baseline <- cohort_long %>%
+  dplyr::arrange(cohort, mrn, sample_date) %>%
+  dplyr::group_by(cohort, mrn) %>%
+  dplyr::slice_head(n = 1) %>%
+  dplyr::ungroup() %>%
+  dplyr::filter(sample_date >= enroll_start, sample_date <= enroll_end)
+
+# Main cohort summary
+cohort_summary <- patient_table %>%
+  dplyr::group_by(cohort) %>%
+  dplyr::summarise(
+    n_patients = dplyr::n(),
+    n_samples = sum(n_samples),
+    n_longitudinal = sum(n_samples >= 2, na.rm = TRUE),
+    n_died = sum(event == 1, na.rm = TRUE),
+    med_followup = fmt_med_iqr_range(followup_months, digits = 2),
+    .groups = "drop"
+  ) %>%
+  dplyr::left_join(
+    baseline %>%
+      dplyr::group_by(cohort) %>%
+      dplyr::summarise(
+        age_summary = fmt_med_iqr(age, digits = 1),
+        psa_summary = fmt_med_iqr(psa, digits = 1),
+        alk_summary = fmt_med_iqr(alk_phos, digits = 1),
+        ldh_summary = fmt_med_iqr(ldh, digits = 1),
+        hgb_summary = fmt_med_iqr(hemoGlo, digits = 1),
+        glsn_known = sum(!is.na(glsn_diag) & glsn_diag != "", na.rm = TRUE),
+        n_baseline = dplyr::n(),
+        local_tx_n = sum(!is.na(sur_or_rad) & sur_or_rad != "", na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = "cohort"
+  )
+
+# mHSPC-specific progression and de novo metastatic burden
+mhspc_row <- patient_table %>%
+  dplyr::filter(cohort == "mHSPC") %>%
+  dplyr::summarise(
+    progressed_n = sum(progressed, na.rm = TRUE),
+    total_n = dplyr::n(),
+    .groups = "drop"
+  )
+
+mhspc_denovo <- baseline %>%
+  dplyr::filter(cohort == "mHSPC") %>%
+  dplyr::summarise(
+    denovo_n = sum(is_yes(mets_stage), na.rm = TRUE),
+    total_n = dplyr::n(),
+    .groups = "drop"
+  )
+
+# Pre/Post counts from final filtered sample set
+pre_post_line <- ""
+if (exists("df_meta_f4")) {
+  pre_post <- df_meta_f4 %>%
+    dplyr::mutate(
+      cohort = dplyr::recode(cohort, "A" = "Localized", "B" = "mHSPC", "C" = "mCRPC"),
+      txt_group = dplyr::case_when(
+        stringr::str_detect(txt_stat, "^Pre") ~ "Pre",
+        stringr::str_detect(txt_stat, "^Post") ~ "Post",
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    dplyr::filter(!is.na(txt_group)) %>%
+    dplyr::count(cohort, txt_group, name = "n_samples")
+
+  pre_post_line <- pre_post %>%
+    dplyr::arrange(cohort, txt_group) %>%
+    dplyr::mutate(txt = paste0(cohort, " ", txt_group, " n=", n_samples)) %>%
+    dplyr::pull(txt) %>%
+    paste(collapse = "; ")
+}
+```
 
 
 ## Final meta
@@ -2804,6 +3083,70 @@ write.csv(df_meta_all, file.path(wd$outData, "proteomics_metadata.csv"))
 ```
 
 > TO DO - add the cohort B timing to mCRPC ...etc
+
+## Zendo files
+
+```{r}
+df_meta_all2 <- df_meta_all %>% 
+  dplyr::mutate(HCI_cID = paste0("c", HCI_cID),
+                HCI_cID = gsub("-", "_", HCI_cID)) %>% 
+  dplyr::rename(Patient_ID = fake_mrn) %>% 
+  dplyr::mutate(Patient_ID = gsub("mrn", "P",Patient_ID),
+                cohort = case_when(cohort == "A" ~ "Local",
+                                   cohort == "B" ~ "mHSPC",
+                                   cohort == "C" ~ "mCRPC"))
+write.csv(df_meta_all2, file.path(wd$outData, "proteomics_metadata_all.csv"))
+```
+
+Save the individual NPX data and add the HCI_cID
+
+```{r}
+tmp_in <- df_meta_f %>% 
+    dplyr::mutate(HCI_cID = paste0("c", HCI_cID),
+                HCI_cID = gsub("-", "_", HCI_cID))
+
+
+# 1st batch
+dat_NPX_withID <- dat_NPX %>%
+  left_join(
+    tmp_in %>%
+      mutate(sample_id_psom = as.character(sample_id_psom)) %>%
+      select(HCI_cID, sample_id_psom),
+    by = c("SampleID" = "sample_id_psom")
+  ) %>%
+  relocate(HCI_cID, .after = 1)
+write.csv(dat_NPX_withID, file.path(wd$outData, "Batch_01_NPX.csv"))
+
+# 2nd batch
+dat_NPX2_withID <- dat_NPX2 %>%
+  # Exclude sample 78 - missing data
+  dplyr::filter(!SampleID == 78) %>% 
+  left_join(
+    tmp_in %>%
+      mutate(sample_id_Q13356 = as.character(sample_id_Q13356)) %>%
+      select(HCI_cID, sample_id_Q13356),
+    by = c("SampleID" = "sample_id_Q13356")
+  ) %>%
+  relocate(HCI_cID, .after = 1)
+write.csv(dat_NPX2_withID, file.path(wd$outData, "Batch_02_NPX.csv"))
+
+
+# 3rd batch
+dat_NPX3_withID <- dat_NPX3 %>%
+  left_join(
+    tmp_in %>%
+      mutate(sample_id_Q15806 = as.character(sample_id_Q15806)) %>%
+      select(HCI_cID, sample_id_Q15806),
+    by = c("SampleID" = "sample_id_Q15806")
+  ) %>%
+  relocate(HCI_cID, .after = 1)
+write.csv(dat_NPX3_withID, file.path(wd$outData, "Batch_03_NPX.csv"))
+
+```
+
+
+
+
 
 ## Save objects
 
@@ -2817,4 +3160,3 @@ save(
   df_meta_all, 
   file = file.path(wd$outData, "01_Metadata.Rdata"))
 ```
-

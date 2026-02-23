@@ -51,33 +51,211 @@ build_nomogram_obj <- function(df_complete) {
 }
 
 ui <- fluidPage(
-  titlePanel("CPPS Interactive Builder"),
+  tags$head(
+    tags$style(HTML("
+      #app-loading {
+        position: fixed;
+        z-index: 9999;
+        inset: 0;
+        background: #ffffff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+      .app-loading-card {
+        max-width: 760px;
+        border: 1px solid #dddddd;
+        border-radius: 8px;
+        padding: 20px 24px;
+        background: #fafafa;
+      }
+      .app-loading-title {
+        font-size: 22px;
+        font-weight: 700;
+        margin-bottom: 10px;
+      }
+      .app-loading-text {
+        font-size: 14px;
+        line-height: 1.45;
+        color: #333333;
+        margin-bottom: 14px;
+      }
+      .app-loading-note {
+        font-size: 12px;
+        color: #666666;
+      }
+      .app-loading-spinner {
+        width: 28px;
+        height: 28px;
+        border: 3px solid #d9d9d9;
+        border-top-color: #4a4a4a;
+        border-radius: 50%;
+        animation: app-spin 0.9s linear infinite;
+        margin-bottom: 10px;
+      }
+      @keyframes app-spin {
+        to { transform: rotate(360deg); }
+      }
+    ")),
+    tags$script(HTML("
+      function hideAppLoading() {
+        var el = document.getElementById('app-loading');
+        if (el) el.style.display = 'none';
+      }
+      document.addEventListener('shiny:connected', function() {
+        hideAppLoading();
+      });
+      // Fallback: never block UI if event timing is missed
+      window.setTimeout(hideAppLoading, 6000);
+    "))
+  ),
+  tags$div(
+    id = "app-loading",
+    tags$div(
+      class = "app-loading-card",
+      tags$div(class = "app-loading-title", "Please wait while the application is loading"),
+      tags$div(class = "app-loading-note", "this should take <1 minute."),
+      tags$div(class = "app-loading-spinner"),
+      tags$div(class = "app-loading-text", "")
+    )
+  ),
+  titlePanel("mCRPC Prognostic Protein Explorer"),
   sidebarLayout(
     sidebarPanel(
       width = 3,
-      tags$p("Paste protein symbols (Assay names), separated by comma, newline, or spaces."),
-      textAreaInput("proteins", "Protein Set", rows = 8,
-                    value = "DPY30\nNFU1\nLETM1, GDF15, TPR, CST7, FKBP5, LMNB2, SDC1, KRT19"),
-      actionButton("calc", "Calculate", class = "btn-primary"),
-      uiOutput("input_status"),
-      br(), br(),
-      downloadButton("download_pdf", "Download All Plots (PDF)")
+      conditionalPanel(
+        condition = "input.main_tab && input.main_tab != 'Welcome'",
+        tags$p("Paste protein symbols, separated by comma, newline, or spaces."),
+        textAreaInput("proteins", "Protein Set", rows = 8,
+                      value = "DPY30\nNFU1\nLETM1, GDF15, TPR, CST7, FKBP5, LMNB2, SDC1, KRT19"),
+        actionButton("calc", "Calculate", class = "btn-primary"),
+        uiOutput("input_status"),
+        br(), br(),
+        # downloadButton("download_pdf", "Download All Plots (PDF)")
+      )
     ),
     mainPanel(
       width = 9,
-      tags$h4("Instructions"),
-      tags$ul(
-        tags$li("Enter one or more protein symbols, then click Calculate."),
-        tags$li("You can separate proteins using commas, spaces, or new lines."),
-        tags$li("Review results in the tabs: Summary, CPPS KM, Protein KMs, AUC, and Nomogram."),
-        tags$li("Use Download All Plots (PDF) to export all figures into one report.")
+      conditionalPanel(
+        condition = "input.main_tab && input.main_tab != 'Welcome'",
+        tags$h4("Instructions"),
+        tags$ul(
+          tags$li("Enter one or more protein symbols, then click Calculate."),
+          tags$li("You can separate proteins using commas, spaces, or new lines.")
+        )
       ),
       tabsetPanel(
-        tabPanel("Summary", shinycssloaders::withSpinner(plotOutput("summary_plot", height = "700px"), type = 4)),
-        tabPanel("CPPS KM", shinycssloaders::withSpinner(plotOutput("km_plot", height = "800px"), type = 4)),
-        tabPanel("Protein KMs", shinycssloaders::withSpinner(plotOutput("protein_km_plot", height = "900px"), type = 4)),
-        tabPanel("AUC", shinycssloaders::withSpinner(plotOutput("auc_plot", width = "100%", height = "380px"), type = 4)),
-        tabPanel("Nomogram", shinycssloaders::withSpinner(plotOutput("nom_plot", width = "100%", height = "380px"), type = 4))
+        id = "main_tab",
+        selected = "Welcome",
+        tabPanel(
+          "Welcome",
+          tags$h3("Welcome!"),
+          tags$h4("Experimental overview"),
+          tags$p(
+            "To characterize the progressive proteomic landscape of prostate cancer, we performed high-throughput ",
+            "plasma proteomic profiling across localized prostate cancer (",
+            tags$b("local PC"),
+            "), metastatic hormone-sensitive prostate cancer (",
+            tags$b("mHSPC"),
+            "), and metastatic castration-resistant prostate cancer (",
+            tags$b("mCRPC"),
+            ")."
+          ),
+          tags$p(
+            "We identified proteins overexpressed in mCRPC that were associated with poor survival and had potential ",
+            "as therapeutic targets. These findings were then validated in tissue using a tissue microarray and an ",
+            "independent tissue proteomics dataset."
+          ),
+          tags$h4("Using this resource"),
+          tags$p(
+            "This dataset is designed to support hypothesis-driven discovery and rapid clinical translation in mCRPC ",
+            "proteomics. It enables users to test whether a custom protein signature carries prognostic signal and to ",
+            "contextualize proteins by biological and therapeutic relevance."
+          ),
+          tags$p("Explore the tabs to navigate the available analyses and outputs."),
+          uiOutput("welcome_overview_figure"),
+          NULL
+        ),
+        tabPanel(
+          "CPPS KM",
+          tags$p(
+            "A Composite Proteomic Prognostic Score (CPPS) was developed as a weighted linear combination of ",
+            "protein expression values derived from multivariable Cox regression coefficients."
+          ),
+          tags$p(
+            "Patients were stratified by the median CPPS into high- and low-risk groups, and higher CPPS was ",
+            "associated with significantly worse overall survival."
+          ),
+          shinycssloaders::withSpinner(plotOutput("km_plot", height = "800px"), type = 4)
+        ),
+        tabPanel(
+          "AUC",
+          tags$p(
+            "Time-dependent ROC analysis evaluates survival discrimination at fixed follow-up times. ",
+            "Here, AUC is shown at 24 and 36 months for a clinical-only model (PSA, LDH, and ALP) and a combined clinical + CPPS model."
+          ),
+          tags$p(
+            "In the manuscript, integrating CPPS with clinical factors improved survival discrimination compared with ",
+            "clinical variables alone."
+          ),
+          shinycssloaders::withSpinner(plotOutput("auc_plot", width = "100%", height = "380px"), type = 4)
+        ),
+        # tabPanel("Protein KMs", shinycssloaders::withSpinner(plotOutput("protein_km_plot", height = "900px"), type = 4)),
+        tabPanel(
+          "Nomogram",
+          tags$p(
+            "The nomogram integrates CPPS with established clinical prognostic factors (PSA, ALP, and LDH) to ",
+            "estimate individualized survival probability."
+          ),
+          tags$p(
+            "This provides patient-level 24- and 36-month risk estimates beyond broad clinical risk-grouping alone."
+          ),
+          shinycssloaders::withSpinner(plotOutput("nom_plot", width = "100%", height = "380px"), type = 4)
+        ),
+        tabPanel(
+          "Summary",
+          tags$p(
+            "This panel links plasma mCRPC signals to external tissue proteomics context and key protein annotations ",
+            "to support biological interpretation of your selected signature."
+          ),
+          tags$p(
+            "Tissue proteomics expression was taken from the public mCRPC tissue dataset reported by Latonen et al.",
+            " (",
+            tags$a(
+              href = "https://www.nature.com/articles/s41467-018-03573-6",
+              target = "_blank",
+              "Nature Communications 2018"
+            ),
+            ")."
+          ),
+          shinycssloaders::withSpinner(plotOutput("summary_plot", height = "700px"), type = 4),
+          tags$hr(),
+          tags$h5("How to read this panel"),
+          tags$p(tags$b("Proteins:"), " list of proteins queried."),
+          tags$p(tags$b("In Tissue:"), " protein detected in Latonen et al. tissue proteomics dataset."),
+          tags$p(tags$b("Biomarker:"), " prior evidence that the protein is a biomarker in prostate cancer."),
+          tags$p(tags$b("Surface Protein:"), " protein annotated as a cell-surface candidate."),
+          tags$p(tags$b("Druggable:"), " protein with a documented pharmacologically active drug-target interaction in DrugBank or supported by published literature."),
+          tags$p(tags$b("Tissue FC:"), " log2 fold-change of mCRPC vs local PC in tissue (Latonen et al.)."),
+          tags$p(tags$b("Plasma FC:"), " log2 fold-change of mCRPC vs local PC in plasma (this study)."),
+          tags$p(tags$b("Scaled Exp:"), " within-platform relative expression on a 0-1 scale, used for comparison across proteins."),
+          tags$p(tags$b("log2HR (OS):"), " multivariable hazard ratio for overall survival."),
+          tags$p(
+            tags$b("Color guide:"),
+            " in expression panels, ",
+            tags$span("Local PC", style = "color:#AEC7E8; font-weight:600;"),
+            " and ",
+            tags$span("mCRPC", style = "color:#98DF8A; font-weight:600;"),
+            ". In FC panels, ",
+            tags$span("blue", style = "color:#4575B4; font-weight:600;"),
+            " indicates lower in mCRPC, ",
+            tags$span("white", style = "color:#808080; font-weight:600;"),
+            " indicates no change, and ",
+            tags$span("red", style = "color:#D73027; font-weight:600;"),
+            " indicates higher in mCRPC."
+          )
+        )
       )
     )
   )
@@ -87,6 +265,25 @@ server <- function(input, output, session) {
   status_text <- reactiveVal(NULL)
   status_type <- reactiveVal("message")
   full_cache <- reactiveVal(list(key = NULL, data = NULL))
+  overview_fig_path <- file.path(app_dir, "www", "Fig_Shiny.png")
+
+  output$welcome_overview_figure <- renderUI({
+    if (!file.exists(overview_fig_path)) {
+      return(
+        tags$div(
+          style = "margin: 10px 0 16px 0; padding: 10px; border: 1px solid #d9d9d9; background: #fafafa; color: #555;",
+          "Figure file not found: scripts/www/Fig_Shiny.png"
+        )
+      )
+    }
+    tags$div(
+      style = "margin: 10px 0 16px 0;",
+      tags$img(
+        src = "Fig_Shiny.png",
+        style = "max-width: 100%; height: auto; border: 1px solid #d9d9d9;"
+      )
+    )
+  })
 
   selected_proteins <- eventReactive(input$calc, {
     prot <- parse_proteins(input$proteins)
@@ -115,7 +312,7 @@ server <- function(input, output, session) {
     }
 
     prot
-  })
+  }, ignoreNULL = FALSE)
 
   summary_result <- eventReactive(input$calc, {
     prot <- selected_proteins()
@@ -124,7 +321,7 @@ server <- function(input, output, session) {
       distinct(Assay, .keep_all = TRUE)
     shiny::validate(shiny::need(nrow(stats_sub) > 0, "No selected proteins with available coefficients."))
     build_integration_panels_gg(stats_sub$Assay, prep = prep, cpps_method = "multivariate")
-  })
+  }, ignoreNULL = FALSE)
 
   full_analysis <- reactive({
     prot <- selected_proteins()
@@ -179,8 +376,9 @@ server <- function(input, output, session) {
     auc36_comb <- round(a$auc_tbl$AUC_Clinical_CPPS[a$auc_tbl$time_months == 36], 2)
 
     par(mfrow = c(1, 2), mar = c(4, 4, 2, 1))
-    plot(a$roc_clinical, time = 24, col = "#E74C3C", lwd = 3, main = "AUC at 24 months")
-    plot(a$roc_combined, time = 24, col = "#2ECC71", lwd = 3, add = TRUE)
+    plot(a$roc_clinical, time = 24, col = "#E74C3C", lwd = 3, main = "", title = FALSE)
+    plot(a$roc_combined, time = 24, col = "#2ECC71", lwd = 3, add = TRUE, title = FALSE)
+    title(main = "24 months")
     legend(
       "bottomright",
       c(paste0("Clinical: ", auc24_clin), paste0("Clinical + CPPS: ", auc24_comb)),
@@ -188,8 +386,9 @@ server <- function(input, output, session) {
       lwd = 3
     )
 
-    plot(a$roc_clinical, time = 36, col = "#E74C3C", lwd = 3, main = "AUC at 36 months")
-    plot(a$roc_combined, time = 36, col = "#2ECC71", lwd = 3, add = TRUE)
+    plot(a$roc_clinical, time = 36, col = "#E74C3C", lwd = 3, main = "", title = FALSE)
+    plot(a$roc_combined, time = 36, col = "#2ECC71", lwd = 3, add = TRUE, title = FALSE)
+    title(main = "36 months")
     legend(
       "bottomright",
       c(paste0("Clinical: ", auc36_clin), paste0("Clinical + CPPS: ", auc36_comb)),
@@ -230,8 +429,9 @@ server <- function(input, output, session) {
       auc36_clin <- round(a$auc_tbl$AUC_Clinical[a$auc_tbl$time_months == 36], 2)
       auc36_comb <- round(a$auc_tbl$AUC_Clinical_CPPS[a$auc_tbl$time_months == 36], 2)
 
-      plot(a$roc_clinical, time = 24, col = "#E74C3C", lwd = 3, main = "AUC at 24 months")
-      plot(a$roc_combined, time = 24, col = "#2ECC71", lwd = 3, add = TRUE)
+      plot(a$roc_clinical, time = 24, col = "#E74C3C", lwd = 3, main = "", title = FALSE)
+      plot(a$roc_combined, time = 24, col = "#2ECC71", lwd = 3, add = TRUE, title = FALSE)
+      title(main = "24 months")
       legend(
         "bottomright",
         c(paste0("Clinical: ", auc24_clin), paste0("Clinical + CPPS: ", auc24_comb)),
@@ -239,8 +439,9 @@ server <- function(input, output, session) {
         lwd = 3
       )
 
-      plot(a$roc_clinical, time = 36, col = "#E74C3C", lwd = 3, main = "AUC at 36 months")
-      plot(a$roc_combined, time = 36, col = "#2ECC71", lwd = 3, add = TRUE)
+      plot(a$roc_clinical, time = 36, col = "#E74C3C", lwd = 3, main = "", title = FALSE)
+      plot(a$roc_combined, time = 36, col = "#2ECC71", lwd = 3, add = TRUE, title = FALSE)
+      title(main = "36 months")
       legend(
         "bottomright",
         c(paste0("Clinical: ", auc36_clin), paste0("Clinical + CPPS: ", auc36_comb)),

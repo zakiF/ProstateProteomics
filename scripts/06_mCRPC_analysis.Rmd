@@ -3641,7 +3641,7 @@ surv_prob_accurate <- function(model, time_months) {
 # Create single combined nomogram with multiple time points
 cat("=== Creating Combined Nomogram (PSA + ALP + CPPS) ===\n")
 
-pdf(file.path(wd$outCurr, "Nomogram_Combined_MultiTime.pdf"), height = 5, width = 11)
+pdf(file.path(wd$outCurr, "Nomogram_Combined_MultiTime.pdf"), height = 5, width = 10)
 
 # Create survival functions for each time point
 surv_24m <- function(lp) {
@@ -3668,7 +3668,7 @@ nom_combined <- nomogram(cox_model_cpps_combined_nom,
 plot(nom_combined, main = "Nomogram: Clinical Variables + CPPS")
 dev.off()
 
-cat("Combined nomogram created: log10(PSA) + log10(ALP) + CPPS with 24 and 36-month survival probabilities\n")
+cat("Combined nomogram created: log10(PSA) + log10(ALP) + log10(LDH) CPPS with 24 and 36-month survival probabilities\n")
 ```
 
 ## Nomogram Validation and Comparison
